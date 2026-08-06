@@ -179,10 +179,10 @@ namespace TrueScopes::ScopeRender
 	{
 		// SSN array: SetShadowSceneNode @ +0x1427f54c3: lea rcx, [rip+disp]
 		g_ssnArray = RipResolve(0x27f54c3, { 0x48, 0x8D, 0x0D }, 3, 7, "SSN array"sv);
-		// SetCameraFOV @ +0x142804bb0: cmp byte ptr [rip+disp], 0   (80 3D disp 00)
-		g_fovMode738 = RipResolve(0x2804bb0, { 0x80, 0x3D }, 2, 7, "fov-mode byte"sv);
-		// SetCameraFOV @ +0x142804bb9: cmp dword ptr [rip+disp], 2  (83 3D disp 02)
-		g_fovMode750 = RipResolve(0x2804bb9, { 0x83, 0x3D }, 2, 7, "fov-mode view index"sv);
+		// SetCameraFOV @ +0x142804bb0: cmp byte ptr [rip+disp], r14b   (44 38 35 disp)
+		g_fovMode738 = RipResolve(0x2804bb0, { 0x44, 0x38, 0x35 }, 3, 7, "fov-mode byte"sv);
+		// SetCameraFOV @ +0x142804bb9: mov eax, dword ptr [rip+disp]  (8B 05 disp)
+		g_fovMode750 = RipResolve(0x2804bb9, { 0x8B, 0x05 }, 2, 6, "fov-mode view index"sv);
 
 		if (!g_ssnArray || !g_fovMode738 || !g_fovMode750) {
 			return false;
