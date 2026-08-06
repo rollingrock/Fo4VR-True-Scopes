@@ -57,6 +57,10 @@ namespace TrueScopes::ScopeRender
 		void* g_accum = nullptr;
 		bool g_available = false;
 
+		// Fault forensics: which step the render was in when the SEH guard fired.
+		volatile long g_lastStep = 0;
+#define RENDER_STEP(n) g_lastStep = (n)
+
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
 		// bytes first. Returns 0 on mismatch.
 		[[nodiscard]] std::uintptr_t RipResolve(
@@ -97,6 +101,7 @@ namespace TrueScopes::ScopeRender
 
 			// Zoom FOV: force SetCameraFOV's symmetric-frustum path (instead of HMD eye
 			// projections) exactly like the vanilla scope pass does, then restore.
+			RENDER_STEP(1);
 			auto* mode738 = reinterpret_cast<std::uint8_t*>(g_fovMode738);
 			auto* mode750 = reinterpret_cast<std::int32_t*>(g_fovMode750);
 			const auto saved738 = *mode738;
@@ -107,60 +112,79 @@ namespace TrueScopes::ScopeRender
 			*mode738 = saved738;
 			*mode750 = saved750;
 
-			// Accumulator: renderMode 0 (normal lit world), eye position = camera world pos.
+			// Accumulator: renderMode 0 (normal lit world), world SSN, eye position.
+			RENDER_STEP(2);
 			const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
+			const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray);
 			*reinterpret_cast<std::uint32_t*>(accum + 0xf688) = 0;
+			*reinterpret_cast<std::uintptr_t*>(accum + 0xf680) = ssn0;  // BSShaderAccumulator::shadowSceneNode
 			const auto* eyePos = reinterpret_cast<const float*>(cam + 0xa0);  // NiAVObject::world.translate
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf690), eyePos, 12);
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf6a0), eyePos, 12);
 
 			// Stack culling process bound to our accumulator.
+			RENDER_STEP(3);
 			alignas(16) std::uint8_t cullBuf[0x1a0];
 			Fn<CullCtor_t>(0x1d4d8e0)(cullBuf, 0);
+			RENDER_STEP(4);
 			Fn<CullSetAccum_t>(0x1d4d9c0)(cullBuf, g_accum);
 
+			RENDER_STEP(5);
 			alignas(16) std::uint8_t ispBuf[0x2d0];
 			Fn<BuildIsp_t>(0x2812be0)(ispBuf, cam, g_accum);
 
+			RENDER_STEP(6);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
 			// Accumulate the world: portal graph (what the main draw uses), the world
 			// ShadowSceneNode's object subtrees, then queued lights.
+			RENDER_STEP(7);
 			if (const auto entry = Fn<GetPortalEntry_t>(0xd878f0)()) {
 				Fn<AccumSceneArray_t>(0x27ff5d0)(cam, entry + 0x58, cullBuf, 0);
 			}
-			if (const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray)) {
+			if (ssn0) {
+				RENDER_STEP(8);
 				if (const auto sub = *reinterpret_cast<std::uintptr_t*>(ssn0 + 0x168)) {
 					if (const auto nodeA = *reinterpret_cast<std::uintptr_t*>(sub + 0x48)) {
 						Fn<AccumScene_t>(0x27ff370)(cam, nodeA, cullBuf, 0);
 					}
+					RENDER_STEP(9);
 					if (const auto nodeB = *reinterpret_cast<std::uintptr_t*>(sub + 0x40)) {
 						Fn<AccumScene_t>(0x27ff370)(cam, nodeB, cullBuf, 0);
 					}
 				}
+				RENDER_STEP(10);
 				Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 			}
 
 			// Temp targets (LocalMap's), bind, clear, draw, deliver, release.
+			RENDER_STEP(11);
 			Fn<AcquireTarget_t>(0x1dbad90)(rtm, kTempRT);
 			Fn<AcquireTarget_t>(0x1dbaea0)(rtm, kTempDS);
+			RENDER_STEP(12);
 			Fn<SelectDS_t>(0x1db9e40)(rtm, kTempDS, 5, 0);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, kTempRT, 0);
 			for (std::uint32_t slot = 1; slot < 6; ++slot) {
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, slot, -1, 3);
 			}
 			Fn<CommitTargets_t>(0x1db9fe0)(rtm);
+			RENDER_STEP(13);
 			Fn<ClearColor_t>(0x1d8dd80)(renderer);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
+			RENDER_STEP(14);
 			Fn<DrawAccum_t>(0x27ff820)(cam, g_accum, ispBuf, 0);
 
+			RENDER_STEP(15);
 			Fn<IsmCopy_t>(0x27b0880)(kTempRT, Addr::kRT_ScopeLens);
 
+			RENDER_STEP(16);
 			Fn<ReleaseTarget_t>(0x1dbae00)(rtm, kTempRT);
 			Fn<ReleaseTarget_t>(0x1dbaf10)(rtm, kTempDS);
 
+			RENDER_STEP(17);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
+			RENDER_STEP(18);
 		}
 
 		// SEH wrapper — POD frame only.
@@ -213,7 +237,17 @@ namespace TrueScopes::ScopeRender
 		}
 		if (!RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees))) {
 			g_available = false;
-			logger::critical("ScopeRender FAULTED — disabled for this session, falling back to copy fill"sv);
+			static constexpr std::string_view kSteps[] = {
+				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
+				"build isp block"sv, "clear prev-cam cache"sv, "portal-graph accumulate"sv,
+				"SSN subtree A accumulate"sv, "SSN subtree B accumulate"sv, "ProcessQueuedLights"sv,
+				"acquire targets"sv, "bind targets"sv, "clear+flush"sv, "draw"sv, "copy to lens"sv,
+				"release targets"sv, "cull dtor"sv, "done"sv
+			};
+			const auto step = g_lastStep;
+			logger::critical(
+				FMT_STRING("ScopeRender FAULTED at step {} ({}) — disabled for this session, falling back to copy fill"),
+				step, step >= 0 && step < 19 ? kSteps[step] : "?"sv);
 			return false;
 		}
 		return true;
