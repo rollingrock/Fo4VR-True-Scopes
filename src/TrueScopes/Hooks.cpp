@@ -2,6 +2,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
+#include "TrueScopes/ScopeRender.h"
 
 namespace TrueScopes::Hooks
 {
@@ -60,7 +61,13 @@ namespace TrueScopes::Hooks
 				if (g_installed && g_scopeActive.load() && *Settings::fillEnabled) {
 					static std::uint32_t frame = 0;
 					if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
-						ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
+						const bool rendered =
+							*Settings::lensMode == 2 &&
+							ScopeRender::Available() &&
+							ScopeRender::Render();
+						if (!rendered && *Settings::lensMode != 0) {
+							ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
+						}
 					}
 				}
 				func();

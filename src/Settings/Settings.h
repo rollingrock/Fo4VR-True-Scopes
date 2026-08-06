@@ -40,6 +40,7 @@ namespace Settings
 
 	using bSetting = Setting<bool>;
 	using iSetting = Setting<std::int64_t>;
+	using fSetting = Setting<double>;
 	using sSetting = Setting<std::string>;
 
 #define MAKE_SETTING(a_type, a_group, a_key, a_default) \
@@ -54,6 +55,13 @@ namespace Settings
 	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
 	// works correctly — this just keeps the widget/fill on at all times.
 	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, false);
+	// What fills the lens while scoped: 1 = copy of the main frame (phase-1 placeholder),
+	// 2 = real mono world render from the scope camera (falls back to 1 on init failure
+	// or a render fault).
+	MAKE_SETTING(iSetting, "TrueScopesVR", lensMode, std::int64_t(2));
+	// Scope render field of view in degrees (phase 2a fixed value; weapon zoomData wiring
+	// comes later).
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 15.0);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -82,13 +90,15 @@ namespace Settings
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
 		LOAD(forceAlwaysOn);
+		LOAD(lensMode);
+		LOAD(scopeFovDegrees);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
 #undef LOAD
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} disableScopeBlackout={} disableApproachFade={}"),
-			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *disableScopeBlackout, *disableApproachFade);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} disableScopeBlackout={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *disableScopeBlackout, *disableApproachFade);
 	}
 }

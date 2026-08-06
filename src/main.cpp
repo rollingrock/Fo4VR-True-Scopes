@@ -1,5 +1,6 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
+#include "TrueScopes/ScopeRender.h"
 
 void InitializeLog()
 {
@@ -71,6 +72,10 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	}
 
 	F4SE::GetMessagingInterface()->RegisterListener(MessageHandler);
+
+	if (!TrueScopes::ScopeRender::Init()) {
+		logger::error("ScopeRender init failed — lens will use the copy fill"sv);
+	}
 
 	logger::info("True Scopes VR loaded"sv);
 	return true;

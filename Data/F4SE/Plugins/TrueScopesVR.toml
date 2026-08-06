@@ -9,6 +9,14 @@ fillEnabled = true
 # refresh rate of the scope picture.
 fillEveryNFrames = 1
 
+# What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
+# 2 = real magnified world render from the scope camera (falls back to 1 on failure).
+lensMode = 2
+
+# Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
+# driven by the weapon's zoom data later.
+scopeFovDegrees = 15.0
+
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false
