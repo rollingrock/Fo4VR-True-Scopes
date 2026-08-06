@@ -1,0 +1,23 @@
+{
+  "name": "truescopes-vr",
+  "version-string": "0.1.0",
+  "description": "Real render-to-texture gun scopes for Fallout 4 VR",
+  "homepage": "https://github.com/rollingrock/Fo4VR-True-Scopes",
+  "license": "GPL-3.0",
+  "dependencies": [
+    "boost-stl-interfaces",
+    "robin-hood-hashing",
+    "rsm-binary-io",
+    "rsm-mmio",
+    "srell",
+    "spdlog",
+    "xbyak",
+    "args",
+    "frozen",
+    "tomlplusplus",
+    "nowide",
+    "catch2",
+    "rapidcsv"
+  ],
+  "builtin-baseline": "b4a3d89125e45bc8f80fb94bef9761d4f4e14fb9"
+}

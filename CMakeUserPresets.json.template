@@ -1,0 +1,15 @@
+{
+	"version": 3,
+	"configurePresets": [
+		{
+			"name": "vs2022-windows-vcpkg-vr-copy",
+			"cacheVariables": {
+				"COPY_BUILD": true
+			},
+			"environment": {
+				"FalloutVRPath": "E:\\SteamLibrary\\steamapps\\common\\Fallout 4 VR"
+			},
+			"inherits": "vs2022-windows-vcpkg-vr"
+		}
+	]
+}
