@@ -5,7 +5,7 @@
 // Verification tags:
 //   [LIVE]   byte-verified in the running game, 2026-08-06 x64dbg session
 //            (SESSION_2026-08-06_ROUTE_B_LIVE.md in the investigation repo)
-//   [GHIDRA] static decompile only
+//   [GHIDRA] verified against dump code bytes (which match the live process exactly)
 //
 // IMPORTANT: Ghidra's data labels for high .data/.bss in the unpacked dump are
 // systematically wrong (section layout mismatch in the imported image). Every data RVA
@@ -16,12 +16,27 @@ namespace TrueScopes::Addr
 {
 	// --- code (patch/hook sites) ---
 
-	// FUN_141d947a0: mov [rcx+3], dl; ret  — the SOLE writer of BSGraphics::Renderer+3
-	// ("scope render armed", the flag that triggers Main::Swap's frame redirect).
-	// Patched to ret so the vanilla redirect can never engage. Single caller in the
-	// binary: the enable switch FUN_140efaa60 @ +0xefaace.
-	// [LIVE] original bytes: 88 51 03 C3
-	inline constexpr std::uintptr_t kScopeArmSetter = 0x1d947a0;
+	// Inside the scope enable switch FUN_140efaa60 — the ONLY reader of iScopeEnabled
+	// and the ONLY code path that arms the vanilla scoped-frame redirect.
+	//
+	// The switch uses BSGraphics::Renderer+3 as its on/off state memory:
+	//   on = (iScopeEnabled==2) || (iScopeEnabled==1 && isScoped)
+	//   if (on != ReadFlag3(renderer)) { WriteFlag3(renderer, on); <show/hide block> }
+	//
+	// We hook BOTH call sites: the write stores to plugin state instead of renderer+3
+	// (so the frame redirect never engages), and the read returns that plugin state
+	// (so the switch stays edge-triggered — the show/hide block runs on transitions
+	// only). v0.1.0 defanged the writer alone, which made the guard never satisfy and
+	// re-ran the block (incl. Pip-Boy menu messaging) every tick → input-layer
+	// exhaustion → null-deref crash in the ScopeMenu ctor (crash-2026-08-06-21-02-53).
+
+	// call FUN_141d947b0 (read renderer+3) — the guard's state read.
+	// [GHIDRA] original bytes: E8 F4 9C E9 00
+	inline constexpr std::uintptr_t kScopeStateReadCallSite = 0xefaab7;
+
+	// call FUN_141d947a0 (write renderer+3) — the arm write, sole call site in the binary.
+	// [GHIDRA] original bytes: E8 CD 9C E9 00
+	inline constexpr std::uintptr_t kScopeArmWriteCallSite = 0xefaace;
 
 	// Call site inside Main::DrawWorld_And_UI (+0xd87a80), right after the Pip-Boy
 	// local-map block: "call thunk_FUN_14284e950" (accumulator pass-list clear).
@@ -38,7 +53,7 @@ namespace TrueScopes::Addr
 	// --- data ---
 
 	// Value cell of the 3-state INI setting iScopeEnabled:VR (0=off, 1=eye-gated,
-	// 2=always-on). Read in exactly ONE place: the enable switch FUN_140efaa60. [LIVE]
+	// 2=always-on). Read in exactly ONE place: the enable switch. [LIVE]
 	inline constexpr std::uintptr_t kIScopeEnabledValue = 0x37d02d8;
 
 	// BSGraphics::Renderer instance. Flag bytes: +1 stereo, +2 alt-render,

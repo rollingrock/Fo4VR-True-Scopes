@@ -9,6 +9,13 @@ namespace TrueScopes::Hooks
 	{
 		bool g_installed = false;
 
+		// Plugin-owned replacement for the "scope render armed" state that vanilla keeps
+		// in BSGraphics::Renderer+3. The real +3 stays 0 forever, so Main::Swap's frame
+		// redirect (black main view, rebuild churn, deferred-release hazards) never
+		// engages — but the enable switch still edge-triggers its show/hide block off
+		// this value exactly like vanilla.
+		std::atomic_bool g_scopeActive = false;
+
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
 
 		[[nodiscard]] ImageSpaceManagerCopy_t ImageSpaceCopy()
@@ -17,16 +24,40 @@ namespace TrueScopes::Hooks
 			return func.get();
 		}
 
-		// Phase 1 fill: copy the main double-wide frame into the lens target every N
-		// frames. The engine's own per-draw slot-6 bind displays it whenever the widget
-		// material draws. Phase 2 replaces the Copy with our own mono world render from
-		// PrimaryWeaponScopeCamera into a temp RT, then Copy(temp, 0x62)
-		// (recipe: ROUTE_B_STATIC_MAP_2026-08-06.md section 3.2).
+		// Replaces "call FUN_141d947a0(renderer, on)" — the arm write.
+		struct ScopeArmWriteHook
+		{
+			static void thunk([[maybe_unused]] void* a_renderer, char a_on)
+			{
+				const bool on = a_on != 0;
+				if (g_scopeActive.exchange(on) != on) {
+					logger::info(FMT_STRING("scope active -> {}"), on);
+				}
+				// deliberately NOT writing renderer+3
+			}
+			static inline REL::Relocation<decltype(&thunk)> func;
+		};
+
+		// Replaces "call FUN_141d947b0(renderer)" — the guard's state read.
+		struct ScopeStateReadHook
+		{
+			static char thunk([[maybe_unused]] void* a_renderer)
+			{
+				return g_scopeActive.load() ? 1 : 0;
+			}
+			static inline REL::Relocation<decltype(&thunk)> func;
+		};
+
+		// Phase 1 fill: while the scope widget is active, copy the main double-wide
+		// frame into the lens target every N frames. The engine's own per-draw slot-6
+		// bind displays it whenever the widget material draws. Phase 2 replaces the Copy
+		// with our own mono world render from PrimaryWeaponScopeCamera into a temp RT,
+		// then Copy(temp, 0x62) (recipe: ROUTE_B_STATIC_MAP_2026-08-06.md section 3.2).
 		struct RenderFillHook
 		{
 			static void thunk()
 			{
-				if (g_installed && *Settings::fillEnabled) {
+				if (g_installed && g_scopeActive.load() && *Settings::fillEnabled) {
 					static std::uint32_t frame = 0;
 					if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
 						ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
@@ -55,28 +86,34 @@ namespace TrueScopes::Hooks
 
 	bool Install()
 	{
-		REL::Relocation<std::uintptr_t> armSetter{ REL::Offset(Addr::kScopeArmSetter) };
+		REL::Relocation<std::uintptr_t> stateReadSite{ REL::Offset(Addr::kScopeStateReadCallSite) };
+		REL::Relocation<std::uintptr_t> armWriteSite{ REL::Offset(Addr::kScopeArmWriteCallSite) };
 		REL::Relocation<std::uintptr_t> fillSite{ REL::Offset(Addr::kRenderFillCallSite) };
 
-		// mov [rcx+3], dl; ret — the arm setter
-		static constexpr std::uint8_t kSetterOrig[] = { 0x88, 0x51, 0x03, 0xC3 };
+		// call FUN_141d947b0 (read renderer+3)
+		static constexpr std::uint8_t kStateReadOrig[] = { 0xE8, 0xF4, 0x9C, 0xE9, 0x00 };
+		// call FUN_141d947a0 (write renderer+3)
+		static constexpr std::uint8_t kArmWriteOrig[] = { 0xE8, 0xCD, 0x9C, 0xE9, 0x00 };
 		// call thunk_FUN_14284e950
 		static constexpr std::uint8_t kFillSiteOrig[] = { 0xE8, 0x87, 0x70, 0xAC, 0x01 };
 
-		if (!VerifyBytes(armSetter, { kSetterOrig, 4 }, "scope-arm setter"sv)) {
+		if (!VerifyBytes(stateReadSite, { kStateReadOrig, 5 }, "scope-state read site"sv)) {
+			return false;
+		}
+		if (!VerifyBytes(armWriteSite, { kArmWriteOrig, 5 }, "scope-arm write site"sv)) {
 			return false;
 		}
 		if (!VerifyBytes(fillSite, { kFillSiteOrig, 5 }, "render fill site"sv)) {
 			return false;
 		}
 
-		// 1. Defang the arm: renderer+3 stays 0 forever. The rest of the vanilla enable
-		//    switch keeps working (widget show/hide, material cache, Pip-Boy handling) —
-		//    only the frame redirect is severed.
-		REL::safe_write(armSetter.address(), static_cast<std::uint8_t>(0xC3));
-		logger::info(FMT_STRING("scope-arm setter defanged at {:016X}"), armSetter.address());
+		// Reroute the enable switch's state memory to the plugin: renderer+3 is never
+		// written (redirect can't engage), and the show/hide block stays edge-triggered.
+		pstl::write_thunk_call<ScopeStateReadHook>(stateReadSite.address());
+		pstl::write_thunk_call<ScopeArmWriteHook>(armWriteSite.address());
+		logger::info("enable-switch state hooks installed"sv);
 
-		// 2. Fill hook, every frame in the normal draw path.
+		// Fill hook, every frame in the normal draw path.
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
 
@@ -90,10 +127,9 @@ namespace TrueScopes::Hooks
 			return;
 		}
 
-		// Phase 1 needs always-on: with the arm defanged, the vanilla enable switch has
-		// no working on/off state memory (it reads renderer+3 as "current state"), so
-		// eye-gated hide transitions would strand the widget. Always-on sidesteps that
-		// until the phase-1.5 enable-switch replacement lands.
+		// Optional: force iScopeEnabled to 2 (always-on). With the edge-triggered state
+		// hooks this is a convenience, not a requirement — the vanilla default (1,
+		// eye-gated) now works correctly.
 		if (*Settings::forceAlwaysOn) {
 			REL::Relocation<std::uint32_t*> scopeEnabled{ REL::Offset(Addr::kIScopeEnabledValue) };
 			*scopeEnabled.get() = 2;

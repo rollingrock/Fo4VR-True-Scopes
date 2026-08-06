@@ -9,6 +9,6 @@ fillEnabled = true
 # refresh rate of the scope picture.
 fillEveryNFrames = 1
 
-# Force iScopeEnabled:VR to 2 (always-on) after game load. Required in phase 1:
-# eye-gated show/hide needs the phase-1.5 enable-switch replacement.
-forceAlwaysOn = true
+# Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
+# default (1, eye-gated) shows the scope only while aiming down it.
+forceAlwaysOn = false

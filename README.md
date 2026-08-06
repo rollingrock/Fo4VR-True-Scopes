@@ -28,9 +28,10 @@ Full reverse-engineering record: `fallout4-scope-in-scope-investigation` repo
 
 ## Roadmap
 
-- **Phase 1.5** — replace the enable switch (`FUN_140efaa60`) wholesale so eye-gated
-  show/hide works with plugin-owned state (vanilla's uses `renderer+3` as state memory,
-  which we keep at 0). Until then `forceAlwaysOn` is required.
+- ~~**Phase 1.5**~~ — done (v0.1.1): the enable switch's state read/write call sites are
+  hooked to plugin-owned state, so it stays edge-triggered and eye-gated show/hide works
+  while `renderer+3` stays 0. (v0.1.0 defanged only the writer, which re-ran the show
+  block every tick and exhausted input-enable layers → ScopeMenu ctor crash.)
 - **Phase 2** — real scope image: LocalMapRenderer-pattern mono world render from
   `PrimaryWeaponScopeCamera` (zoom FOV from weapon zoomData) into a temp RT, then
   `Copy(temp, 0x62)`. Recipe fully mapped in the investigation repo.

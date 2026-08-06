@@ -51,8 +51,9 @@ namespace Settings
 	// between frames, so low cadence just lowers the lens refresh rate.
 	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(1));
 	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
-	// Required for phase 1 — see Hooks::OnGameLoaded.
-	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, true);
+	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
+	// works correctly — this just keeps the widget/fill on at all times.
+	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, false);
 
 #undef MAKE_SETTING
 
