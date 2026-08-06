@@ -117,6 +117,34 @@ namespace TrueScopes::Hooks
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
 
+		// Vanilla scope imod suppression (cosmetic-only calls now that the redirect is
+		// disarmed). Verified before patching; failure here is non-fatal.
+		static constexpr std::uint8_t kImodSiteAOrig[] = { 0xE8, 0xD0, 0x49, 0x7B, 0xFF };
+		static constexpr std::uint8_t kImodSiteBOrig[] = { 0xE8, 0x7F, 0x4E, 0x7B, 0xFF };
+		static constexpr std::uint8_t kFadeSiteOrig[] = { 0xE8, 0x2F, 0x49, 0x48, 0xFF };
+		// xor eax,eax + 3 nops — the Trigger return value is refcount-stored by the
+		// caller, so it must be nulled, not left as garbage.
+		static constexpr std::uint8_t kNullReturnPatch[] = { 0x33, 0xC0, 0x90, 0x90, 0x90 };
+		static constexpr std::uint8_t kNopPatch[] = { 0x90, 0x90, 0x90, 0x90, 0x90 };
+
+		if (*Settings::disableScopeBlackout) {
+			REL::Relocation<std::uintptr_t> siteA{ REL::Offset(Addr::kScopeBlackoutImodSiteA) };
+			REL::Relocation<std::uintptr_t> siteB{ REL::Offset(Addr::kScopeBlackoutImodSiteB) };
+			if (VerifyBytes(siteA, { kImodSiteAOrig, 5 }, "blackout imod site A"sv) &&
+				VerifyBytes(siteB, { kImodSiteBOrig, 5 }, "blackout imod site B"sv)) {
+				REL::safe_write(siteA.address(), kNullReturnPatch, sizeof(kNullReturnPatch));
+				REL::safe_write(siteB.address(), kNullReturnPatch, sizeof(kNullReturnPatch));
+				logger::info("scope blackout imod suppressed"sv);
+			}
+		}
+		if (*Settings::disableApproachFade) {
+			REL::Relocation<std::uintptr_t> siteC{ REL::Offset(Addr::kScopeApproachFadeSite) };
+			if (VerifyBytes(siteC, { kFadeSiteOrig, 5 }, "approach fade site"sv)) {
+				REL::safe_write(siteC.address(), kNopPatch, sizeof(kNopPatch));
+				logger::info("approach fade suppressed"sv);
+			}
+		}
+
 		g_installed = true;
 		return true;
 	}

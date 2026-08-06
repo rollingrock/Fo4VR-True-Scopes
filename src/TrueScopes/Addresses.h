@@ -45,6 +45,18 @@ namespace TrueScopes::Addr
 	// [LIVE] original bytes: E8 87 70 AC 01
 	inline constexpr std::uintptr_t kRenderFillCallSite = 0xd87ca4;
 
+	// The three vanilla scope imagespace-modifier trigger sites (all call
+	// ImageSpaceModifierInstanceForm::Trigger @ +0x37cf50). A and B fire the weapon
+	// zoomData imod at full strength on scope-in — the vanilla WORLD BLACKOUT. C ramps
+	// the approach fade with eye-scope alignment. With the frame redirect disarmed these
+	// are pure cosmetics; A/B must be suppressed for world+scope simultaneously.
+	// A/B patch: 33 C0 90 90 90 (xor eax,eax + nops — return value is refcount-stored,
+	// so eax must be null, not garbage). C patch: 5x 90 (return unused).
+	// [GHIDRA] A bytes: E8 D0 49 7B FF   B bytes: E8 7F 4E 7B FF   C bytes: E8 2F 49 48 FF
+	inline constexpr std::uintptr_t kScopeBlackoutImodSiteA = 0xbc857b;  // ScopeMenu show callback
+	inline constexpr std::uintptr_t kScopeBlackoutImodSiteB = 0xbc80cc;  // ScopeMenu::ProcessMessage
+	inline constexpr std::uintptr_t kScopeApproachFadeSite = 0xef861c;   // aim controller proximity fade
+
 	// ImageSpaceManager::Copy(uint32 srcRT, uint32 dstRT) — self-contained fullscreen
 	// RT-to-RT copy (fetches its own singleton; binds dst, samples src, restores state).
 	// Vanilla precedent: Main::Swap calls Copy(0, 0x44) for screenshots. [LIVE-exercised]

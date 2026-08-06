@@ -12,3 +12,10 @@ fillEveryNFrames = 1
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false
+
+# Suppress the vanilla scope-in world blackout (imagespace modifier). Core to seeing
+# world + scope at the same time.
+disableScopeBlackout = true
+
+# Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
+disableApproachFade = false

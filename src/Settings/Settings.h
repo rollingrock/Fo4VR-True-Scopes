@@ -54,6 +54,11 @@ namespace Settings
 	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
 	// works correctly — this just keeps the widget/fill on at all times.
 	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, false);
+	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
+	// full-strength zoomData imod). Core to the world+scope experience.
+	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
+	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
+	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, false);
 
 #undef MAKE_SETTING
 
@@ -77,11 +82,13 @@ namespace Settings
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
 		LOAD(forceAlwaysOn);
+		LOAD(disableScopeBlackout);
+		LOAD(disableApproachFade);
 
 #undef LOAD
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={}"),
-			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} disableScopeBlackout={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *disableScopeBlackout, *disableApproachFade);
 	}
 }

@@ -29,12 +29,17 @@ namespace pstl
 		asm_replace(a_from, T::size, reinterpret_cast<std::uintptr_t>(T::func));
 	}
 
+	// NOTE: unlike the place-in-red template this does NOT call F4SE::AllocTrampoline
+	// per hook. On F4SEVR (no branch-pool interface) AllocTrampoline falls back to
+	// Trampoline::create, and create/set_trampoline release() the PREVIOUS buffer —
+	// VirtualFreeing every previously written stub. With more than one hook that
+	// orphans earlier call sites into freed memory (v0.1.1 crash,
+	// crash-2026-08-06-23-13-56). Allocate the trampoline ONCE in F4SEPlugin_Load
+	// with capacity for all hooks before calling this.
 	template <class T>
 	void write_thunk_call(std::uintptr_t a_src)
 	{
 		auto& trampoline = F4SE::GetTrampoline();
-		F4SE::AllocTrampoline(14);
-
 		T::func = trampoline.write_call<5>(a_src, T::thunk);
 	}
 
