@@ -139,8 +139,12 @@ namespace TrueScopes::ScopeRender
 			// Accumulate the world: portal graph (what the main draw uses), the world
 			// ShadowSceneNode's object subtrees, then queued lights.
 			RENDER_STEP(7);
+			// Engine call site (LocalMapRenderer::Render, byte-decoded):
+			//   entry -> [entry+0x10] -> +0x58 = the accumulate array
 			if (const auto entry = Fn<GetPortalEntry_t>(0xd878f0)()) {
-				Fn<AccumSceneArray_t>(0x27ff5d0)(cam, entry + 0x58, cullBuf, 0);
+				if (const auto list = *reinterpret_cast<std::uintptr_t*>(entry + 0x10)) {
+					Fn<AccumSceneArray_t>(0x27ff5d0)(cam, list + 0x58, cullBuf, 0);
+				}
 			}
 			if (ssn0) {
 				RENDER_STEP(8);
