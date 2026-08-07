@@ -395,11 +395,22 @@ namespace TrueScopes::ScopeRender
 				}
 				if (cfgClean && cfgBuilt) {
 					// Clear the accum RTs DETERMINISTICALLY (v0.2.23 pattern: bind as
-					// slot 0 + commit + immediate CRTV). v0.2.26 relied on bind mode 0
-					// (clear-on-apply) and the lens saturated to clipped flat colors —
-					// consistent with the clear not firing and the additive sun stacking
-					// frame over frame.
-					Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 0.0f);
+					// slot 0 + commit + immediate CRTV) — but to the FOG/AMBIENT color,
+					// not black. Vanilla's mode-0 clear-on-apply executes lazily at the
+					// first DRAW, by which point the resolve has re-set the clear color
+					// to the fog RGB (FUN_1427aeeb0()+0x1d4..0x1dc, alpha 1) — the accum
+					// starts at the ambient base light level. Our v0.2.27 black clear
+					// (plus the hooks suppressing the engine clear) deleted that base
+					// term: the whole scene lost ambient and read near-black except
+					// sun-facing surfaces.
+					{
+						using GetFogSingleton_t = std::uintptr_t (*)();
+						const auto fog = Fn<GetFogSingleton_t>(0x27aeeb0)();
+						const float r = fog ? *reinterpret_cast<const float*>(fog + 0x1d4) : 0.0f;
+						const float g = fog ? *reinterpret_cast<const float*>(fog + 0x1d8) : 0.0f;
+						const float b = fog ? *reinterpret_cast<const float*>(fog + 0x1dc) : 0.0f;
+						Fn<SetClearColor_t>(0x1d8dc80)(renderer, r, g, b, 1.0f);
+					}
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
 					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
@@ -563,6 +574,11 @@ namespace TrueScopes::ScopeRender
 				break;
 			case 6:
 				Fn<IsmCopy_t>(0x27b0880)(0x64, Addr::kRT_ScopeLens);
+				break;
+			case 7:
+				// Raw (un-tonemapped) composite output — separates "composite wrote
+				// darkness" from "the tonemap crushed it".
+				Fn<IsmCopy_t>(0x27b0880)(0x61, Addr::kRT_ScopeLens);
 				break;
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
