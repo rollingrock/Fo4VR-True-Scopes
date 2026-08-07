@@ -71,6 +71,7 @@ namespace TrueScopes::ScopeRender
 			std::uint8_t, float);                                                                     //            (state, cam, a, b, scale) — resolve calls (state, cam, param_8, 0, 1.0f)
 		using DepthMode_t = void (*)(std::uintptr_t, std::uint32_t);                                  // 0x1d8dd60 / 0x1d8de10: depth/texture mode setters the resolve runs before lighting
 		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
+		using FindCamBlock_t = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);       // 0x1daaf30  find CameraStateData block (state, camera, sel) in the state+0x140 array (stride 0x480); 0 if absent
 		using ExecPassConfig_t = void (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
 		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
 
@@ -150,22 +151,24 @@ namespace TrueScopes::ScopeRender
 		// inverse → garbage world positions → exploded specular. This was flagged as
 		// the "next lever" in the v0.2.8 notes and never fired because diffuse looked
 		// fine. Replicated here 1:1.
-		void WriteInverseView(std::uintptr_t a_ctxA, std::uintptr_t a_ctxB)
+		// v0.2.29 wrote through *(ctx+0x25d0) — but that pointer is only repointed at
+		// state-APPLY time, so it still referenced the MAIN camera's block when we
+		// wrote (a no-op), and our camera's block kept its stale inverse for the
+		// draws. v0.2.30: look the block up the way FUN_141da8c40 itself does —
+		// FUN_141daaf30(state, camera, sel) over the CameraStateData array — and
+		// write both sel variants (the resolve updates cam-data with sel 1 and 0).
+		void WriteInverseView(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
-			const auto ctxA = a_ctxA ? *reinterpret_cast<const std::uintptr_t*>(a_ctxA) : 0;
-			const auto ctxB = a_ctxB ? *reinterpret_cast<const std::uintptr_t*>(a_ctxB) : 0;
-			const auto ctx = ctxA ? ctxA : ctxB;
-			if (!ctx) {
-				return;
-			}
-			const auto camData = *reinterpret_cast<std::uintptr_t*>(ctx + 0x25d0);
-			if (!camData) {
-				return;
-			}
 			using namespace DirectX;
-			const auto* view = reinterpret_cast<const XMFLOAT4X4*>(camData + 0x90);
-			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(view)));
-			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(camData + 0x1d0), inv);
+			for (const std::uint8_t sel : { std::uint8_t{ 1 }, std::uint8_t{ 0 } }) {
+				const auto block = Fn<FindCamBlock_t>(0x1daaf30)(a_state, a_cam, sel);
+				if (!block) {
+					continue;
+				}
+				const auto* view = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
+				const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(view)));
+				XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(block + 0x1d0), inv);
+			}
 		}
 
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
@@ -388,7 +391,7 @@ namespace TrueScopes::ScopeRender
 					// (specular/world-pos reconstruction input; see WriteInverseView).
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					WriteInverseView(g_ctxPtrA, g_ctxPtrB);
+					WriteInverseView(g_gfxState, cam);
 					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
@@ -457,7 +460,8 @@ namespace TrueScopes::ScopeRender
 			// internally, which does not touch +0x1d0, so this write survives it).
 			if (g_gfxState) {
 				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
-				WriteInverseView(g_ctxPtrA, g_ctxPtrB);
+				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
+				WriteInverseView(g_gfxState, cam);
 			}
 			g_inOwnResolve.store(g_diagSunPass == 1);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
