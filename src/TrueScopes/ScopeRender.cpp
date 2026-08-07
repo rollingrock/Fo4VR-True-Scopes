@@ -209,13 +209,18 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			// Lights first, then ONE AccumulateScene over the world SSN — the exact
-			// order and shape both engine deferred templates use.
-			RENDER_STEP(7);
-			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
-
+			// ONE AccumulateScene over the world SSN, THEN lights. The engine templates
+			// run lights first, but only with cull objects that already hold a camera:
+			// ShadowSceneNode::UpdateLightList (0x1427ee2f0) dereferences cull+0x18 (the
+			// camera) — a virgin stack cull has it null (the v0.2.8 step-7 fault). The
+			// culling walk inside AccumulateScene is what populates cull+0x18, so
+			// accumulate-then-lights (LocalMap order, fault-free in v0.2.5-7) is correct
+			// for a fresh cull process.
 			RENDER_STEP(8);
 			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
+
+			RENDER_STEP(7);
+			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
@@ -252,13 +257,23 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(16);
 		}
 
-		// SEH wrapper — POD frame only.
+		// SEH wrapper — POD frame only. Captures code + faulting address for the log.
+		std::uint32_t g_lastExcCode = 0;
+		std::uintptr_t g_lastExcAddr = 0;
+
+		int RenderFilter(EXCEPTION_POINTERS* a_ep) noexcept
+		{
+			g_lastExcCode = a_ep->ExceptionRecord->ExceptionCode;
+			g_lastExcAddr = reinterpret_cast<std::uintptr_t>(a_ep->ExceptionRecord->ExceptionAddress);
+			return EXCEPTION_EXECUTE_HANDLER;
+		}
+
 		bool RenderGuarded(float a_fovDeg) noexcept
 		{
 			__try {
 				RenderImpl(a_fovDeg);
 				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			} __except (RenderFilter(GetExceptionInformation())) {
 				return false;
 			}
 		}
@@ -321,9 +336,11 @@ namespace TrueScopes::ScopeRender
 				"cull dtor"sv, "done"sv
 			};
 			const auto step = g_lastStep;
+			const auto base = REL::Module::get().base();
+			const auto rva = g_lastExcAddr >= base ? g_lastExcAddr - base : 0;
 			logger::critical(
-				FMT_STRING("ScopeRender FAULTED at step {} ({}) — disabled for this session, falling back to copy fill"),
-				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv);
+				FMT_STRING("ScopeRender FAULTED at step {} ({}), code {:08X} at {:016X} (rva {:X}) — disabled for this session, falling back to copy fill"),
+				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
 			return false;
 		}
 
