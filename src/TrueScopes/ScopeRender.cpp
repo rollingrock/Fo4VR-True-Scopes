@@ -399,20 +399,21 @@ namespace TrueScopes::ScopeRender
 		// 0x6a/0x6b, DS 0xC). Restored unconditionally — a leaked 1 would redirect the
 		// NEXT frame's world draw.
 		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(REL::Module::get().base() + kRendererRVA + 4);
-		// renderer+2: every engine render path brackets its drawing with this byte set
-		// (FUN_141d94760 writes renderer+2; FUN_140c875f0 / FUN_14284e370 do it). It is
-		// already 1 in VR at all times per the load-time flag log, so this is belt and
-		// suspenders.
-		auto* renderActiveFlag = scopePassFlag - 2;
-		// (v0.2.16's stereo-off bracket removed: the vanilla scoped frame never touches
-		// renderer+1 — mono-ness comes from the mono camera + the scope-sized targets.)
+		// renderer+2 = the per-pass stereo toggle. Stereo is per-draw
+		// DrawIndexedInstanced(n, 2) gated on (renderer+1 && renderer+2)
+		// (draw dispatchers FUN_141da03d0/FUN_141da0710); instance 1 uses the eye-1
+		// camera block our mono camera never writes — stale right-eye data → the
+		// right-half-only imagery. LocalMapRenderer (the engine's mono-RTT template)
+		// brackets its render with renderer+2 = 0, saved and restored — do the same.
+		// renderer+1 stays untouched. [Adversarial review 2026-08-07, Finding 1.]
+		auto* stereoPassFlag = scopePassFlag - 2;
 		const auto savedFlag = *scopePassFlag;
-		const auto savedActive = *renderActiveFlag;
+		const auto savedStereo = *stereoPassFlag;
 		*scopePassFlag = 1;
-		*renderActiveFlag = 1;
+		*stereoPassFlag = 0;
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		*scopePassFlag = savedFlag;
-		*renderActiveFlag = savedActive;
+		*stereoPassFlag = savedStereo;
 
 		if (!ok) {
 			g_available = false;

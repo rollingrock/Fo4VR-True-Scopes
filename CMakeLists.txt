@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.2.17)
+set(VERSION 0.2.18)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
