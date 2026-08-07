@@ -78,6 +78,10 @@ namespace Settings
 	// the resolve (v0.2.26). Requires the resolve accum-bind hooks; falls back to the
 	// v0.2.25 look (ambient + local lights only) when off or unavailable.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunEnabled, true);
+	// Scale on the sun's light color for the scope render only (1.0 = engine value).
+	// Doubles as a diagnostic: if lowering this does not dim the lens, the overbright
+	// artifact is not coming through the light color path.
+	MAKE_SETTING(fSetting, "TrueScopesVR", sunBrightnessScale, 1.0);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -114,6 +118,7 @@ namespace Settings
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
 		LOAD(sunEnabled);
+		LOAD(sunBrightnessScale);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

@@ -328,11 +328,23 @@ namespace TrueScopes::ScopeRender
 					g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
 				}
 				if (cfgClean && cfgBuilt) {
-					// Clear + bind the accum MRT (mode 0 = clear-on-apply, engine clear
-					// color 0) with our scene depth, targets 2..5 unbound like the resolve.
+					// Clear the accum RTs DETERMINISTICALLY (v0.2.23 pattern: bind as
+					// slot 0 + commit + immediate CRTV). v0.2.26 relied on bind mode 0
+					// (clear-on-apply) and the lens saturated to clipped flat colors —
+					// consistent with the clear not firing and the additive sun stacking
+					// frame over frame.
 					Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 0.0f);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 0);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x6b, 0);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
+					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6b, 3);
+					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+
+					// Bind the accum MRT (no clear now) with our scene depth, targets
+					// 2..5 unbound like the resolve.
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x6b, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
@@ -366,10 +378,31 @@ namespace TrueScopes::ScopeRender
 						set(0xc8, 5, 0x10);  // additive blend into the accum buffers
 						set(0xd0, 1, 0x10);
 
+						// Brightness diagnostic/tuning: scale the sun NiLight's diffuse
+						// RGB (NiLight+0x16c..0x174 — the floats FUN_14286d890 reads)
+						// around the exec, restore after. If a small scale does NOT dim
+						// the lens, the overbright isn't coming through the light color.
+						const auto sunLight = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248);
+						const auto niLight = sunLight ? *reinterpret_cast<std::uintptr_t*>(sunLight + 0xb8) : 0;
+						float savedRGB[3] = {};
+						const auto scale = static_cast<float>(*Settings::sunBrightnessScale);
+						const bool scaling = niLight && scale != 1.0f;
+						if (scaling) {
+							auto* rgb = reinterpret_cast<float*>(niLight + 0x16c);
+							std::memcpy(savedRGB, rgb, sizeof(savedRGB));
+							rgb[0] *= scale;
+							rgb[1] *= scale;
+							rgb[2] *= scale;
+						}
+
 						alignas(16) std::uint8_t sunCtx[0x2d0];
 						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
 						Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
+
+						if (scaling) {
+							std::memcpy(reinterpret_cast<float*>(niLight + 0x16c), savedRGB, sizeof(savedRGB));
+						}
 
 						set(0xb0, 0, 4);  // job's own restore
 						g_diagSunPass = 1;
