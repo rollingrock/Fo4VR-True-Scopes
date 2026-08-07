@@ -292,13 +292,17 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 
-			// Lens delivery. lensMode 3 = diagnostic: show the raw diffuse G-buffer
-			// (0x63) instead of the composite (0x61) — trisects the split-lens bug:
-			// full-width geometry -> composite quad at fault; half-width -> projection/
-			// camera level; black -> geometry draws still not landing.
+			// Lens delivery 0x61 -> 0x62 via the VANILLA copy (FUN_1427b08c0, effect
+			// 0xf) — it is the HDR->display tonemap, not a plain copy. The composite
+			// writes linear HDR into 0x61; delivering with the raw ImageSpaceManager::
+			// Copy (v0.2.15-20) showed un-tonemapped values: the faint/dark lens.
+			// lensMode 3 = diagnostic: raw diffuse G-buffer (0x63) via plain copy.
 			RENDER_STEP(14);
-			const std::uint32_t lensSrc = *Settings::lensMode == 3 ? 0x63u : 0x61u;
-			Fn<IsmCopy_t>(0x27b0880)(lensSrc, Addr::kRT_ScopeLens);
+			if (*Settings::lensMode == 3) {
+				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
+			} else {
+				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
+			}
 
 			RENDER_STEP(15);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
