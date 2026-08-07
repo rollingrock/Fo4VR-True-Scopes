@@ -140,17 +140,20 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(5);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
-			// Deferred light pass, exact flat-screen pattern (FUN_140c87320): bind main
-			// depth (DS 1) + G-buffer MRT set, lights BEFORE accumulation, forward the
-			// resolve into RT 0x61 (free while the vanilla redirect is disarmed).
+			// Deferred light pass (flat-screen pattern FUN_140c87320) with two scope
+			// specifics: depth/viewport index 0xC — the MONO scope viewport the vanilla
+			// scoped stages select (index 1 = stereo double-wide → half-lens artifact) —
+			// and clear-on-bind modes so nothing smears between frames (mode 0 for depth,
+			// mode 4 = flat-screen's clear-on-bind for color).
 			RENDER_STEP(6);
-			Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
+			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState (LocalMap does this mid-frame too)
+			Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 0, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 4);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
 			// Accumulate the world: portal graph (what the main draw uses) + the world
