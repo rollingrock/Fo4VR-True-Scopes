@@ -17,6 +17,13 @@ lensMode = 2
 # driven by the weapon's zoom data later.
 scopeFovDegrees = 15.0
 
+# Scope camera position in weapon-local space — push it to the objective (front) end
+# of the scope tube. Y = forward along the barrel. This file reloads on every scope-in,
+# so tune these live: edit, save, lower and re-raise the scope.
+scopeCamOffsetX = 0.0
+scopeCamOffsetY = 15.0
+scopeCamOffsetZ = 0.0
+
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false

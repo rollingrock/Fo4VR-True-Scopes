@@ -104,6 +104,16 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
+			// Place the camera at the objective end of the scope tube (weapon-local
+			// offset; the node is parented under PrimaryWeaponOffsetNode). SetCameraFOV
+			// ends with NiAVObject::Update, which propagates this to world space.
+			{
+				auto* localTranslate = reinterpret_cast<float*>(cam + 0x60);  // NiAVObject::local(0x30).translate(+0x30)
+				localTranslate[0] = static_cast<float>(*Settings::scopeCamOffsetX);
+				localTranslate[1] = static_cast<float>(*Settings::scopeCamOffsetY);
+				localTranslate[2] = static_cast<float>(*Settings::scopeCamOffsetZ);
+			}
+
 			// Zoom FOV: force SetCameraFOV's symmetric-frustum path (instead of HMD eye
 			// projections) exactly like the vanilla scope pass does, then restore.
 			RENDER_STEP(1);

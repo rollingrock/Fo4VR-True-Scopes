@@ -62,6 +62,13 @@ namespace Settings
 	// Scope render field of view in degrees (phase 2a fixed value; weapon zoomData wiring
 	// comes later).
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 15.0);
+	// Camera position in weapon-local space (applied to PrimaryWeaponScopeCamera's local
+	// translate each render). Push the camera to the objective (front) end of the scope
+	// tube so the render looks out of the glass, not at the tube interior. Y = forward
+	// along the barrel in weapon space. Tune live: the TOML reloads on every scope-in.
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetX, 0.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetY, 15.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetZ, 0.0);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -92,6 +99,9 @@ namespace Settings
 		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
+		LOAD(scopeCamOffsetX);
+		LOAD(scopeCamOffsetY);
+		LOAD(scopeCamOffsetZ);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

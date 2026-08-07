@@ -33,6 +33,10 @@ namespace TrueScopes::Hooks
 				const bool on = a_on != 0;
 				if (g_scopeActive.exchange(on) != on) {
 					logger::info(FMT_STRING("scope active -> {}"), on);
+					if (on) {
+						// live-tuning loop: re-read the TOML on every scope-in
+						Settings::load();
+					}
 				}
 				// deliberately NOT writing renderer+3
 			}
