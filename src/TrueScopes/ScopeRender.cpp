@@ -209,18 +209,15 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			// ONE AccumulateScene over the world SSN, THEN lights. The engine templates
-			// run lights first, but only with cull objects that already hold a camera:
-			// ShadowSceneNode::UpdateLightList (0x1427ee2f0) dereferences cull+0x18 (the
-			// camera) — a virgin stack cull has it null (the v0.2.8 step-7 fault). The
-			// culling walk inside AccumulateScene is what populates cull+0x18, so
-			// accumulate-then-lights (LocalMap order, fault-free in v0.2.5-7) is correct
-			// for a fresh cull process.
+			// ONE AccumulateScene over the world SSN. NO ProcessQueuedLights: the main
+			// world pass already ran it this frame (the SSN light lists our resolve
+			// reads are fresh), it needs a fully-populated VR camera at cull+0x18
+			// (UpdateLightList 0x1427ee2f0 dereferences it at +0x53 — the v0.2.8/9
+			// step-7 C0000005), and re-running it against our camera would mutate the
+			// shared SSN light lists the next main frame depends on. Vanilla scoped
+			// mode also runs the per-frame light update exactly once.
 			RENDER_STEP(8);
 			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
-
-			RENDER_STEP(7);
-			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
