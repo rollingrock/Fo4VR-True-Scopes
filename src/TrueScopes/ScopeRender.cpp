@@ -38,7 +38,7 @@ namespace TrueScopes::ScopeRender
 		using CullCtor_t = void* (*)(void*, std::uint32_t);                                            // 0x1d4d8e0  BSCullingProcess::ctor(mem, 0)
 		using CullDtor_t = void (*)(void*);                                                            // 0x1d4d960  BSCullingProcess::dtor (Ghidra-mislabeled as ctor)
 		using CullSetAccum_t = void (*)(void*, void*);                                                 // 0x1d4d9c0  BSCullingProcess::SetAccumulator
-		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, w, h)
+		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, NEAR, FAR) — params 3/4 are the frustum near/far planes (live-proven: passing 1,1 gave near==far → NaN projection rows → nothing ever rasterized)
 		using BuildIsp_t = void (*)(void*, std::uintptr_t, void*);                                     // 0x2812be0  build ImageSpace param block(buf, cam, accum)
 		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer)
 		using GetPortalEntry_t = std::uintptr_t (*)();                                                 // 0xd878f0   Main::GetCameraPortalGraphEntry()
@@ -172,7 +172,10 @@ namespace TrueScopes::ScopeRender
 			const auto saved750 = *mode750;
 			*mode738 = 1;
 			*mode750 = 2;
-			Fn<SetCameraFOV_t>(0x2804a90)(cam, a_fovDeg, 1.0f, 1.0f);
+			Fn<SetCameraFOV_t>(0x2804a90)(
+				cam, a_fovDeg,
+				static_cast<float>(*Settings::scopeNearClip),
+				static_cast<float>(*Settings::scopeFarClip));
 			*mode738 = saved738;
 			*mode750 = saved750;
 

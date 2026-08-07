@@ -10,12 +10,18 @@ fillEnabled = true
 fillEveryNFrames = 1
 
 # What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
-# 2 = real magnified world render from the scope camera (falls back to 1 on failure).
-lensMode = 3
+# 2 = real magnified world render from the scope camera (falls back to 1 on failure),
+# 3 = diagnostic: raw diffuse G-buffer (0x63) in the lens.
+lensMode = 2
 
 # Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
 # driven by the weapon's zoom data later.
 scopeFovDegrees = 15.0
+
+# Scope camera frustum near/far planes. near must be < far (near==far is a NaN
+# projection and a black lens). 15 = engine default near.
+scopeNearClip = 15.0
+scopeFarClip = 250000.0
 
 # Scope camera position in weapon-local space — push it to the objective (front) end
 # of the scope tube. Y = forward along the barrel. This file reloads on every scope-in,

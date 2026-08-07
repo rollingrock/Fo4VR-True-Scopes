@@ -62,6 +62,11 @@ namespace Settings
 	// Scope render field of view in degrees (phase 2a fixed value; weapon zoomData wiring
 	// comes later).
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 15.0);
+	// Frustum near/far planes for the scope camera (SetCameraFOV params 3/4). near==far
+	// produces a NaN projection and an eternally black render — the v0.2.x black-lens
+	// root cause. 15 = the engine's default near; far generous for scoped sightlines.
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeNearClip, 15.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFarClip, 250000.0);
 	// Camera position in weapon-local space (applied to PrimaryWeaponScopeCamera's local
 	// translate each render). Push the camera to the objective (front) end of the scope
 	// tube so the render looks out of the glass, not at the tube interior. Y = forward
@@ -99,6 +104,8 @@ namespace Settings
 		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
+		LOAD(scopeNearClip);
+		LOAD(scopeFarClip);
 		LOAD(scopeCamOffsetX);
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
