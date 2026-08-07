@@ -21,7 +21,10 @@
 //     Engine G-buffer binds: slots 0-4 mode 0, slot 5 (0x23) mode 3, byte-verified.
 //   * Accumulation = ONE BSShaderUtil::AccumulateScene(cam, ssn, cull, 1) — for an
 //     SSN it adds every attached child. No portal lists, no manual subtrees. Lights
-//     run BEFORE accumulation (engine order in both templates).
+//     run once per frame by the engine; we do NOT re-run ProcessQueuedLights.
+//   * BSShaderUtil::SetCameraFOV params 3/4 are the frustum NEAR/FAR planes. We
+//     passed 1,1 from v0.2.0 to v0.2.19: near==far -> NaN projection depth rows ->
+//     no geometry ever rasterized. THE root cause of the black/phantom lens era.
 //   * The resolve draws the G-buffer groups itself, then composites into out target
 //     (param_5) via the shader-6 quad. Its internal 0x61->0x62 copy is refraction-only;
 //     the per-frame lens delivery in vanilla is FUN_1427b08c0(0x61, 0x62, 0) from
@@ -39,26 +42,17 @@ namespace TrueScopes::ScopeRender
 		using CullDtor_t = void (*)(void*);                                                            // 0x1d4d960  BSCullingProcess::dtor (Ghidra-mislabeled as ctor)
 		using CullSetAccum_t = void (*)(void*, void*);                                                 // 0x1d4d9c0  BSCullingProcess::SetAccumulator
 		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, NEAR, FAR) — params 3/4 are the frustum near/far planes (live-proven: passing 1,1 gave near==far → NaN projection rows → nothing ever rasterized)
-		using BuildIsp_t = void (*)(void*, std::uintptr_t, void*);                                     // 0x2812be0  build ImageSpace param block(buf, cam, accum)
-		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer)
-		using GetPortalEntry_t = std::uintptr_t (*)();                                                 // 0xd878f0   Main::GetCameraPortalGraphEntry()
-		using AccumSceneArray_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);      // 0x27ff5d0  BSShaderUtil::AccumulateSceneArray(cam, &array, cull, 0)
-		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 0)
-		using ProcessLights_t = void (*)(std::uintptr_t, void*);                                       // 0x27eab40  ShadowSceneNode::ProcessQueuedLights(ssn, cull)
-		using DrawAccum_t = void (*)(std::uintptr_t, void*, void*, std::uint8_t);                      // 0x27ff820  draw accumulated groups(cam, accum, isp, 0); finishes+clears passes
-		using DeferredResolve_t = void (*)(std::uintptr_t, void*, void*, std::uintptr_t,              // 0x27ff8b0  deferred G-buffer draw + lighting resolve
-			std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);                              //            (cam, accum, cull, ssn, outTargetIdx, 1, 0, 1) — flat-screen light-pass pattern
+		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer); also used for 0x1d94990 ResetState
+		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 1)
+		using DeferredResolve_t = void (*)(std::uintptr_t, void*, void*, std::uintptr_t,              // 0x27ff8b0  full deferred render: G-buffer group draws + lighting + composite
+			std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);                              //            (cam, accum, cull, ssn, outTargetIdx=0x61, dsIdx=0xC, 0, 1)
 		using FinishAccum_t = void (*)(void*);                                                        // 0x281e750  thunk_FUN_14281ec00: finish + clear pass lists
-		using CommitTargetsAlt_t = void (*)(std::uintptr_t);                                          // 0x1db9f80  commit variant used by the MRT light pass
-		using VanillaLensCopy_t = void (*)(std::uint32_t, std::uint32_t, std::uint8_t);               // 0x27b08c0  vanilla scope copy chain (0x61, 0x62, 0) — effect 0xf
-		using AcquireTarget_t = void (*)(std::uintptr_t, std::int32_t);                                // 0x1dbad90 RT / 0x1dbaea0 DS
-		using ReleaseTarget_t = void (*)(std::uintptr_t, std::int32_t);                                // 0x1dbae00 RT / 0x1dbaf10 DS
-		using SetCurRT_t = void (*)(std::uintptr_t, std::uint32_t, std::int32_t, std::uint32_t);       // 0x1db9dd0  SetCurrentRenderTarget(mgr, slot, idx, mode)
-		using SelectDS_t = void (*)(std::uintptr_t, std::int32_t, std::uint32_t, std::uint32_t);       // 0x1db9e40  select depth-stencil(mgr, dsIdx, mode, slice)
-		using CommitTargets_t = void (*)(std::uintptr_t);                                              // 0x1db9fe0
-		using ClearColor_t = void (*)(std::uintptr_t);                                                 // 0x1d8dd80  Renderer::ClearColor(renderer)
+		using CommitTargetsAlt_t = void (*)(std::uintptr_t);                                          // 0x1db9f80  commit target/DS selection
+		using VanillaLensCopy_t = void (*)(std::uint32_t, std::uint32_t, std::uint8_t);               // 0x27b08c0  vanilla lens delivery (0x61, 0x62, 0) — effect 0xf = HDR->display tonemap
+		using SetCurRT_t = void (*)(std::uintptr_t, std::uint32_t, std::int32_t, std::uint32_t);       // 0x1db9dd0  SetCurrentRenderTarget(mgr, slot, logicalIdx, mode); logical->physical via rtm+0x13bc
+		using SelectDS_t = void (*)(std::uintptr_t, std::int32_t, std::uint32_t, std::uint32_t);       // 0x1db9e40  select depth-stencil(mgr, dsIdx, mode, slice); logical->physical via rtm+0x15fc
 		using Flush_t = void (*)(std::uintptr_t);                                                      // 0x1d8dc70  Renderer::Flush(renderer)
-		using IsmCopy_t = void (*)(std::uint32_t, std::uint32_t);                                      // 0x27b0880  ImageSpaceManager::Copy(src, dst)
+		using IsmCopy_t = void (*)(std::uint32_t, std::uint32_t);                                      // 0x27b0880  ImageSpaceManager::Copy(src, dst) — RAW copy, no tonemap
 
 		template <class T>
 		[[nodiscard]] T Fn(std::uintptr_t a_rva)
@@ -70,9 +64,7 @@ namespace TrueScopes::ScopeRender
 		constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;      // g_player (F4SEVR, live-verified)
 		constexpr std::uintptr_t kRTManager = 0x38ac010;         // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
 		constexpr std::uintptr_t kRendererRVA = 0x6239340;       // BSGraphics::Renderer (live-verified)
-		constexpr std::uintptr_t kCamOffsetInPlayer = 0x720;     // PrimaryWeaponScopeCamera (NiCamera, mono)
-		constexpr std::int32_t kTempRT = 0x18;                   // LocalMap's color target
-		constexpr std::int32_t kTempDS = 4;                      // LocalMap's depth-stencil
+		constexpr std::uintptr_t kCamOffsetInPlayer = 0x720;     // PrimaryWeaponScopeCamera (VR camera type: eye count +0x208, port +0x214, frusta array +0x1a0)
 
 		// --- data resolved at runtime from code anchors ---
 		std::uintptr_t g_ssnArray = 0;    // BSShaderManager SSN slot array (slot 0 = world); anchor: lea in SetShadowSceneNode
@@ -401,32 +393,37 @@ namespace TrueScopes::ScopeRender
 			return false;
 		}
 
-		// Scope-pass bracket: renderer+4 = 1 makes every +4-aware call site inside the
-		// resolve route exactly like the vanilla scoped world render (light buffers
-		// 0x6a/0x6b, DS 0xC). Restored unconditionally — a leaked 1 would redirect the
-		// NEXT frame's world draw.
-		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(REL::Module::get().base() + kRendererRVA + 4);
-		// renderer+2 = the per-pass stereo toggle. Stereo is per-draw
-		// DrawIndexedInstanced(n, 2) gated on (renderer+1 && renderer+2)
-		// (draw dispatchers FUN_141da03d0/FUN_141da0710); instance 1 uses the eye-1
-		// camera block our mono camera never writes — stale right-eye data → the
-		// right-half-only imagery. LocalMapRenderer (the engine's mono-RTT template)
-		// brackets its render with renderer+2 = 0, saved and restored — do the same.
-		// renderer+1 stays untouched. [Adversarial review 2026-08-07, Finding 1.]
-		auto* stereoPassFlag = scopePassFlag - 2;
+		// Scope-pass bracket, mirroring Main::Swap's scoped branch exactly (the only
+		// writer of renderer+1 in the binary, FUN_141d94750, is called just there):
+		//   +4 = 1   route RT/DS through the scope set (0x61/0x62/0x6a/0x6b/0xC)
+		//   +1 = 0   STEREO MASTER OFF — every draw becomes mono DrawIndexed and the
+		//            VS stereo constant (b8 float = +1 && +2, uploaded by the state
+		//            flush from ctx+0x1ec0) goes 0, so no per-instance NDC half-shift.
+		//   FUN_141d94c10 rebinds the constant buffers (incl. b8) around both edges.
+		// Do NOT bracket +2 instead: the deferred technique setup (FUN_142918fc0 and
+		// ~30 siblings) unconditionally re-writes +2=1 mid-resolve — that is why the
+		// v0.2.18 +2=0 bracket still composited stereo-instanced with stale view-1
+		// data (the split lens). +1 is never touched by pass setup.
+		const auto renderer = REL::Module::get().base() + kRendererRVA;
+		using RendererFn_t = void (*)(std::uintptr_t);
+		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(renderer + 4);
+		auto* stereoMaster = reinterpret_cast<std::uint8_t*>(renderer + 1);
 		const auto savedFlag = *scopePassFlag;
-		const auto savedStereo = *stereoPassFlag;
+		const auto savedStereo = *stereoMaster;
 		*scopePassFlag = 1;
-		*stereoPassFlag = 0;
+		*stereoMaster = 0;
+		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind CBs (stereo b8 included)
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		*scopePassFlag = savedFlag;
-		*stereoPassFlag = savedStereo;
+		*stereoMaster = savedStereo;
+		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind for the rest of the frame
+		Fn<RendererFn_t>(0x1d95240)(renderer);  // clear prev-cam cache (vanilla does)
 
 		if (!ok) {
 			g_available = false;
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
-				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
+				"clear prev-cam cache"sv, "bind MRT+depth"sv, "(retired)"sv,
 				"AccumulateScene"sv, "capture pass counts"sv, "clear decal groups"sv,
 				"flush"sv, "deferred resolve"sv, "unbind+finish accum"sv, "vanilla lens copy"sv,
 				"cull dtor"sv, "done"sv
