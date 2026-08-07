@@ -93,6 +93,9 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_passCounts[kPassGroupCount] = {};
 		std::uint32_t g_passTotal = 0;
 
+		// The camera's port rect as found before we overwrite it (diagnostics).
+		float g_foundPort[4] = {};
+
 		void CapturePassCounts(std::uintptr_t a_accum) noexcept
 		{
 			g_passTotal = 0;
@@ -167,6 +170,17 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCameraFOV_t>(0x2804a90)(cam, a_fovDeg, 1.0f, 1.0f);
 			*mode738 = saved738;
 			*mode750 = saved750;
+
+			// Full-frame port. The camera's NiRect (NiCamera+0x184: left, right, top,
+			// bottom) drives every viewport computed from the camera-data block
+			// (FUN_141d8d480 scales rect[0..3] by the bound target's dimensions) — a
+			// stereo eye rect here renders into half the target: the left-half-black lens.
+			auto* port = reinterpret_cast<float*>(cam + 0x184);
+			std::memcpy(g_foundPort, port, sizeof(g_foundPort));
+			port[0] = 0.0f;  // left
+			port[1] = 1.0f;  // right
+			port[2] = 1.0f;  // top
+			port[3] = 0.0f;  // bottom
 
 			// Accumulator: DEFERRED renderMode 0x19 (0 = forward buckets, which the
 			// resolve never draws — the v0.2.x black-lens root cause), the deferred
@@ -424,8 +438,8 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: accumulated passes total={} [{}]"),
-				renders, g_passTotal, groups);
+				FMT_STRING("ScopeRender #{}: accumulated passes total={} [{}] foundPort=({}, {}, {}, {})"),
+				renders, g_passTotal, groups, g_foundPort[0], g_foundPort[1], g_foundPort[2], g_foundPort[3]);
 		}
 		return true;
 	}
