@@ -511,6 +511,27 @@ namespace TrueScopes::ScopeRender
 				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
 				WriteInverseProj(g_gfxState, cam);
 			}
+
+			// CRITICAL (v0.2.35): the resolve builds its render context at entry and
+			// captures the CURRENT slot-0 RT into ctx+0x54 — the source of the
+			// screen-size/UV constants for every pass it draws (lights, composite).
+			// Vanilla calls the resolve with the G-BUFFER bound (the world render
+			// precedes it) — and so did our v0.2.25 flow, whose composite worked.
+			// The v0.2.26+ sun block left the accum MRT (0x6a) bound at resolve
+			// entry, poisoning those constants: the composite sampled out of
+			// footprint (flat output = the accum clear color) and screen-space
+			// terms (spec) got garbage UV scaling. Rebind the G-buffer (no clear)
+			// before the call to restore the vanilla invariant.
+			if (g_diagSunPass == 1) {
+				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x66, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x67, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x68, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 3);
+				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+			}
 			g_inOwnResolve.store(g_diagSunPass == 1);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
