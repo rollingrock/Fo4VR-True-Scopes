@@ -78,6 +78,8 @@ namespace TrueScopes::ScopeRender
 		std::uintptr_t g_ssnArray = 0;    // BSShaderManager SSN slot array (slot 0 = world); anchor: lea in SetShadowSceneNode
 		std::uintptr_t g_fovMode738 = 0;  // byte: force symmetric-FOV frusta in SetCameraFOV (vanilla scope pass forces 1)
 		std::uintptr_t g_fovMode750 = 0;  // dword: which view gets symmetric FOV; 2 = all (vanilla scope pass forces 2)
+		std::uintptr_t g_ctxPtrA = 0;     // &deferred-context ptr (DAT_146235ac8); anchor in FUN_141db9f80
+		std::uintptr_t g_ctxPtrB = 0;     // &immediate-context ptr (DAT_146235ac0); anchor in FUN_141db9f80
 
 		void* g_accum = nullptr;
 		bool g_available = false;
@@ -93,8 +95,11 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_passCounts[kPassGroupCount] = {};
 		std::uint32_t g_passTotal = 0;
 
-		// The camera's port rect as found before we overwrite it (diagnostics).
-		float g_foundPort[4] = {};
+		// Live camera / viewport diagnostics captured after the resolve.
+		std::int32_t g_diagEyeCount = 0;
+		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
+		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
+		std::int32_t g_diagViewport[6] = {};  // computed viewport ints @ ctx+0x1ee0+0x90
 
 		void CapturePassCounts(std::uintptr_t a_accum) noexcept
 		{
@@ -171,16 +176,10 @@ namespace TrueScopes::ScopeRender
 			*mode738 = saved738;
 			*mode750 = saved750;
 
-			// Full-frame port. The camera's NiRect (NiCamera+0x184: left, right, top,
-			// bottom) drives every viewport computed from the camera-data block
-			// (FUN_141d8d480 scales rect[0..3] by the bound target's dimensions) — a
-			// stereo eye rect here renders into half the target: the left-half-black lens.
-			auto* port = reinterpret_cast<float*>(cam + 0x184);
-			std::memcpy(g_foundPort, port, sizeof(g_foundPort));
-			port[0] = 0.0f;  // left
-			port[1] = 1.0f;  // right
-			port[2] = 1.0f;  // top
-			port[3] = 0.0f;  // bottom
+			// NOTE: this VR camera type is NOT flatrim NiCamera. SetCameraFOV's own code
+			// shows: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
+			// (which it forces to full-frame {0,1,1,0} itself — do not touch +0x184,
+			// that is per-eye frustum data on this type).
 
 			// Accumulator: DEFERRED renderMode 0x19 (0 = forward buckets, which the
 			// resolve never draws — the v0.2.x black-lens root cause), the deferred
@@ -269,6 +268,24 @@ namespace TrueScopes::ScopeRender
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			Fn<FinishAccum_t>(0x281e750)(g_accum);
 
+			// Capture what the resolve actually rendered with: camera eye count/port,
+			// the camera-data rect that feeds viewport computation, and the last
+			// computed viewport ints in the context block.
+			g_diagEyeCount = *reinterpret_cast<const std::int32_t*>(cam + 0x208);
+			std::memcpy(g_diagPort, reinterpret_cast<const void*>(cam + 0x214), sizeof(g_diagPort));
+			if (g_ctxPtrA || g_ctxPtrB) {
+				auto ctx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+				if (!ctx && g_ctxPtrB) {
+					ctx = *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB);
+				}
+				if (ctx) {
+					if (const auto camData = *reinterpret_cast<const std::uintptr_t*>(ctx + 0x25d0)) {
+						std::memcpy(g_diagRect, reinterpret_cast<const void*>(camData), sizeof(g_diagRect));
+					}
+					std::memcpy(g_diagViewport, reinterpret_cast<const void*>(ctx + 0x1ee0 + 0x90), sizeof(g_diagViewport));
+				}
+			}
+
 			// Vanilla lens delivery — FUN_14284e370's per-frame copy (0x61 -> 0x62).
 			// The resolve's own 0x61->0x62 combine is refraction-only; this is the real one.
 			RENDER_STEP(14);
@@ -337,10 +354,15 @@ namespace TrueScopes::ScopeRender
 		g_fovMode738 = RipResolve(0x2804bb0, { 0x44, 0x38, 0x35 }, 3, 7, "fov-mode byte"sv);
 		// SetCameraFOV @ +0x142804bb9: mov eax, dword ptr [rip+disp]  (8B 05 disp)
 		g_fovMode750 = RipResolve(0x2804bb9, { 0x8B, 0x05 }, 2, 6, "fov-mode view index"sv);
+		// FUN_141db9f80 @ +0x141db9f84: mov rax, [rip+disp] → &ctxA (DAT_146235ac8)
+		g_ctxPtrA = RipResolve(0x1db9f84, { 0x48, 0x8B, 0x05 }, 3, 7, "context ptr A"sv);
+		// FUN_141db9f80 @ +0x141db9f99: mov rdx, [rip+disp] → &ctxB (DAT_146235ac0)
+		g_ctxPtrB = RipResolve(0x1db9f99, { 0x48, 0x8B, 0x15 }, 3, 7, "context ptr B"sv);
 
 		if (!g_ssnArray || !g_fovMode738 || !g_fovMode750) {
 			return false;
 		}
+		// Context anchors are diagnostics-only; a mismatch just disables the capture.
 
 		// Persistent accumulator. Plain aligned alloc is fine: we hold a permanent ref
 		// so the engine's MemoryManager-based DeleteThis can never run on it.
@@ -438,8 +460,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: accumulated passes total={} [{}] foundPort=({}, {}, {}, {})"),
-				renders, g_passTotal, groups, g_foundPort[0], g_foundPort[1], g_foundPort[2], g_foundPort[3]);
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				renders, g_passTotal, groups, g_diagEyeCount,
+				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
+				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
+				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
 		}
 		return true;
 	}
