@@ -26,6 +26,11 @@ namespace TrueScopes::ScopeRender
 		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 0)
 		using ProcessLights_t = void (*)(std::uintptr_t, void*);                                       // 0x27eab40  ShadowSceneNode::ProcessQueuedLights(ssn, cull)
 		using DrawAccum_t = void (*)(std::uintptr_t, void*, void*, std::uint8_t);                      // 0x27ff820  draw accumulated groups(cam, accum, isp, 0); finishes+clears passes
+		using DeferredResolve_t = void (*)(std::uintptr_t, void*, void*, std::uintptr_t,              // 0x27ff8b0  deferred G-buffer draw + lighting resolve
+			std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);                              //            (cam, accum, cull, ssn, outTargetIdx, 1, 0, 1) — flat-screen light-pass pattern
+		using FinishAccum_t = void (*)(void*);                                                        // 0x281e750  thunk_FUN_14281ec00: finish + clear pass lists
+		using CommitTargetsAlt_t = void (*)(std::uintptr_t);                                          // 0x1db9f80  commit variant used by the MRT light pass
+		using VanillaLensCopy_t = void (*)(std::uint32_t, std::uint32_t, std::uint8_t);               // 0x27b08c0  vanilla scope copy chain (0x61, 0x62, 0) — effect 0xf
 		using AcquireTarget_t = void (*)(std::uintptr_t, std::int32_t);                                // 0x1dbad90 RT / 0x1dbaea0 DS
 		using ReleaseTarget_t = void (*)(std::uintptr_t, std::int32_t);                                // 0x1dbae00 RT / 0x1dbaf10 DS
 		using SetCurRT_t = void (*)(std::uintptr_t, std::uint32_t, std::int32_t, std::uint32_t);       // 0x1db9dd0  SetCurrentRenderTarget(mgr, slot, idx, mode)
@@ -116,6 +121,9 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(2);
 			const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
 			const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray);
+			if (!ssn0) {
+				return;
+			}
 			*reinterpret_cast<std::uint32_t*>(accum + 0xf688) = 0;
 			*reinterpret_cast<std::uintptr_t*>(accum + 0xf680) = ssn0;  // BSShaderAccumulator::shadowSceneNode
 			const auto* eyePos = reinterpret_cast<const float*>(cam + 0xa0);  // NiAVObject::world.translate
@@ -130,65 +138,64 @@ namespace TrueScopes::ScopeRender
 			Fn<CullSetAccum_t>(0x1d4d9c0)(cullBuf, g_accum);
 
 			RENDER_STEP(5);
-			alignas(16) std::uint8_t ispBuf[0x2d0];
-			Fn<BuildIsp_t>(0x2812be0)(ispBuf, cam, g_accum);
-
-			RENDER_STEP(6);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
-			// Accumulate the world: portal graph (what the main draw uses), the world
-			// ShadowSceneNode's object subtrees, then queued lights.
+			// Deferred light pass, exact flat-screen pattern (FUN_140c87320): bind main
+			// depth (DS 1) + G-buffer MRT set, lights BEFORE accumulation, forward the
+			// resolve into RT 0x61 (free while the vanilla redirect is disarmed).
+			RENDER_STEP(6);
+			Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
+			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+
 			RENDER_STEP(7);
+			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
+
+			// Accumulate the world: portal graph (what the main draw uses) + the world
+			// ShadowSceneNode's object subtrees.
 			// Engine call site (LocalMapRenderer::Render, byte-decoded):
 			//   entry -> [entry+0x10] -> +0x58 = the accumulate array
+			RENDER_STEP(8);
 			if (const auto entry = Fn<GetPortalEntry_t>(0xd878f0)()) {
 				if (const auto list = *reinterpret_cast<std::uintptr_t*>(entry + 0x10)) {
 					Fn<AccumSceneArray_t>(0x27ff5d0)(cam, list + 0x58, cullBuf, 0);
 				}
 			}
 			if (ssn0) {
-				RENDER_STEP(8);
+				RENDER_STEP(9);
 				if (const auto sub = *reinterpret_cast<std::uintptr_t*>(ssn0 + 0x168)) {
 					if (const auto nodeA = *reinterpret_cast<std::uintptr_t*>(sub + 0x48)) {
 						Fn<AccumScene_t>(0x27ff370)(cam, nodeA, cullBuf, 0);
 					}
-					RENDER_STEP(9);
+					RENDER_STEP(10);
 					if (const auto nodeB = *reinterpret_cast<std::uintptr_t*>(sub + 0x40)) {
 						Fn<AccumScene_t>(0x27ff370)(cam, nodeB, cullBuf, 0);
 					}
 				}
-				RENDER_STEP(10);
-				Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 			}
 
-			// Temp targets (LocalMap's), bind, clear, draw, deliver, release.
 			RENDER_STEP(11);
-			Fn<AcquireTarget_t>(0x1dbad90)(rtm, kTempRT);
-			Fn<AcquireTarget_t>(0x1dbaea0)(rtm, kTempDS);
-			RENDER_STEP(12);
-			Fn<SelectDS_t>(0x1db9e40)(rtm, kTempDS, 5, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, kTempRT, 0);
-			for (std::uint32_t slot = 1; slot < 6; ++slot) {
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, slot, -1, 3);
-			}
-			Fn<CommitTargets_t>(0x1db9fe0)(rtm);
-			RENDER_STEP(13);
-			Fn<ClearColor_t>(0x1d8dd80)(renderer);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
+			// Deferred G-buffer draw + lighting resolve into 0x61.
+			RENDER_STEP(12);
+			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 1, 0, 1);
+
+			RENDER_STEP(13);
+			Fn<FinishAccum_t>(0x281e750)(g_accum);
+
+			// Vanilla lens delivery: the exact Main::Swap call (0x61 -> 0x62, effect 0xf).
 			RENDER_STEP(14);
-			Fn<DrawAccum_t>(0x27ff820)(cam, g_accum, ispBuf, 0);
+			Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 
 			RENDER_STEP(15);
-			Fn<IsmCopy_t>(0x27b0880)(kTempRT, Addr::kRT_ScopeLens);
-
-			RENDER_STEP(16);
-			Fn<ReleaseTarget_t>(0x1dbae00)(rtm, kTempRT);
-			Fn<ReleaseTarget_t>(0x1dbaf10)(rtm, kTempDS);
-
-			RENDER_STEP(17);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
-			RENDER_STEP(18);
+			RENDER_STEP(16);
 		}
 
 		// SEH wrapper — POD frame only.
@@ -243,15 +250,15 @@ namespace TrueScopes::ScopeRender
 			g_available = false;
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
-				"build isp block"sv, "clear prev-cam cache"sv, "portal-graph accumulate"sv,
-				"SSN subtree A accumulate"sv, "SSN subtree B accumulate"sv, "ProcessQueuedLights"sv,
-				"acquire targets"sv, "bind targets"sv, "clear+flush"sv, "draw"sv, "copy to lens"sv,
-				"release targets"sv, "cull dtor"sv, "done"sv
+				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
+				"portal-graph accumulate"sv, "SSN subtree A accumulate"sv, "SSN subtree B accumulate"sv,
+				"flush"sv, "deferred resolve"sv, "finish accum"sv, "vanilla lens copy"sv,
+				"cull dtor"sv, "done"sv
 			};
 			const auto step = g_lastStep;
 			logger::critical(
 				FMT_STRING("ScopeRender FAULTED at step {} ({}) — disabled for this session, falling back to copy fill"),
-				step, step >= 0 && step < 19 ? kSteps[step] : "?"sv);
+				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv);
 			return false;
 		}
 		return true;
