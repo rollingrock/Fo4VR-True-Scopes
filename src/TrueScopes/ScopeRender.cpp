@@ -185,6 +185,22 @@ namespace TrueScopes::ScopeRender
 			const auto* proj = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
 			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(proj)));
 			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(staging + 0x1d0), inv);
+
+			// THE EYE-1 STALENESS (root cause, live session pt.2): BSDFLightShader::
+			// SetupGeometry builds the Dir-light constants from the staging block's
+			// EYE-1 slots (+0x260/+0x2a0 — second 0x210-stride view block) and the
+			// ctx eye-1 position (+0x25a0). The camera commit only fills as many eye
+			// slots as cam+0x208 — our mono camera fills eye 0 ONLY, so eye 1 kept
+			// the MAIN view's right-eye matrices: wrong view-space sun direction,
+			// garbage spec. (Same stereo-view-block disease Addendum 2 found for the
+			// composite CB.) Mirror eye 0 -> eye 1 after the commit; the resolve's
+			// internal re-commit also only writes eye 0, so the mirror survives.
+			std::memcpy(
+				reinterpret_cast<void*>(staging + 0x230),
+				reinterpret_cast<const void*>(staging + 0x20),
+				0x210);
+			std::memcpy(reinterpret_cast<void*>(ctx + 0x25a0), reinterpret_cast<const void*>(ctx + 0x2590), 12);
+			std::memcpy(reinterpret_cast<void*>(ctx + 0x25c0), reinterpret_cast<const void*>(ctx + 0x25b0), 12);
 		}
 
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
