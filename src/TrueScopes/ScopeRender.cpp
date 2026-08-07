@@ -463,12 +463,28 @@ namespace TrueScopes::ScopeRender
 			// 0xf) — it is the HDR->display tonemap, not a plain copy. The composite
 			// writes linear HDR into 0x61; delivering with the raw ImageSpaceManager::
 			// Copy (v0.2.15-20) showed un-tonemapped values: the faint/dark lens.
-			// lensMode 3 = diagnostic: raw diffuse G-buffer (0x63) via plain copy.
+			// Diagnostics (raw copies, no tonemap): 3 = diffuse G-buffer 0x63,
+			// 4 = light accum diffuse 0x6a, 5 = light accum specular 0x6b,
+			// 6 = G-buffer normals 0x64. 4/5 bisect the sun-overbright pipeline: if
+			// the accum itself is blown flat, the sun PASS writes garbage; if the
+			// accum looks sane, the COMPOSITE consumption is at fault.
 			RENDER_STEP(15);
-			if (*Settings::lensMode == 3) {
+			switch (*Settings::lensMode) {
+			case 3:
 				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
-			} else {
+				break;
+			case 4:
+				Fn<IsmCopy_t>(0x27b0880)(0x6a, Addr::kRT_ScopeLens);
+				break;
+			case 5:
+				Fn<IsmCopy_t>(0x27b0880)(0x6b, Addr::kRT_ScopeLens);
+				break;
+			case 6:
+				Fn<IsmCopy_t>(0x27b0880)(0x64, Addr::kRT_ScopeLens);
+				break;
+			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
+				break;
 			}
 
 			RENDER_STEP(16);

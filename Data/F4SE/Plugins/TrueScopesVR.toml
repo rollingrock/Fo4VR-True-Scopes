@@ -10,8 +10,11 @@ fillEnabled = true
 fillEveryNFrames = 1
 
 # What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
-# 2 = real magnified world render from the scope camera (falls back to 1 on failure),
-# 3 = diagnostic: raw diffuse G-buffer (0x63) in the lens.
+# 2 = real magnified world render from the scope camera (falls back to 1 on failure).
+# Diagnostics (raw, untonemapped): 3 = diffuse G-buffer, 4 = light accum diffuse,
+# 5 = light accum specular, 6 = G-buffer normals. 4 vs 2 bisects the sun overbright:
+# if 4 is also blown flat, the sun pass writes garbage; if 4 looks sane, the
+# composite consumption is at fault.
 lensMode = 2
 
 # Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
