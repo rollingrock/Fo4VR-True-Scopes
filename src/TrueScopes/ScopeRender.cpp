@@ -153,11 +153,10 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			RENDER_STEP(7);
-			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
-
 			// Accumulate the world: portal graph (what the main draw uses) + the world
-			// ShadowSceneNode's object subtrees.
+			// ShadowSceneNode's object subtrees. Lights AFTER accumulation (LocalMap
+			// order — proven in our context; the flat-screen's lights-first order
+			// faulted here on a virgin accumulator).
 			// Engine call site (LocalMapRenderer::Render, byte-decoded):
 			//   entry -> [entry+0x10] -> +0x58 = the accumulate array
 			RENDER_STEP(8);
@@ -178,6 +177,9 @@ namespace TrueScopes::ScopeRender
 					}
 				}
 			}
+
+			RENDER_STEP(7);
+			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
