@@ -254,14 +254,42 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(16);
 		}
 
-		// SEH wrapper — POD frame only. Captures code + faulting address for the log.
+		// SEH wrapper — POD frame only. Captures code, faulting address, register
+		// context, and probable return addresses (in-module qwords near RSP) so a fault
+		// inside an engine call names the object being drawn and the internal call path.
 		std::uint32_t g_lastExcCode = 0;
 		std::uintptr_t g_lastExcAddr = 0;
+		std::uintptr_t g_lastRegs[16] = {};   // rax rbx rcx rdx rsi rdi rbp rsp r8..r15
+		std::uintptr_t g_lastStack[8] = {};   // in-module qwords scanned from RSP
+		std::uint32_t g_lastStackCount = 0;
 
 		int RenderFilter(EXCEPTION_POINTERS* a_ep) noexcept
 		{
 			g_lastExcCode = a_ep->ExceptionRecord->ExceptionCode;
 			g_lastExcAddr = reinterpret_cast<std::uintptr_t>(a_ep->ExceptionRecord->ExceptionAddress);
+			if (const auto* c = a_ep->ContextRecord) {
+				const std::uintptr_t regs[16] = {
+					c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->Rbp, c->Rsp,
+					c->R8, c->R9, c->R10, c->R11, c->R12, c->R13, c->R14, c->R15
+				};
+				std::memcpy(g_lastRegs, regs, sizeof(regs));
+				// Probable return addresses: module-range qwords in the top of the stack.
+				const auto base = REL::Module::get().base();
+				const auto end = base + 0x3000000;  // generous .text upper bound
+				g_lastStackCount = 0;
+				const auto* sp = reinterpret_cast<const std::uintptr_t*>(c->Rsp);
+				for (std::uint32_t i = 0; i < 0x100 && g_lastStackCount < 8; ++i) {
+					std::uintptr_t v = 0;
+					__try {
+						v = sp[i];
+					} __except (EXCEPTION_EXECUTE_HANDLER) {
+						break;
+					}
+					if (v >= base && v < end) {
+						g_lastStack[g_lastStackCount++] = v - base;
+					}
+				}
+			}
 			return EXCEPTION_EXECUTE_HANDLER;
 		}
 
@@ -318,10 +346,18 @@ namespace TrueScopes::ScopeRender
 		// 0x6a/0x6b, DS 0xC). Restored unconditionally — a leaked 1 would redirect the
 		// NEXT frame's world draw.
 		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(REL::Module::get().base() + kRendererRVA + 4);
+		// renderer+2: every engine render path brackets its drawing with this byte set
+		// (FUN_141d94760 writes renderer+2; FUN_140c875f0 / FUN_14284e370 do it). It is
+		// already 1 in VR at all times per the load-time flag log, so this is belt and
+		// suspenders.
+		auto* renderActiveFlag = scopePassFlag - 2;
 		const auto savedFlag = *scopePassFlag;
+		const auto savedActive = *renderActiveFlag;
 		*scopePassFlag = 1;
+		*renderActiveFlag = 1;
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		*scopePassFlag = savedFlag;
+		*renderActiveFlag = savedActive;
 
 		if (!ok) {
 			g_available = false;
@@ -338,6 +374,19 @@ namespace TrueScopes::ScopeRender
 			logger::critical(
 				FMT_STRING("ScopeRender FAULTED at step {} ({}), code {:08X} at {:016X} (rva {:X}) — disabled for this session, falling back to copy fill"),
 				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
+			logger::critical(
+				FMT_STRING("  regs: rax={:016X} rbx={:016X} rcx={:016X} rdx={:016X} rsi={:016X} rdi={:016X} rbp={:016X} rsp={:016X}"),
+				g_lastRegs[0], g_lastRegs[1], g_lastRegs[2], g_lastRegs[3], g_lastRegs[4], g_lastRegs[5], g_lastRegs[6], g_lastRegs[7]);
+			logger::critical(
+				FMT_STRING("  regs: r8={:016X} r9={:016X} r10={:016X} r11={:016X} r12={:016X} r13={:016X} r14={:016X} r15={:016X}"),
+				g_lastRegs[8], g_lastRegs[9], g_lastRegs[10], g_lastRegs[11], g_lastRegs[12], g_lastRegs[13], g_lastRegs[14], g_lastRegs[15]);
+			{
+				std::string frames;
+				for (std::uint32_t i = 0; i < g_lastStackCount; ++i) {
+					fmt::format_to(std::back_inserter(frames), FMT_STRING("{}{:X}"), i ? " " : "", g_lastStack[i]);
+				}
+				logger::critical(FMT_STRING("  stack rvas: [{}]"), frames);
+			}
 			return false;
 		}
 
