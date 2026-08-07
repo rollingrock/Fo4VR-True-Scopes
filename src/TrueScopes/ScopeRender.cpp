@@ -200,10 +200,14 @@ namespace TrueScopes::ScopeRender
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf690), eyePos, 12);
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf6a0), eyePos, 12);
 
-			// Stack culling process bound to our accumulator.
+			// Stack culling process bound to our accumulator, with OUR camera at +0x18 —
+			// UpdateLightList dereferences it (the v0.2.8 fault was this being null, not
+			// a camera-type problem; the engine's own world path sets cull+0x18 = camera,
+			// FUN_14284e370).
 			RENDER_STEP(3);
 			alignas(16) std::uint8_t cullBuf[0x1a0];
 			Fn<CullCtor_t>(0x1d4d8e0)(cullBuf, 0);
+			*reinterpret_cast<std::uintptr_t*>(cullBuf + 0x18) = cam;
 			RENDER_STEP(4);
 			Fn<CullSetAccum_t>(0x1d4d9c0)(cullBuf, g_accum);
 
@@ -237,13 +241,18 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 0);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			// ONE AccumulateScene over the world SSN. NO ProcessQueuedLights: the main
-			// world pass already ran it this frame (the SSN light lists our resolve
-			// reads are fresh), it needs a fully-populated VR camera at cull+0x18
-			// (UpdateLightList 0x1427ee2f0 dereferences it at +0x53 — the v0.2.8/9
-			// step-7 C0000005), and re-running it against our camera would mutate the
-			// shared SSN light lists the next main frame depends on. Vanilla scoped
-			// mode also runs the per-frame light update exactly once.
+			// Re-fit the lights for OUR camera. The main frame's light update fitted
+			// every light's screen proxy volume to the MAIN camera; drawn through the
+			// zoomed scope projection those volumes cover only part of the screen —
+			// the camera-independent rounded cutoff + ambient-only darkness of
+			// v0.2.22-24 (sunSlot=255 pre-resolve confirmed the sun's shadow slot was
+			// released too). With cull+0x18 = our camera this is safe (the v0.2.8
+			// fault was the null camera), and the next main frame re-fits for its own
+			// camera, so the mutation self-heals.
+			RENDER_STEP(7);
+			using ProcessLights_t = void (*)(std::uintptr_t, void*);
+			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
+
 			RENDER_STEP(8);
 			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
 
@@ -457,7 +466,7 @@ namespace TrueScopes::ScopeRender
 			g_available = false;
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
-				"clear prev-cam cache"sv, "bind MRT+depth"sv, "(retired)"sv,
+				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
 				"AccumulateScene"sv, "capture pass counts"sv, "clear decal groups"sv,
 				"flush"sv, "deferred resolve"sv, "unbind+finish accum"sv, "vanilla lens copy"sv,
 				"cull dtor"sv, "done"sv
