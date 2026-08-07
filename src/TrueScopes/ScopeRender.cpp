@@ -208,18 +208,21 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(5);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
-			// G-buffer target setup, byte-decoded from FUN_140c87320: slots 0-4 mode 0
-			// (clear-on-apply), slot 5 (0x23) mode 3 (preserve). DS 0xC — the scope-pass
-			// depth the +4 remap selects everywhere — mode 0 so depth+stencil start clean.
+			// SCOPE G-buffer setup, decoded from the world path's own +4 remap site
+			// (FUN_142844180): when renderer+4 is set the engine binds the dedicated
+			// scope-sized mono G-buffer 0x63/0x64/0x66/0x67/0x68/0x69 with DS 0xC, all
+			// mode 0 (clear). Binding the stereo double-wide 0x1c..0x23 with the mono
+			// DS 0xC is an RTV/DSV size mismatch D3D11 rejects silently — our geometry
+			// never drew at all in v0.2.8-16; the lens showed main-view G-buffer residue.
 			RENDER_STEP(6);
 			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState
 			Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 0, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x66, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x67, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x68, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 0);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
 			// ONE AccumulateScene over the world SSN. NO ProcessQueuedLights: the main
@@ -401,21 +404,15 @@ namespace TrueScopes::ScopeRender
 		// already 1 in VR at all times per the load-time flag log, so this is belt and
 		// suspenders.
 		auto* renderActiveFlag = scopePassFlag - 2;
-		// renderer+1 = stereo. Our render must run MONO: with +1 set, every draw takes
-		// the stereo shader path with the frame's current (right) eye state, and both
-		// geometry and the deferred composite land in the right half of the target —
-		// the split lens. The vanilla scoped frame is a mono view for the same reason.
-		auto* stereoFlag = scopePassFlag - 3;
+		// (v0.2.16's stereo-off bracket removed: the vanilla scoped frame never touches
+		// renderer+1 — mono-ness comes from the mono camera + the scope-sized targets.)
 		const auto savedFlag = *scopePassFlag;
 		const auto savedActive = *renderActiveFlag;
-		const auto savedStereo = *stereoFlag;
 		*scopePassFlag = 1;
 		*renderActiveFlag = 1;
-		*stereoFlag = 0;
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		*scopePassFlag = savedFlag;
 		*renderActiveFlag = savedActive;
-		*stereoFlag = savedStereo;
 
 		if (!ok) {
 			g_available = false;
