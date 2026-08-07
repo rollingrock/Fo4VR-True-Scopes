@@ -376,9 +376,14 @@ namespace TrueScopes::ScopeRender
 					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
 
 					// Bind the accum MRT (no clear now) with our scene depth, targets
-					// 2..5 unbound like the resolve.
+					// 2..5 unbound like the resolve. The specular target is optional:
+					// the sun pass's spec output is the poisoned buffer (v0.2.28 bisect)
+					// and root-causing its constants needs a live session — with spec
+					// unbound the sun contributes diffuse only and 0x6b stays cleared,
+					// which the composite reads as "no sun specular" (correct-looking
+					// minus highlights).
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x6b, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, *Settings::sunSpecEnabled ? 0x6b : -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);

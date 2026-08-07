@@ -38,9 +38,12 @@ scopeCamOffsetZ = 0.0
 sunEnabled = true
 
 # Scale on the sun's color in the scope render only (1.0 = engine value). Lower it
-# live if the lens looks blown out; if lowering does NOT dim the lens, tell the
-# session log — that means the brightness is not coming through the light color.
+# live if the lens looks blown out.
 sunBrightnessScale = 1.0
+
+# Sun specular into the accum (currently broken constants — off = sun is diffuse
+# only, which looks correct minus highlights; on = re-test after fixes).
+sunSpecEnabled = false
 
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.

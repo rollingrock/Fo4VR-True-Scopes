@@ -82,6 +82,10 @@ namespace Settings
 	// Doubles as a diagnostic: if lowering this does not dim the lens, the overbright
 	// artifact is not coming through the light color path.
 	MAKE_SETTING(fSetting, "TrueScopesVR", sunBrightnessScale, 1.0);
+	// Let the sun pass write the specular accumulation target. Its spec output is
+	// currently garbage (world-pos reconstruction constants — under investigation);
+	// off = sun contributes diffuse only and spec stays cleared. Turn on to re-test.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunSpecEnabled, false);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -119,6 +123,7 @@ namespace Settings
 		LOAD(scopeCamOffsetZ);
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
+		LOAD(sunSpecEnabled);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
