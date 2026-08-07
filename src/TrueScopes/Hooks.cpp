@@ -66,7 +66,7 @@ namespace TrueScopes::Hooks
 					static std::uint32_t frame = 0;
 					if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
 						const bool rendered =
-							*Settings::lensMode == 2 &&
+							*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
 							ScopeRender::Available() &&
 							ScopeRender::Render();
 						if (!rendered && *Settings::lensMode != 0) {

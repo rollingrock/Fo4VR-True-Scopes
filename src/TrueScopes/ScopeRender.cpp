@@ -289,13 +289,13 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 
-			// Lens delivery 0x61 -> 0x62. NOT the vanilla FUN_1427b08c0 (effect 0xf):
-			// vanilla only runs it inside the scoped MONO-VIEW frame, and from our
-			// mid-stereo-frame hook it may be eye-aware (right-half-only write — the
-			// split-lens suspect). ImageSpaceManager::Copy is proven full-coverage from
-			// this exact hook point (the phase-1 double-eye fill).
+			// Lens delivery. lensMode 3 = diagnostic: show the raw diffuse G-buffer
+			// (0x63) instead of the composite (0x61) — trisects the split-lens bug:
+			// full-width geometry -> composite quad at fault; half-width -> projection/
+			// camera level; black -> geometry draws still not landing.
 			RENDER_STEP(14);
-			Fn<IsmCopy_t>(0x27b0880)(0x61, Addr::kRT_ScopeLens);
+			const std::uint32_t lensSrc = *Settings::lensMode == 3 ? 0x63u : 0x61u;
+			Fn<IsmCopy_t>(0x27b0880)(lensSrc, Addr::kRT_ScopeLens);
 
 			RENDER_STEP(15);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
