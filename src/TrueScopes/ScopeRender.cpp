@@ -222,6 +222,17 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
 
+			// Drop the deferred-decal groups from our accumulator. The main view drew
+			// and released this frame's decal passes already; re-accumulating the same
+			// geometry hands back dangling pass objects (v0.2.11 forensics: garbage
+			// vtable call in FUN_14281e500(accum, 0x11, 9, ...) — the decal group draw
+			// at resolve+0x17b6). FUN_14281ecb0 is the engine's own per-group clear.
+			RENDER_STEP(10);
+			using ClearGroup_t = void (*)(std::uintptr_t);
+			for (const std::uint32_t g : { 9u, 0x11u, 0x12u, 0x13u }) {
+				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678);
+			}
+
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
@@ -364,7 +375,7 @@ namespace TrueScopes::ScopeRender
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
 				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
-				"AccumulateScene"sv, "capture pass counts"sv, "(unused)"sv,
+				"AccumulateScene"sv, "capture pass counts"sv, "clear decal groups"sv,
 				"flush"sv, "deferred resolve"sv, "unbind+finish accum"sv, "vanilla lens copy"sv,
 				"cull dtor"sv, "done"sv
 			};
@@ -386,6 +397,16 @@ namespace TrueScopes::ScopeRender
 					fmt::format_to(std::back_inserter(frames), FMT_STRING("{}{:X}"), i ? " " : "", g_lastStack[i]);
 				}
 				logger::critical(FMT_STRING("  stack rvas: [{}]"), frames);
+			}
+			{
+				// Pass counts were captured before the resolve — log them on fault too.
+				std::string groups;
+				for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
+					if (g_passCounts[g] != 0) {
+						fmt::format_to(std::back_inserter(groups), FMT_STRING("{}{:X}:{}"), groups.empty() ? "" : " ", g, g_passCounts[g]);
+					}
+				}
+				logger::critical(FMT_STRING("  accumulated passes total={} [{}]"), g_passTotal, groups);
 			}
 			return false;
 		}
