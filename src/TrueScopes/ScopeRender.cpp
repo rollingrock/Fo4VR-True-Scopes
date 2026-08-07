@@ -92,6 +92,9 @@ namespace TrueScopes::ScopeRender
 		// Live camera / viewport diagnostics captured after the resolve.
 		std::int32_t g_diagLightsA = 0;  // *(short*)(ssn+0x1a8): resolve's shadowed-light loop count
 		std::int32_t g_diagLightsB = 0;  // *(short*)(ssn+0x1c0): resolve's queued-light loop count
+		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot BEFORE resolve
+		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
+		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
 		std::int32_t g_diagEyeCount = 0;
 		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
 		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
@@ -258,6 +261,16 @@ namespace TrueScopes::ScopeRender
 				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678);
 			}
 
+			// Sun diagnostics: shadowed light 0 (accessor FUN_1427ec150) — the resolve
+			// skips any light whose +0x18 shadow-map slot is 0xff.
+			using GetShadowedLight_t = std::uintptr_t (*)(std::uintptr_t, std::uint32_t);
+			if (*reinterpret_cast<const std::int16_t*>(ssn0 + 0x1a8) > 0) {
+				if (const auto sun = Fn<GetShadowedLight_t>(0x27ec150)(ssn0, 0)) {
+					g_diagSunSlotPre = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
+					g_diagSunFlags = *reinterpret_cast<const std::uint64_t*>(sun + 0x108);
+				}
+			}
+
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
@@ -285,6 +298,11 @@ namespace TrueScopes::ScopeRender
 			// computed viewport ints in the context block.
 			g_diagLightsA = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1a8);
 			g_diagLightsB = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1c0);
+			if (g_diagLightsA > 0) {
+				if (const auto sun = Fn<GetShadowedLight_t>(0x27ec150)(ssn0, 0)) {
+					g_diagSunSlotPost = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
+				}
+			}
 			g_diagEyeCount = *reinterpret_cast<const std::int32_t*>(cam + 0x208);
 			std::memcpy(g_diagPort, reinterpret_cast<const void*>(cam + 0x214), sizeof(g_diagPort));
 			if (g_ctxPtrA || g_ctxPtrB) {
@@ -489,8 +507,9 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
-				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB, g_diagEyeCount,
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
+				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
 				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
