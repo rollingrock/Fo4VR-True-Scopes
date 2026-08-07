@@ -151,24 +151,40 @@ namespace TrueScopes::ScopeRender
 		// inverse → garbage world positions → exploded specular. This was flagged as
 		// the "next lever" in the v0.2.8 notes and never fired because diffuse looked
 		// fine. Replicated here 1:1.
-		// v0.2.29 wrote through *(ctx+0x25d0) — but that pointer is only repointed at
-		// state-APPLY time, so it still referenced the MAIN camera's block when we
-		// wrote (a no-op), and our camera's block kept its stale inverse for the
-		// draws. v0.2.30: look the block up the way FUN_141da8c40 itself does —
-		// FUN_141daaf30(state, camera, sel) over the CameraStateData array — and
-		// write both sel variants (the resolve updates cam-data with sel 1 and 0).
-		void WriteInverseView(std::uintptr_t a_state, std::uintptr_t a_cam)
+		// THE v0.2.29/30 POST-MORTEM (settled live, x64dbg session 2026-08-07): the
+		// camera commit FUN_141daa860 (inside the viewport setter 0x1da8bf0) copies
+		// the camera's CameraStateData block into a FIXED STAGING block at
+		// *(ctx+0x25d0) — but the copy spans offsets +0x20..+0x1c8 ONLY. The
+		// inverse-projection slot at +0x1d0 is NEVER copied; the engine's scene
+		// renderers write it into STAGING manually and get away with a stale-source
+		// inverse because they re-commit the same camera every frame. v0.2.29 wrote
+		// staging from a stale source BEFORE the commit; v0.2.30 wrote a perfect
+		// inverse into the camera BLOCK, which the commit never propagates. The
+		// draws (BSDFLight spec world-pos reconstruction, composite) consume
+		// STAGING+0x1d0 — which still held the MAIN view's inverse-projection.
+		// Correct recipe: source = OUR block+0x90 (proj, valid after SetCamData),
+		// destination = *(ctx+0x25d0)+0x1d0, written any time before the draws
+		// (subsequent commits leave +0x1d0 untouched).
+		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
 			using namespace DirectX;
-			for (const std::uint8_t sel : { std::uint8_t{ 1 }, std::uint8_t{ 0 } }) {
-				const auto block = Fn<FindCamBlock_t>(0x1daaf30)(a_state, a_cam, sel);
-				if (!block) {
-					continue;
-				}
-				const auto* view = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
-				const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(view)));
-				XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(block + 0x1d0), inv);
+			const auto block = Fn<FindCamBlock_t>(0x1daaf30)(a_state, a_cam, 1);
+			if (!block) {
+				return;
 			}
+			const auto ctxA = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+			const auto ctxB = g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0;
+			const auto ctx = ctxA ? ctxA : ctxB;
+			if (!ctx) {
+				return;
+			}
+			const auto staging = *reinterpret_cast<std::uintptr_t*>(ctx + 0x25d0);
+			if (!staging) {
+				return;
+			}
+			const auto* proj = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
+			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(proj)));
+			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(staging + 0x1d0), inv);
 		}
 
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
@@ -396,8 +412,8 @@ namespace TrueScopes::ScopeRender
 					// (specular/world-pos reconstruction input; see WriteInverseView).
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					WriteInverseView(g_gfxState, cam);
 					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
+					WriteInverseProj(g_gfxState, cam);  // AFTER the commit (see note above)
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
 					Fn<DepthMode_t>(0x1d8de10)(renderer, 2);
@@ -460,13 +476,13 @@ namespace TrueScopes::ScopeRender
 			// keeps its tail bind consistent with that. g_inOwnResolve arms the two
 			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
 			RENDER_STEP(13);
-			// Ensure the inverse-view at camData+0x1d0 is OURS for the resolve's own
-			// lighting/composite too (the resolve re-runs the camera-data update
-			// internally, which does not touch +0x1d0, so this write survives it).
+			// Ensure the staging inverse-projection is OURS for the resolve's own
+			// lighting/composite too. The resolve re-commits the camera internally,
+			// but the commit never touches staging+0x1d0, so this write survives it.
 			if (g_gfxState) {
 				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-				WriteInverseView(g_gfxState, cam);
+				WriteInverseProj(g_gfxState, cam);
 			}
 			g_inOwnResolve.store(g_diagSunPass == 1);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
