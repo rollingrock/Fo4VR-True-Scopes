@@ -16,4 +16,13 @@ namespace TrueScopes::ScopeRender
 
 	// True once Init succeeded and no fault has tripped the guard.
 	bool Available();
+
+	// True only while our own deferred-resolve call is on the stack. The two
+	// resolve accum-bind call-site hooks (Hooks.cpp) key off this to force
+	// bind mode 3 (no clear) so our pre-drawn sun pass survives into the composite.
+	bool InOwnResolve();
+
+	// Hooks::Install reports whether the two resolve bind sites were hooked; the sun
+	// pre-draw is skipped when they are not (it would just be cleared again).
+	void SetSunBindHooksInstalled(bool a_installed);
 }

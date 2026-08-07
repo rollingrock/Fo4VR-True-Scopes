@@ -56,6 +56,22 @@ namespace TrueScopes::ScopeRender
 		using SetClearColor_t = void (*)(std::uintptr_t, float, float, float, float);                  // 0x1d8dc80  BSGraphics::Renderer::SetClearColor(renderer, r, g, b, a)
 		using ClearColorNow_t = void (*)(std::uintptr_t);                                              // 0x1d8dd80  BSGraphics::Renderer::ClearColor(renderer): immediate CRTV of current slot-0 target
 
+		// --- sun pass (v0.2.26) ---
+		// The sun is a BSDFLightShader "Dir" technique pass (flags 0x202|filter when
+		// shadowed, 0x201 unshadowed — namer FUN_142922370). It is drawn ONCE per frame
+		// into the light accum MRT by the pre-world stage (FUN_142846d60 builds/refreshes
+		// the persistent pass config, job FUN_142849990 executes it), NOT by the resolve —
+		// the resolve's ssn+0x1a8/+0x1c0 loops are point/spot volumes only (cone geometry,
+		// BSShaderUtil::GenerateCone in FUN_14286ffa0). That is why v0.2.25 had working
+		// local lights but no sun: nothing ever drew the sun into OUR 0x6a.
+		using StateSetCamData_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);              // 0x1da8c40  BSGraphics::State: update camera-data block (state, cam, slotSel)
+		using StateSetViewport_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t,             // 0x1da8bf0  BSGraphics::State: viewport from camera port +0x214
+			std::uint8_t, float);                                                                     //            (state, cam, a, b, scale) — resolve calls (state, cam, param_8, 0, 1.0f)
+		using DepthMode_t = void (*)(std::uintptr_t, std::uint32_t);                                  // 0x1d8dd60 / 0x1d8de10: depth/texture mode setters the resolve runs before lighting
+		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
+		using ExecPassConfig_t = void (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
+		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
+
 		template <class T>
 		[[nodiscard]] T Fn(std::uintptr_t a_rva)
 		{
@@ -74,9 +90,13 @@ namespace TrueScopes::ScopeRender
 		std::uintptr_t g_fovMode750 = 0;  // dword: which view gets symmetric FOV; 2 = all (vanilla scope pass forces 2)
 		std::uintptr_t g_ctxPtrA = 0;     // &deferred-context ptr (DAT_146235ac8); anchor in FUN_141db9f80
 		std::uintptr_t g_ctxPtrB = 0;     // &immediate-context ptr (DAT_146235ac0); anchor in FUN_141db9f80
+		std::uintptr_t g_sunConfig = 0;   // persistent sun BSDFLightDir pass config (Ghidra DAT_146886758); anchor: lea in job FUN_142849990
+		std::uintptr_t g_gfxState = 0;    // BSGraphics::State (real RVA 0x65A2AB0 — Ghidra's DAT_146541ef0 label is section-shifted); anchor: first lea in the resolve
 
 		void* g_accum = nullptr;
 		bool g_available = false;
+		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
+		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
 
 		// Fault forensics: which step the render was in when the SEH guard fired.
 		volatile long g_lastStep = 0;
@@ -95,6 +115,9 @@ namespace TrueScopes::ScopeRender
 		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot BEFORE resolve
 		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
 		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
+		std::int32_t g_diagSunPass = -1;      // -1 not attempted, 0 config invalid, 1 executed
+		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
+		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
 		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
 		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
@@ -283,15 +306,91 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
+			// --- SUN (v0.2.26) ---
+			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT. The
+			// engine draws the sun once per frame (pre-world stage) into the MAIN view's
+			// 0x24/0x25; the resolve only draws point/spot volumes, so our 0x6a stayed
+			// sunless (v0.2.25: local lights fine, no directional). Recipe = queued job
+			// FUN_142849990 verbatim: bind accum MRT, camera state, render states
+			// (base ctx+0x1ee0: +0xb0=5, +0xbc=1, +0xc8=5(additive), +0xd0=1), execute
+			// the persistent config, flush, restore +0xb0=0. The resolve's own accum
+			// clear (bind mode 0) is forced to mode 3 by the Hooks::Install call-site
+			// hooks while g_inOwnResolve — without them the sun would be wiped, so we
+			// skip the draw entirely if they are not installed.
+			RENDER_STEP(12);
+			g_diagSunPass = -1;
+			if (g_sunBindHooksInstalled && g_sunConfig && g_gfxState && *Settings::sunEnabled) {
+				const auto cfgClean = *reinterpret_cast<const std::uint8_t*>(g_sunConfig + 0x0) == 0;
+				const auto cfgBuilt = *reinterpret_cast<const std::uintptr_t*>(g_sunConfig + 0x8) != 0;
+				g_diagSunCfgFlags = *reinterpret_cast<const std::uint32_t*>(g_sunConfig + 0x48);
+				if (const auto lights = *reinterpret_cast<std::uintptr_t*>(g_sunConfig + 0x38)) {
+					const auto cfgSun = *reinterpret_cast<const std::uintptr_t*>(lights);
+					g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
+				}
+				if (cfgClean && cfgBuilt) {
+					// Clear + bind the accum MRT (mode 0 = clear-on-apply, engine clear
+					// color 0) with our scene depth, targets 2..5 unbound like the resolve.
+					Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 0.0f);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 0);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x6b, 0);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 3);
+					Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
+					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+
+					// Camera state exactly as the resolve sets it before its light loops.
+					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
+					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
+					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
+					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
+					Fn<Flush_t>(0x1d8dc70)(renderer);
+					Fn<DepthMode_t>(0x1d8de10)(renderer, 2);
+
+					// Render states (dirty-mask at ctx+0x1ee0: |4 = depth-stencil group,
+					// |8 = 0xbc group, |0x10 = blend group — byte-verified in the job).
+					const auto ctxA = g_ctxPtrA ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrA) : 0;
+					const auto ctxB = g_ctxPtrB ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrB) : 0;
+					if (const auto sctx = (ctxA ? ctxA : ctxB) + 0x1ee0; sctx != 0x1ee0) {
+						auto* dirty = reinterpret_cast<std::uint32_t*>(sctx);
+						auto set = [&](std::uintptr_t a_off, std::uint32_t a_val, std::uint32_t a_bit) {
+							auto* f = reinterpret_cast<std::uint32_t*>(sctx + a_off);
+							if (*f != a_val) {
+								*dirty |= a_bit;
+								*f = a_val;
+							}
+						};
+						set(0xb0, 5, 4);   // depth mode 5 (job value for the sun pass)
+						set(0xbc, 1, 8);
+						set(0xc8, 5, 0x10);  // additive blend into the accum buffers
+						set(0xd0, 1, 0x10);
+
+						alignas(16) std::uint8_t sunCtx[0x2d0];
+						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
+						Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
+						Fn<FlushBatch_t>(0x2891300)(sunCtx);
+
+						set(0xb0, 0, 4);  // job's own restore
+						g_diagSunPass = 1;
+					}
+				} else {
+					g_diagSunPass = 0;
+				}
+			}
+
 			// Deferred G-buffer group draw + lighting + composite into 0x61. With
 			// renderer+4 = 1 (set by our caller) the resolve's internal routing matches
 			// the vanilla scoped frame: light buffers 0x6a/0x6b, DS 0xC. param_6 = 0xC
-			// keeps its tail bind consistent with that.
-			RENDER_STEP(12);
+			// keeps its tail bind consistent with that. g_inOwnResolve arms the two
+			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
+			RENDER_STEP(13);
+			g_inOwnResolve.store(g_diagSunPass == 1);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
+			g_inOwnResolve.store(false);
 
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
-			RENDER_STEP(13);
+			RENDER_STEP(14);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
@@ -332,16 +431,16 @@ namespace TrueScopes::ScopeRender
 			// writes linear HDR into 0x61; delivering with the raw ImageSpaceManager::
 			// Copy (v0.2.15-20) showed un-tonemapped values: the faint/dark lens.
 			// lensMode 3 = diagnostic: raw diffuse G-buffer (0x63) via plain copy.
-			RENDER_STEP(14);
+			RENDER_STEP(15);
 			if (*Settings::lensMode == 3) {
 				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
 			} else {
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 			}
 
-			RENDER_STEP(15);
-			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
 			RENDER_STEP(16);
+			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
+			RENDER_STEP(17);
 		}
 
 		// SEH wrapper — POD frame only. Captures code, faulting address, register
@@ -404,13 +503,20 @@ namespace TrueScopes::ScopeRender
 		g_fovMode750 = RipResolve(0x2804bb9, { 0x8B, 0x05 }, 2, 6, "fov-mode view index"sv);
 		// FUN_141db9f80 @ +0x141db9f84: mov rax, [rip+disp] → &ctxA (DAT_146235ac8)
 		g_ctxPtrA = RipResolve(0x1db9f84, { 0x48, 0x8B, 0x05 }, 3, 7, "context ptr A"sv);
-		// FUN_141db9f80 @ +0x141db9f99: mov rdx, [rip+disp] → &ctxB (DAT_146235ac0)
+		// FUN_141db9f99: mov rdx, [rip+disp] → &ctxB (DAT_146235ac0)
 		g_ctxPtrB = RipResolve(0x1db9f99, { 0x48, 0x8B, 0x15 }, 3, 7, "context ptr B"sv);
+		// Sun pass config: job FUN_142849990 @ +0x142849c85: lea rcx, [rip+disp] before
+		// its FUN_142891040(&sunConfig, 0, ctx) call (the third exec in the job).
+		g_sunConfig = RipResolve(0x2849c85, { 0x48, 0x8D, 0x0D }, 3, 7, "sun pass config"sv);
+		// BSGraphics::State: first lea in the resolve @ +0x1427ff926 (FUN_141da8c40 arg).
+		// NOTE: resolves to +0x65A2AB0 in the live process — Ghidra's DAT_146541ef0 label
+		// for this block is section-shifted; the code bytes are ground truth.
+		g_gfxState = RipResolve(0x27ff926, { 0x48, 0x8D, 0x0D }, 3, 7, "graphics state"sv);
 
 		if (!g_ssnArray || !g_fovMode738 || !g_fovMode750) {
 			return false;
 		}
-		// Context anchors are diagnostics-only; a mismatch just disables the capture.
+		// Context/sun anchors are optional; a mismatch just disables that feature.
 
 		// Persistent accumulator. Plain aligned alloc is fine: we hold a permanent ref
 		// so the engine's MemoryManager-based DeleteThis can never run on it.
@@ -423,8 +529,9 @@ namespace TrueScopes::ScopeRender
 		InterlockedIncrement(reinterpret_cast<volatile long*>(reinterpret_cast<std::uintptr_t>(g_accum) + 8));
 
 		logger::info(
-			FMT_STRING("ScopeRender init: ssnArray={:016X} fovModeByte={:016X} fovModeView={:016X} accum={:016X}"),
-			g_ssnArray, g_fovMode738, g_fovMode750, reinterpret_cast<std::uintptr_t>(g_accum));
+			FMT_STRING("ScopeRender init: ssnArray={:016X} fovModeByte={:016X} fovModeView={:016X} accum={:016X} sunConfig={:016X} gfxState={:016X}"),
+			g_ssnArray, g_fovMode738, g_fovMode750, reinterpret_cast<std::uintptr_t>(g_accum),
+			g_sunConfig, g_gfxState);
 
 		g_available = true;
 		return true;
@@ -457,6 +564,7 @@ namespace TrueScopes::ScopeRender
 		*stereoMaster = 0;
 		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind CBs (stereo b8 included)
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
+		g_inOwnResolve.store(false);  // fault path may have skipped the in-function reset
 		*scopePassFlag = savedFlag;
 		*stereoMaster = savedStereo;
 		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind for the rest of the frame
@@ -468,15 +576,15 @@ namespace TrueScopes::ScopeRender
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
 				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
 				"AccumulateScene"sv, "capture pass counts"sv, "clear decal groups"sv,
-				"flush"sv, "deferred resolve"sv, "unbind+finish accum"sv, "vanilla lens copy"sv,
-				"cull dtor"sv, "done"sv
+				"flush"sv, "sun dir-light pass"sv, "deferred resolve"sv, "unbind+finish accum"sv,
+				"vanilla lens copy"sv, "cull dtor"sv, "done"sv
 			};
 			const auto step = g_lastStep;
 			const auto base = REL::Module::get().base();
 			const auto rva = g_lastExcAddr >= base ? g_lastExcAddr - base : 0;
 			logger::critical(
 				FMT_STRING("ScopeRender FAULTED at step {} ({}), code {:08X} at {:016X} (rva {:X}) — disabled for this session, falling back to copy fill"),
-				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
+				step, step >= 0 && step < 18 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
 			logger::critical(
 				FMT_STRING("  regs: rax={:016X} rbx={:016X} rcx={:016X} rdx={:016X} rsi={:016X} rdi={:016X} rbp={:016X} rsp={:016X}"),
 				g_lastRegs[0], g_lastRegs[1], g_lastRegs[2], g_lastRegs[3], g_lastRegs[4], g_lastRegs[5], g_lastRegs[6], g_lastRegs[7]);
@@ -516,8 +624,9 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
+				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
@@ -529,5 +638,15 @@ namespace TrueScopes::ScopeRender
 	bool Available()
 	{
 		return g_available;
+	}
+
+	bool InOwnResolve()
+	{
+		return g_inOwnResolve.load();
+	}
+
+	void SetSunBindHooksInstalled(bool a_installed)
+	{
+		g_sunBindHooksInstalled = a_installed;
 	}
 }

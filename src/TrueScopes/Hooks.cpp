@@ -79,6 +79,27 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
+		// The deferred resolve's two light-accum bind sites (slot 0 = 0x24/0x6a, slot 1 =
+		// 0x25/0x6b) pass bind mode 0 = clear-on-apply. While OUR resolve call is on the
+		// stack we force mode 3 (no clear) so the sun BSDFLightDir pass we pre-drew into
+		// 0x6a/0x6b survives for the composite. Engine frames pass through untouched.
+		struct ResolveAccumBind0Hook
+		{
+			static void thunk(std::uintptr_t a_rtm, std::uint32_t a_slot, std::int32_t a_rt, std::uint32_t a_mode)
+			{
+				func(a_rtm, a_slot, a_rt, ScopeRender::InOwnResolve() ? 3 : a_mode);
+			}
+			static inline REL::Relocation<decltype(&thunk)> func;
+		};
+		struct ResolveAccumBind1Hook
+		{
+			static void thunk(std::uintptr_t a_rtm, std::uint32_t a_slot, std::int32_t a_rt, std::uint32_t a_mode)
+			{
+				func(a_rtm, a_slot, a_rt, ScopeRender::InOwnResolve() ? 3 : a_mode);
+			}
+			static inline REL::Relocation<decltype(&thunk)> func;
+		};
+
 		[[nodiscard]] bool VerifyBytes(
 			const REL::Relocation<std::uintptr_t>& a_target,
 			std::span<const std::uint8_t> a_expected,
@@ -127,6 +148,24 @@ namespace TrueScopes::Hooks
 		// Fill hook, every frame in the normal draw path.
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
+
+		// Resolve accum-bind hooks (sun pass survival). Non-fatal: without them the sun
+		// pre-draw is skipped and everything else behaves like v0.2.25.
+		{
+			REL::Relocation<std::uintptr_t> bind0{ REL::Offset(Addr::kResolveAccumBind0CallSite) };
+			REL::Relocation<std::uintptr_t> bind1{ REL::Offset(Addr::kResolveAccumBind1CallSite) };
+			static constexpr std::uint8_t kBind0Orig[] = { 0xE8, 0x00, 0xA0, 0x5B, 0xFF };
+			static constexpr std::uint8_t kBind1Orig[] = { 0xE8, 0xD1, 0x9F, 0x5B, 0xFF };
+			const bool ok =
+				VerifyBytes(bind0, { kBind0Orig, 5 }, "resolve accum bind 0"sv) &&
+				VerifyBytes(bind1, { kBind1Orig, 5 }, "resolve accum bind 1"sv);
+			if (ok) {
+				pstl::write_thunk_call<ResolveAccumBind0Hook>(bind0.address());
+				pstl::write_thunk_call<ResolveAccumBind1Hook>(bind1.address());
+				logger::info("resolve accum-bind hooks installed (sun pass enabled)"sv);
+			}
+			ScopeRender::SetSunBindHooksInstalled(ok);
+		}
 
 		// Vanilla scope imod suppression (cosmetic-only calls now that the redirect is
 		// disarmed). Verified before patching; failure here is non-fatal.

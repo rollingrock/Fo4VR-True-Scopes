@@ -74,6 +74,10 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetX, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetY, 15.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetZ, 0.0);
+	// Draw the engine's sun BSDFLightDir pass into our scope light accumulation before
+	// the resolve (v0.2.26). Requires the resolve accum-bind hooks; falls back to the
+	// v0.2.25 look (ambient + local lights only) when off or unavailable.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunEnabled, true);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -109,13 +113,14 @@ namespace Settings
 		LOAD(scopeCamOffsetX);
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
+		LOAD(sunEnabled);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
 #undef LOAD
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} disableScopeBlackout={} disableApproachFade={}"),
-			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *disableScopeBlackout, *disableApproachFade);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} disableScopeBlackout={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *sunEnabled, *disableScopeBlackout, *disableApproachFade);
 	}
 }

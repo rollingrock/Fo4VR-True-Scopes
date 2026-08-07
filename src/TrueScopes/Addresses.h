@@ -62,6 +62,19 @@ namespace TrueScopes::Addr
 	// Vanilla precedent: Main::Swap calls Copy(0, 0x44) for screenshots. [LIVE-exercised]
 	inline constexpr std::uintptr_t kImageSpaceManagerCopy = 0x27b0880;
 
+	// The deferred resolve FUN_1427ff8b0 opens its lighting phase by binding the light
+	// accumulation MRT with bind mode 0 (clear-on-apply): slot 0 = RT 0x24/0x6a, slot 1 =
+	// RT 0x25/0x6b (scope set under renderer+4). Because the SUN's BSDFLight "Dir" pass is
+	// drawn by the per-frame pre-world stage (FUN_142846d60, queued job FUN_142849990) and
+	// NOT by the resolve, our own scope render has to pre-draw the sun into 0x6a/0x6b —
+	// and these two clears would wipe it. We hook both call sites and force bind mode 3
+	// (no clear) only while our render's resolve call is on the stack; every engine call
+	// (main frame) passes through unchanged.
+	// [GHIDRA] bind0 bytes: E8 00 A0 5B FF   bind1 bytes: E8 D1 9F 5B FF
+	//          (both → BSGraphics::RenderTargetManager::SetCurrentRenderTarget @ +0x1db9dd0)
+	inline constexpr std::uintptr_t kResolveAccumBind0CallSite = 0x27ffdcb;  // slot 0, 0x24/0x6a
+	inline constexpr std::uintptr_t kResolveAccumBind1CallSite = 0x27ffdfa;  // slot 1, 0x25/0x6b
+
 	// --- data ---
 
 	// Value cell of the 3-state INI setting iScopeEnabled:VR (0=off, 1=eye-gated,

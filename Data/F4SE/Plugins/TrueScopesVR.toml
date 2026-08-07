@@ -30,6 +30,10 @@ scopeCamOffsetX = 0.0
 scopeCamOffsetY = 15.0
 scopeCamOffsetZ = 0.0
 
+# Draw the sun (directional light) into the scope render (v0.2.26). Off = the
+# v0.2.25 look: ambient + local lights only.
+sunEnabled = true
+
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false
