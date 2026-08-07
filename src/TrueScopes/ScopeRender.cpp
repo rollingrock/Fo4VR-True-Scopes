@@ -3,11 +3,31 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 
-// Phase 2: LocalMapRenderer-pattern mono world render from PrimaryWeaponScopeCamera.
-// Full recipe + provenance: ROUTE_B_STATIC_MAP_2026-08-06.md section 3.2 in the
-// investigation repo. All raw offsets below were decoded from code bytes this session
-// (Ghidra data labels in the high .data region are unreliable; code bytes are ground
-// truth and match the live process).
+// Phase 2: mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62.
+//
+// v0.2.8 rewrite — the recipe now mirrors the engine's own deferred scene render,
+// decompiled end-to-end (see SESSION_2026-08-07_DEFERRED_DEEP_DIVE.md in the
+// investigation repo):
+//   * FUN_140c87320 / FUN_140b03d60 = the engine's two deferred scene renderers.
+//     Both use accumulator renderMode 0x19 (deferred). renderMode 0 routes every
+//     pass to the FORWARD buckets, which FUN_1427ff8b0 never draws — that is why
+//     v0.2.3..v0.2.7 resolved to a black lens no matter where the camera was.
+//   * renderer+4 (the scope-pass flag, reader FUN_141d947d0) is checked ~10x inside
+//     FUN_1427ff8b0 and reroutes light buffers 0x24/0x25 -> 0x6a/0x6b and DS 1 -> 0xC.
+//     We bracket the whole render with renderer+4 = 1 so our pass runs in the exact
+//     environment the vanilla scoped world render used (proven live in the Route A demo).
+//   * Bind modes (decoded from FUN_141dbd380 + the apply fn FUN_141d9b190):
+//     0 = clear-on-apply, 3 = no clear, 4 = CopyResource restore (the v0.2.6 smear).
+//     Engine G-buffer binds: slots 0-4 mode 0, slot 5 (0x23) mode 3, byte-verified.
+//   * Accumulation = ONE BSShaderUtil::AccumulateScene(cam, ssn, cull, 1) — for an
+//     SSN it adds every attached child. No portal lists, no manual subtrees. Lights
+//     run BEFORE accumulation (engine order in both templates).
+//   * The resolve draws the G-buffer groups itself, then composites into out target
+//     (param_5) via the shader-6 quad. Its internal 0x61->0x62 copy is refraction-only;
+//     the per-frame lens delivery in vanilla is FUN_1427b08c0(0x61, 0x62, 0) from
+//     FUN_14284e370 — we keep doing that explicitly.
+// All raw offsets decoded from code bytes (Ghidra high-.data labels are unreliable;
+// code bytes are ground truth and match the live process).
 
 namespace TrueScopes::ScopeRender
 {
@@ -65,6 +85,27 @@ namespace TrueScopes::ScopeRender
 		// Fault forensics: which step the render was in when the SEH guard fired.
 		volatile long g_lastStep = 0;
 #define RENDER_STEP(n) g_lastStep = (n)
+
+		// Accumulator layout (from FUN_14281ec00): 38 pass groups, stride 0x678, base
+		// accum+0x18; per-group sub-bucket counts at +0x608 + i*0x18 + 0x10 (i = 0..3).
+		// Captured POD-side inside the SEH frame, logged from Render() afterwards.
+		constexpr std::uint32_t kPassGroupCount = 38;
+		std::uint32_t g_passCounts[kPassGroupCount] = {};
+		std::uint32_t g_passTotal = 0;
+
+		void CapturePassCounts(std::uintptr_t a_accum) noexcept
+		{
+			g_passTotal = 0;
+			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
+				const auto groupBase = a_accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678;
+				std::uint32_t n = 0;
+				for (std::uint32_t i = 0; i < 4; ++i) {
+					n += *reinterpret_cast<const std::uint32_t*>(groupBase + 0x608 + i * 0x18 + 0x10);
+				}
+				g_passCounts[g] = n;
+				g_passTotal += n;
+			}
+		}
 
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
 		// bytes first. Returns 0 on mismatch.
@@ -127,14 +168,18 @@ namespace TrueScopes::ScopeRender
 			*mode738 = saved738;
 			*mode750 = saved750;
 
-			// Accumulator: renderMode 0 (normal lit world), world SSN, eye position.
+			// Accumulator: DEFERRED renderMode 0x19 (0 = forward buckets, which the
+			// resolve never draws — the v0.2.x black-lens root cause), the deferred
+			// enable bytes both engine templates set, world SSN, eye positions.
 			RENDER_STEP(2);
 			const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
 			const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray);
 			if (!ssn0) {
 				return;
 			}
-			*reinterpret_cast<std::uint32_t*>(accum + 0xf688) = 0;
+			*reinterpret_cast<std::uint32_t*>(accum + 0xf688) = 0x19;
+			*reinterpret_cast<std::uint8_t*>(accum + 0xf669) = 1;  // FUN_140b03d60: set when deferred
+			*reinterpret_cast<std::uint8_t*>(accum + 0xf66a) = 1;  // FUN_140c875f0: set for the world render
 			*reinterpret_cast<std::uintptr_t*>(accum + 0xf680) = ssn0;  // BSShaderAccumulator::shadowSceneNode
 			const auto* eyePos = reinterpret_cast<const float*>(cam + 0xa0);  // NiAVObject::world.translate
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf690), eyePos, 12);
@@ -150,61 +195,55 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(5);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
-			// Deferred light pass (flat-screen pattern FUN_140c87320) with two scope
-			// specifics: depth/viewport index 0xC — the MONO scope viewport the vanilla
-			// scoped stages select (index 1 = stereo double-wide → half-lens artifact) —
-			// and clear-on-bind modes so nothing smears between frames (mode 0 for depth,
-			// mode 4 = flat-screen's clear-on-bind for color).
+			// G-buffer target setup, byte-decoded from FUN_140c87320: slots 0-4 mode 0
+			// (clear-on-apply), slot 5 (0x23) mode 3 (preserve). DS 0xC — the scope-pass
+			// depth the +4 remap selects everywhere — mode 0 so depth+stencil start clean.
 			RENDER_STEP(6);
-			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState (LocalMap does this mid-frame too)
+			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState
 			Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 0, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 4);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 4);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 4);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 4);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 4);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 4);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x1c, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x1d, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x20, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x21, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x22, 0);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x23, 3);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			// Accumulate the world: portal graph (what the main draw uses) + the world
-			// ShadowSceneNode's object subtrees. Lights AFTER accumulation (LocalMap
-			// order — proven in our context; the flat-screen's lights-first order
-			// faulted here on a virgin accumulator).
-			// Engine call site (LocalMapRenderer::Render, byte-decoded):
-			//   entry -> [entry+0x10] -> +0x58 = the accumulate array
-			RENDER_STEP(8);
-			if (const auto entry = Fn<GetPortalEntry_t>(0xd878f0)()) {
-				if (const auto list = *reinterpret_cast<std::uintptr_t*>(entry + 0x10)) {
-					Fn<AccumSceneArray_t>(0x27ff5d0)(cam, list + 0x58, cullBuf, 0);
-				}
-			}
-			if (ssn0) {
-				RENDER_STEP(9);
-				if (const auto sub = *reinterpret_cast<std::uintptr_t*>(ssn0 + 0x168)) {
-					if (const auto nodeA = *reinterpret_cast<std::uintptr_t*>(sub + 0x48)) {
-						Fn<AccumScene_t>(0x27ff370)(cam, nodeA, cullBuf, 0);
-					}
-					RENDER_STEP(10);
-					if (const auto nodeB = *reinterpret_cast<std::uintptr_t*>(sub + 0x40)) {
-						Fn<AccumScene_t>(0x27ff370)(cam, nodeB, cullBuf, 0);
-					}
-				}
-			}
-
+			// Lights first, then ONE AccumulateScene over the world SSN — the exact
+			// order and shape both engine deferred templates use.
 			RENDER_STEP(7);
 			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
+
+			RENDER_STEP(8);
+			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
+
+			RENDER_STEP(9);
+			CapturePassCounts(accum);
 
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
-			// Deferred G-buffer draw + lighting resolve into 0x61.
+			// Deferred G-buffer group draw + lighting + composite into 0x61. With
+			// renderer+4 = 1 (set by our caller) the resolve's internal routing matches
+			// the vanilla scoped frame: light buffers 0x6a/0x6b, DS 0xC. param_6 = 0xC
+			// keeps its tail bind consistent with that.
 			RENDER_STEP(12);
-			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 1, 0, 1);
+			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 
+			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
 			RENDER_STEP(13);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 0);
+			Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
+			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			Fn<FinishAccum_t>(0x281e750)(g_accum);
 
-			// Vanilla lens delivery: the exact Main::Swap call (0x61 -> 0x62, effect 0xf).
+			// Vanilla lens delivery — FUN_14284e370's per-frame copy (0x61 -> 0x62).
+			// The resolve's own 0x61->0x62 combine is refraction-only; this is the real one.
 			RENDER_STEP(14);
 			Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 
@@ -261,13 +300,24 @@ namespace TrueScopes::ScopeRender
 		if (!g_available) {
 			return false;
 		}
-		if (!RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees))) {
+
+		// Scope-pass bracket: renderer+4 = 1 makes every +4-aware call site inside the
+		// resolve route exactly like the vanilla scoped world render (light buffers
+		// 0x6a/0x6b, DS 0xC). Restored unconditionally — a leaked 1 would redirect the
+		// NEXT frame's world draw.
+		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(REL::Module::get().base() + kRendererRVA + 4);
+		const auto savedFlag = *scopePassFlag;
+		*scopePassFlag = 1;
+		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
+		*scopePassFlag = savedFlag;
+
+		if (!ok) {
 			g_available = false;
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
 				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
-				"portal-graph accumulate"sv, "SSN subtree A accumulate"sv, "SSN subtree B accumulate"sv,
-				"flush"sv, "deferred resolve"sv, "finish accum"sv, "vanilla lens copy"sv,
+				"AccumulateScene"sv, "capture pass counts"sv, "(unused)"sv,
+				"flush"sv, "deferred resolve"sv, "unbind+finish accum"sv, "vanilla lens copy"sv,
 				"cull dtor"sv, "done"sv
 			};
 			const auto step = g_lastStep;
@@ -275,6 +325,23 @@ namespace TrueScopes::ScopeRender
 				FMT_STRING("ScopeRender FAULTED at step {} ({}) — disabled for this session, falling back to copy fill"),
 				step, step >= 0 && step < 17 ? kSteps[step] : "?"sv);
 			return false;
+		}
+
+		// Accumulation diagnostics: first few renders + a heartbeat. "total=0" means
+		// nothing accumulated (coverage problem); nonzero groups that still resolve
+		// black point at the resolve/bind side instead.
+		static std::uint64_t renders = 0;
+		++renders;
+		if (renders <= 5 || renders % 300 == 0) {
+			std::string groups;
+			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
+				if (g_passCounts[g] != 0) {
+					fmt::format_to(std::back_inserter(groups), FMT_STRING("{}{:X}:{}"), groups.empty() ? "" : " ", g, g_passCounts[g]);
+				}
+			}
+			logger::info(
+				FMT_STRING("ScopeRender #{}: accumulated passes total={} [{}]"),
+				renders, g_passTotal, groups);
 		}
 		return true;
 	}
