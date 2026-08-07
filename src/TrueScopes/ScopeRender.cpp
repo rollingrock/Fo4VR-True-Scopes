@@ -1,5 +1,7 @@
 #include "TrueScopes/ScopeRender.h"
 
+#include <DirectXMath.h>
+
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 
@@ -135,6 +137,35 @@ namespace TrueScopes::ScopeRender
 				g_passCounts[g] = n;
 				g_passTotal += n;
 			}
+		}
+
+		// THE v0.2.28 bisect result: with the sun pass in, accum DIFFUSE (0x6a) is a
+		// clean sun-lit image but accum SPECULAR (0x6b) is flat saturated garbage —
+		// and the composite output is dominated by it. Diffuse needs only N·L;
+		// specular additionally needs the VIEW vector, reconstructed from depth via
+		// the INVERSE VIEW MATRIX at camData+0x1d0 — which only the engine's scene
+		// renderers write MANUALLY (FUN_140c875f0: XMMatrixInverse of the view at
+		// camData+0x90, stored TRANSPOSED at +0x1d0..+0x20c). The state camera-data
+		// update (0x1da8c40) does NOT touch it, so ours held the stale MAIN camera
+		// inverse → garbage world positions → exploded specular. This was flagged as
+		// the "next lever" in the v0.2.8 notes and never fired because diffuse looked
+		// fine. Replicated here 1:1.
+		void WriteInverseView(std::uintptr_t a_ctxA, std::uintptr_t a_ctxB)
+		{
+			const auto ctxA = a_ctxA ? *reinterpret_cast<const std::uintptr_t*>(a_ctxA) : 0;
+			const auto ctxB = a_ctxB ? *reinterpret_cast<const std::uintptr_t*>(a_ctxB) : 0;
+			const auto ctx = ctxA ? ctxA : ctxB;
+			if (!ctx) {
+				return;
+			}
+			const auto camData = *reinterpret_cast<std::uintptr_t*>(ctx + 0x25d0);
+			if (!camData) {
+				return;
+			}
+			using namespace DirectX;
+			const auto* view = reinterpret_cast<const XMFLOAT4X4*>(camData + 0x90);
+			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(view)));
+			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(camData + 0x1d0), inv);
 		}
 
 		// Decode a RIP-relative operand at a known instruction, verifying the opcode
@@ -352,9 +383,12 @@ namespace TrueScopes::ScopeRender
 					Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
 					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-					// Camera state exactly as the resolve sets it before its light loops.
+					// Camera state exactly as the resolve sets it before its light loops,
+					// plus the manual inverse-view write the engine's scene renderers do
+					// (specular/world-pos reconstruction input; see WriteInverseView).
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
+					WriteInverseView(g_ctxPtrA, g_ctxPtrB);
 					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
@@ -418,6 +452,13 @@ namespace TrueScopes::ScopeRender
 			// keeps its tail bind consistent with that. g_inOwnResolve arms the two
 			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
 			RENDER_STEP(13);
+			// Ensure the inverse-view at camData+0x1d0 is OURS for the resolve's own
+			// lighting/composite too (the resolve re-runs the camera-data update
+			// internally, which does not touch +0x1d0, so this write survives it).
+			if (g_gfxState) {
+				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
+				WriteInverseView(g_ctxPtrA, g_ctxPtrB);
+			}
 			g_inOwnResolve.store(g_diagSunPass == 1);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
