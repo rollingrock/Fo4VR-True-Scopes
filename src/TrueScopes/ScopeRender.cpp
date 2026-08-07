@@ -53,6 +53,8 @@ namespace TrueScopes::ScopeRender
 		using SelectDS_t = void (*)(std::uintptr_t, std::int32_t, std::uint32_t, std::uint32_t);       // 0x1db9e40  select depth-stencil(mgr, dsIdx, mode, slice); logical->physical via rtm+0x15fc
 		using Flush_t = void (*)(std::uintptr_t);                                                      // 0x1d8dc70  Renderer::Flush(renderer)
 		using IsmCopy_t = void (*)(std::uint32_t, std::uint32_t);                                      // 0x27b0880  ImageSpaceManager::Copy(src, dst) — RAW copy, no tonemap
+		using SetClearColor_t = void (*)(std::uintptr_t, float, float, float, float);                  // 0x1d8dc80  BSGraphics::Renderer::SetClearColor(renderer, r, g, b, a)
+		using ClearColorNow_t = void (*)(std::uintptr_t);                                              // 0x1d8dd80  BSGraphics::Renderer::ClearColor(renderer): immediate CRTV of current slot-0 target
 
 		template <class T>
 		[[nodiscard]] T Fn(std::uintptr_t a_rva)
@@ -88,6 +90,8 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_passTotal = 0;
 
 		// Live camera / viewport diagnostics captured after the resolve.
+		std::int32_t g_diagLightsA = 0;  // *(short*)(ssn+0x1a8): resolve's shadowed-light loop count
+		std::int32_t g_diagLightsB = 0;  // *(short*)(ssn+0x1c0): resolve's queued-light loop count
 		std::int32_t g_diagEyeCount = 0;
 		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
 		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
@@ -211,6 +215,16 @@ namespace TrueScopes::ScopeRender
 			// never drew at all in v0.2.8-16; the lens showed main-view G-buffer residue.
 			RENDER_STEP(6);
 			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState
+
+			// Pre-clear the composite target. The resolve binds 0x61 mode 3 (never
+			// clears) and the composite only shades G-buffer-covered pixels — with no
+			// sky pass yet, empty regions otherwise keep stale frames (ghosting) or
+			// primordial black. Engine pattern (FUN_1401f8bb0): bind + ClearColor.
+			Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 1.0f);
+			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
+			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+			Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+
 			Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 0, 0);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 0);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 0);
@@ -269,6 +283,8 @@ namespace TrueScopes::ScopeRender
 			// Capture what the resolve actually rendered with: camera eye count/port,
 			// the camera-data rect that feeds viewport computation, and the last
 			// computed viewport ints in the context block.
+			g_diagLightsA = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1a8);
+			g_diagLightsB = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1c0);
 			g_diagEyeCount = *reinterpret_cast<const std::int32_t*>(cam + 0x208);
 			std::memcpy(g_diagPort, reinterpret_cast<const void*>(cam + 0x214), sizeof(g_diagPort));
 			if (g_ctxPtrA || g_ctxPtrB) {
@@ -473,8 +489,8 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
-				renders, g_passTotal, groups, g_diagEyeCount,
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB, g_diagEyeCount,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
 				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
