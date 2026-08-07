@@ -401,13 +401,21 @@ namespace TrueScopes::ScopeRender
 		// already 1 in VR at all times per the load-time flag log, so this is belt and
 		// suspenders.
 		auto* renderActiveFlag = scopePassFlag - 2;
+		// renderer+1 = stereo. Our render must run MONO: with +1 set, every draw takes
+		// the stereo shader path with the frame's current (right) eye state, and both
+		// geometry and the deferred composite land in the right half of the target —
+		// the split lens. The vanilla scoped frame is a mono view for the same reason.
+		auto* stereoFlag = scopePassFlag - 3;
 		const auto savedFlag = *scopePassFlag;
 		const auto savedActive = *renderActiveFlag;
+		const auto savedStereo = *stereoFlag;
 		*scopePassFlag = 1;
 		*renderActiveFlag = 1;
+		*stereoFlag = 0;
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		*scopePassFlag = savedFlag;
 		*renderActiveFlag = savedActive;
+		*stereoFlag = savedStereo;
 
 		if (!ok) {
 			g_available = false;
