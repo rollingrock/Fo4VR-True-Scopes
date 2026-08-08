@@ -26,6 +26,10 @@ namespace TrueScopes::ScopeRender
 	// pre-draw is skipped when they are not (it would just be cleared again).
 	void SetSunBindHooksInstalled(bool a_installed);
 
+	// Diagnostic: paint the lens RT a solid color (burst forensics — color-codes
+	// frames the fill hook skipped). Render-thread only.
+	void TintLens(float a_r, float a_g, float a_b);
+
 	// Clear the fault latch so the next Render() attempts the own render again.
 	// Called on scope-in (after the TOML reload) when retryAfterFault is set —
 	// lets the user bisect a faulting config live instead of restarting the game.

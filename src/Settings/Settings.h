@@ -112,6 +112,10 @@ namespace Settings
 	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
 	// Costs two GPU sync stalls per render — enable only while hunting.
 	MAKE_SETTING(bSetting, "TrueScopesVR", diagLensReadback, false);
+	// Burst forensics (v0.2.45): color-code frames the fill hook did not fill —
+	// RED = eye-gate says inactive (fill paused), GREEN = cadence skip. If a black
+	// burst shows as a color instead, the burst is a non-filled frame.
+	MAKE_SETTING(bSetting, "TrueScopesVR", diagPauseTint, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -160,6 +164,7 @@ namespace Settings
 		LOAD(skyRootMask);
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
+		LOAD(diagPauseTint);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

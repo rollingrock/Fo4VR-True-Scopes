@@ -1181,6 +1181,23 @@ namespace TrueScopes::ScopeRender
 		return g_available;
 	}
 
+	void TintLens(float a_r, float a_g, float a_b)
+	{
+		// Diagnostic: paint the lens RT 0x62 a solid color (v0.2.23 clear pattern),
+		// then restore the same exit binds Render() leaves. Used by the fill hook to
+		// color-code non-filled frames (burst forensics): if a black burst shows as
+		// RED/GREEN instead, the burst was a non-filled frame, not a broken render.
+		const auto base = REL::Module::get().base();
+		const auto renderer = base + kRendererRVA;
+		const auto rtm = base + kRTManager;
+		Fn<SetClearColor_t>(0x1d8dc80)(renderer, a_r, a_g, a_b, 1.0f);
+		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, Addr::kRT_ScopeLens, 3);
+		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+		Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
+		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+	}
+
 	void RetryAfterFault()
 	{
 		if (g_faulted && !g_available) {

@@ -65,16 +65,26 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk()
 			{
-				if (g_installed && g_scopeActive.load() && *Settings::fillEnabled) {
-					static std::uint32_t frame = 0;
-					if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
-						const bool rendered =
-							*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
-							ScopeRender::Available() &&
-							ScopeRender::Render();
-						if (!rendered && *Settings::lensMode != 0) {
-							ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
+				if (g_installed && *Settings::fillEnabled) {
+					if (g_scopeActive.load()) {
+						static std::uint32_t frame = 0;
+						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
+							const bool rendered =
+								*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
+								ScopeRender::Available() &&
+								ScopeRender::Render();
+							if (!rendered && *Settings::lensMode != 0) {
+								ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
+							}
+						} else if (*Settings::diagPauseTint) {
+							// Burst forensics: cadence-skipped frame -> GREEN lens.
+							ScopeRender::TintLens(0.0f, 1.0f, 0.0f);
 						}
+					} else if (*Settings::diagPauseTint) {
+						// Burst forensics: eye-gate says scope inactive (fill paused)
+						// -> RED lens. Only visible if the widget still draws during
+						// these windows — which is exactly the hypothesis under test.
+						ScopeRender::TintLens(1.0f, 0.0f, 0.0f);
 					}
 				}
 				func();

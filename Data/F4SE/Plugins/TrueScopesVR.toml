@@ -80,3 +80,7 @@ disableApproachFade = false
 # Black-burst hunt (v0.2.43): per-frame 1-pixel readback of accum+composite, dark
 # frames logged. Two GPU sync stalls per render - turn OFF when not hunting.
 diagLensReadback = true
+
+# Burst forensics (v0.2.45): tint non-filled frames - RED = eye-gate pause,
+# GREEN = cadence skip. A colored "burst" means the burst is a non-filled frame.
+diagPauseTint = true
