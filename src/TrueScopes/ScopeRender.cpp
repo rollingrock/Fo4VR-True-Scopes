@@ -704,9 +704,37 @@ namespace TrueScopes::ScopeRender
 			// composite consumption died. Aim at a WALL while hunting (the center
 			// pixel must be geometry, not sky).
 			if (*Settings::diagLensReadback) {
+				// v0.2.44: the renderer's RT array is indexed by PHYSICAL platform
+				// index — translate logical->physical via the rtm+0x13bc table first
+				// (QCurrentPlatformRenderTarget 0x141db9c70: table[logical]*4), then
+				// take the texture from the byte-proven RTV field (+0xa78, the one
+				// Renderer::ClearColor uses) via GetResource. v0.2.43 indexed with
+				// the logical ids -> null entries -> silent rb=0/0/0.
 				const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
-				const auto tex61 = *reinterpret_cast<ID3D11Texture2D**>(renderer + 0xa70 + 0x61 * 0x30);
-				const auto tex6a = *reinterpret_cast<ID3D11Texture2D**>(renderer + 0xa70 + 0x6a * 0x30);
+				const auto phys61 = *reinterpret_cast<const std::int32_t*>(rtm + 0x13bc + 0x61 * 4);
+				const auto phys6a = *reinterpret_cast<const std::int32_t*>(rtm + 0x13bc + 0x6a * 4);
+				ID3D11RenderTargetView* rtv61 = phys61 >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(renderer + 0xa78 + static_cast<std::uintptr_t>(phys61) * 0x30) : nullptr;
+				ID3D11RenderTargetView* rtv6a = phys6a >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(renderer + 0xa78 + static_cast<std::uintptr_t>(phys6a) * 0x30) : nullptr;
+				ID3D11Resource* res61 = nullptr;
+				ID3D11Resource* res6a = nullptr;
+				if (rtv61) {
+					rtv61->GetResource(&res61);
+				}
+				if (rtv6a) {
+					rtv6a->GetResource(&res6a);
+				}
+				const auto tex61 = static_cast<ID3D11Texture2D*>(res61);
+				const auto tex6a = static_cast<ID3D11Texture2D*>(res6a);
+				if (!d3dCtx || !tex61 || !tex6a) {
+					static bool failLogged = false;
+					if (!failLogged) {
+						failLogged = true;
+						logger::warn(
+							FMT_STRING("READBACK init failed: ctx={} phys61={} phys6a={} rtv61={} rtv6a={}"),
+							reinterpret_cast<const void*>(d3dCtx), phys61, phys6a,
+							reinterpret_cast<const void*>(rtv61), reinterpret_cast<const void*>(rtv6a));
+					}
+				}
 				if (d3dCtx && tex61 && tex6a &&
 					EnsureStaging(d3dCtx, tex61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61) &&
 					EnsureStaging(d3dCtx, tex6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a)) {
@@ -739,6 +767,12 @@ namespace TrueScopes::ScopeRender
 								p61, p6a, g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
 						}
 					}
+				}
+				if (res61) {
+					res61->Release();
+				}
+				if (res6a) {
+					res6a->Release();
 				}
 			}
 
