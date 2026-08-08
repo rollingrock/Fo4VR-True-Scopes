@@ -211,6 +211,34 @@ namespace TrueScopes::ScopeRender
 			return true;
 		}
 
+		// v0.2.55 — THE BLIND SPOT. R11G11B10_FLOAT stores exponent 0x1f for Inf/NaN.
+		// PixelDark tests "exponent < 12", so a NaN pixel is classified LIT — which is
+		// why 12000+ readbacks across five sessions never once reported dark while the
+		// lens was visibly black. NaN reaching the display shows up as BLACK on screen
+		// but as "bright" to every probe we had. Detect it explicitly.
+		bool PixelNonFinite(std::uint32_t a_fmt, std::uint64_t a_raw) noexcept
+		{
+			switch (a_fmt) {
+			case 26: {  // R11G11B10F: 5-bit exponent per channel, all-ones = Inf/NaN
+				const auto px = static_cast<std::uint32_t>(a_raw);
+				return ((px >> 6) & 0x1f) == 0x1f || ((px >> 17) & 0x1f) == 0x1f || ((px >> 27) & 0x1f) == 0x1f;
+			}
+			case 28:
+			case 29:
+			case 87:
+			case 91:
+				return false;  // integer formats cannot hold NaN
+			default: {  // RGBA16F
+				for (int c = 0; c < 3; ++c) {
+					if ((static_cast<std::uint16_t>(a_raw >> (16 * c)) & 0x7c00) == 0x7c00) {
+						return true;
+					}
+				}
+				return false;
+			}
+			}
+		}
+
 		// Format-aware near-black test (v0.2.47): the scope chain RTs are fmt 26
 		// (R11G11B10_FLOAT, verified live); 0x62 may be an 8-bit display format.
 		bool PixelDark(std::uint32_t a_fmt, std::uint64_t a_raw) noexcept
@@ -267,6 +295,12 @@ namespace TrueScopes::ScopeRender
 			return static_cast<std::uint8_t>(std::clamp(gamma, 0.0f, 1.0f) * 255.0f + 0.5f);
 		}
 
+		// v0.2.55: NaN/Inf pixels are painted MAGENTA in the dump instead of being
+		// clamped to white — otherwise they are indistinguishable from a legitimately
+		// overbright frame, which is how the first dump session read as "blown out"
+		// rather than "full of NaN". Counted so the log states the coverage.
+		std::uint64_t g_dumpNonFinite = 0;
+
 		void WriteBMP(const std::filesystem::path& a_path, const std::uint8_t* a_rows,
 			std::uint32_t a_w, std::uint32_t a_h, std::uint32_t a_pitch, std::uint32_t a_fmt) noexcept
 		{
@@ -303,6 +337,14 @@ namespace TrueScopes::ScopeRender
 					switch (a_fmt) {
 					case 26: {  // R11G11B10_FLOAT
 						const auto px = *reinterpret_cast<const std::uint32_t*>(src + x * 4u);
+						if (((px >> 6) & 0x1f) == 0x1f || ((px >> 17) & 0x1f) == 0x1f ||
+							((px >> 27) & 0x1f) == 0x1f) {
+							++g_dumpNonFinite;
+							r = 255;
+							g = 0;
+							b = 255;  // MAGENTA = NaN/Inf, never a real scene color
+							break;
+						}
 						r = ToByte(DecodeSmallFloat(px & 0x7ffu, 6));
 						g = ToByte(DecodeSmallFloat((px >> 11) & 0x7ffu, 6));
 						b = ToByte(DecodeSmallFloat((px >> 22) & 0x3ffu, 5));
@@ -407,9 +449,13 @@ namespace TrueScopes::ScopeRender
 						std::error_code ec;
 						std::filesystem::create_directories(*path, ec);
 						*path /= fmt::format("{:06}_{}.bmp"sv, a_index, a_label);
+						g_dumpNonFinite = 0;
 						WriteBMP(*path, static_cast<const std::uint8_t*>(m.pData), g_dumpW, g_dumpH, m.RowPitch, g_dumpFmt);
 						++g_dumpFiles;
-						logger::info(FMT_STRING("DUMP {} -> {} ({}x{} fmt={})"), a_label, path->string(), g_dumpW, g_dumpH, g_dumpFmt);
+						const auto total = static_cast<double>(g_dumpW) * static_cast<double>(g_dumpH);
+						logger::info(FMT_STRING("DUMP {} -> {} ({}x{} fmt={}) NaN/Inf={:.2f}%"),
+							a_label, path->string(), g_dumpW, g_dumpH, g_dumpFmt,
+							total > 0.0 ? static_cast<double>(g_dumpNonFinite) * 100.0 / total : 0.0);
 					}
 					d3dCtx->Unmap(g_dumpStage, 0);
 				}
@@ -456,6 +502,10 @@ namespace TrueScopes::ScopeRender
 		std::uint64_t g_rbPre62Samples = 0;
 		std::uint64_t g_rbPre62Dark = 0;
 		std::int32_t g_rbPre62State = -1;  // last classified state, for edge-only logging
+		// v0.2.55: NaN/Inf counters — the state every previous probe scored as "lit".
+		std::uint64_t g_rbNaN61 = 0;
+		std::uint64_t g_rbNaN62 = 0;
+		std::int32_t g_rbNaNState = -1;
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -963,6 +1013,28 @@ namespace TrueScopes::ScopeRender
 				rbPostResolve = SampleLogicalRT(rtm, renderer, 0x61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61);
 				const auto p6a = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
 				++g_rbSamples;
+				// v0.2.55: NaN/Inf in the composite — scored "lit" by PixelDark (its
+				// exponent is 0x1f, far above the <12 dark cutoff) but displayed BLACK.
+				// Edge-logged with the raw pixel and the camera numbers most likely to
+				// have produced it, so one black event names its own cause.
+				if (const auto nan61 = PixelNonFinite(g_rbFormat61, rbPostResolve) ? 1 : 0;
+					nan61 != g_rbNaNState) {
+					g_rbNaNState = nan61;
+					static std::uint32_t nanLogs = 0;
+					if (nanLogs < 60) {
+						++nanLogs;
+						const auto frustum = *reinterpret_cast<const float**>(cam + 0x1a0);
+						logger::warn(
+							FMT_STRING("NaN/Inf in 0x61 -> {} (px={:016X}) camRect=({},{},{},{},{},{}) frustum(l,r,t,b,n,f)=({},{},{},{},{},{})"),
+							nan61 != 0 ? "PRESENT"sv : "gone"sv, rbPostResolve,
+							g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
+							frustum ? frustum[0] : 0.0f, frustum ? frustum[1] : 0.0f, frustum ? frustum[2] : 0.0f,
+							frustum ? frustum[3] : 0.0f, frustum ? frustum[4] : 0.0f, frustum ? frustum[5] : 0.0f);
+					}
+				}
+				if (PixelNonFinite(g_rbFormat61, rbPostResolve)) {
+					++g_rbNaN61;
+				}
 				if (PixelDark(g_rbFormat61, rbPostResolve)) {
 					++g_rbDark61;
 				}
@@ -1233,6 +1305,9 @@ namespace TrueScopes::ScopeRender
 				const auto rbLens = SampleLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens),
 					&g_stage62, g_rbFormat62, g_rbW62, g_rbH62);
 				const bool darkLens = PixelDark(g_rbFormat62, rbLens);
+				if (PixelNonFinite(g_rbFormat62, rbLens)) {
+					++g_rbNaN62;
+				}
 				if (darkLens) {
 					++g_rbDark62;
 				}
@@ -1471,11 +1546,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
-				g_rbPre62Samples, g_rbPre62Dark,
+				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
