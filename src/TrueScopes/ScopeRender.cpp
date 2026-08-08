@@ -136,19 +136,32 @@ namespace TrueScopes::ScopeRender
 		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
 		std::int32_t g_diagViewport[6] = {};  // computed viewport ints @ ctx+0x1ee0+0x90
 
-		void CapturePassCounts(std::uintptr_t a_accum) noexcept
+		void CapturePassCountsInto(std::uintptr_t a_accum, std::uint32_t* a_counts, std::uint32_t& a_total) noexcept
 		{
-			g_passTotal = 0;
+			a_total = 0;
 			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
 				const auto groupBase = a_accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678;
 				std::uint32_t n = 0;
 				for (std::uint32_t i = 0; i < 4; ++i) {
 					n += *reinterpret_cast<const std::uint32_t*>(groupBase + 0x608 + i * 0x18 + 0x10);
 				}
-				g_passCounts[g] = n;
-				g_passTotal += n;
+				a_counts[g] = n;
+				a_total += n;
 			}
 		}
+
+		void CapturePassCounts(std::uintptr_t a_accum) noexcept
+		{
+			CapturePassCountsInto(a_accum, g_passCounts, g_passTotal);
+		}
+
+		// Sky accumulation forensics (v0.2.38): group counts immediately before and
+		// after the sky-root accumulation — the delta says which groups the sky passes
+		// actually landed in (0xC expected; anything else = routing surprise).
+		std::uint32_t g_skyBaseCounts[kPassGroupCount] = {};
+		std::uint32_t g_skyBaseTotal = 0;
+		std::uint32_t g_skyAfterCounts[kPassGroupCount] = {};
+		std::uint32_t g_skyAfterTotal = 0;
 
 		// THE v0.2.28 bisect result: with the sun pass in, accum DIFFUSE (0x6a) is a
 		// clean sun-lit image but accum SPECULAR (0x6b) is flat saturated garbage —
@@ -596,6 +609,7 @@ namespace TrueScopes::ScopeRender
 			g_diagSkyRoots = 0;
 			g_diagSkyEmptyPost = g_diagSkyEmptyPre;
 			if (*Settings::skyEnabled && g_diagSkyEmptyPre != 0) {
+				CapturePassCountsInto(accum, g_skyBaseCounts, g_skyBaseTotal);
 				const auto base = REL::Module::get().base();
 				const auto mask = static_cast<std::uint32_t>(*Settings::skyRootMask);
 				constexpr struct { std::uintptr_t rva; std::uint32_t bit; } kSkyRoots[] = {
@@ -614,9 +628,24 @@ namespace TrueScopes::ScopeRender
 					if (vtbl < base || vtbl >= base + 0x0a000000) {
 						continue;  // not an engine vtable -> mislabeled global, skip
 					}
+					// THE v0.2.37 zero-passes fix: the sky roots are DISABLED outside
+					// the engine's own sky stage — vanilla brackets its sky accumulation
+					// with vfunc+0x180(root, 1) ... (root, 0) on each root
+					// (FUN_140c875f0's forward pre-pass does exactly this on the two
+					// objects at ctx+0x38/+0x40 before AccumulateScene). Without the
+					// toggle, culling rejects the whole subtree and nothing registers
+					// (v0.2.37 log: sky=1/2/1/0). Same vfunc, same bracket.
+					const auto toggleFn = *reinterpret_cast<const std::uintptr_t*>(vtbl + 0x180);
+					if (toggleFn < base || toggleFn >= base + 0x0a000000) {
+						continue;
+					}
+					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
+					reinterpret_cast<Toggle_t>(toggleFn)(root, 1);
 					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
+					reinterpret_cast<Toggle_t>(toggleFn)(root, 0);
 					++g_diagSkyRoots;
 				}
+				CapturePassCountsInto(accum, g_skyAfterCounts, g_skyAfterTotal);
 				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
 			}
 			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
@@ -889,6 +918,16 @@ namespace TrueScopes::ScopeRender
 		// black point at the resolve/bind side instead.
 		static std::uint64_t renders = 0;
 		++renders;
+		// Stutter probe: a frame whose world accumulation came back EMPTY renders a
+		// black lens for that frame (composite shades nothing over the black
+		// pre-clear). Log every occurrence, rate-limited.
+		if (g_passTotal == 0) {
+			static std::uint32_t zeroLogged = 0;
+			if (zeroLogged < 20) {
+				++zeroLogged;
+				logger::warn(FMT_STRING("ScopeRender #{}: world accumulation EMPTY this frame (black-lens frame)"), renders);
+			}
+		}
 		if (renders <= 5 || renders % 300 == 0) {
 			std::string groups;
 			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
@@ -896,10 +935,17 @@ namespace TrueScopes::ScopeRender
 					fmt::format_to(std::back_inserter(groups), FMT_STRING("{}{:X}:{}"), groups.empty() ? "" : " ", g, g_passCounts[g]);
 				}
 			}
+			std::string skyNew;
+			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
+				if (g_skyAfterCounts[g] != g_skyBaseCounts[g]) {
+					fmt::format_to(std::back_inserter(skyNew), FMT_STRING("{}{:X}:{:+}"), skyNew.empty() ? "" : " ", g,
+						static_cast<std::int64_t>(g_skyAfterCounts[g]) - static_cast<std::int64_t>(g_skyBaseCounts[g]));
+				}
+			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sky={}/{}/{}/{} sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
-				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn,
+				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
