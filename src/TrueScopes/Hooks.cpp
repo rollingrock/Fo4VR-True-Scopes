@@ -109,6 +109,14 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
+				// v0.2.52: sample the lens RT BEFORE we touch it — this reads what
+				// 0x62 held at the end of the previous frame, after every other
+				// writer had its turn. Must run ahead of TintLens/Render, which
+				// would overwrite the very evidence we are sampling.
+				if (g_installed && *Settings::diagLensReadback && g_scopeActive.load()) {
+					ScopeRender::SamplePreFillLens();
+				}
+
 				if (g_installed && *Settings::fillEnabled) {
 					// Burst forensics v2 (v0.2.46): the tonemap delivery repaints only
 					// its own footprint of RT 0x62 — the rounded top-left crescent is

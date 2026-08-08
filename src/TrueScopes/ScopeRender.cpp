@@ -262,6 +262,11 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_rbW62 = 0, g_rbH62 = 0;
 		std::uint64_t g_rbDark61Sky = 0;  // 0x61 dark AFTER the sky draw (post-resolve was lit)
 		std::uint64_t g_rbDark62 = 0;     // delivered lens (0x62) dark after the tonemap copy
+		// v0.2.52: 0x62 sampled at fill-hook ENTRY = end of the PREVIOUS frame, after
+		// every other writer in the frame had its turn (see SamplePreFillLens).
+		std::uint64_t g_rbPre62Samples = 0;
+		std::uint64_t g_rbPre62Dark = 0;
+		std::int32_t g_rbPre62State = -1;  // last classified state, for edge-only logging
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -1222,10 +1227,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
+				g_rbPre62Samples, g_rbPre62Dark,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
@@ -1261,6 +1267,62 @@ namespace TrueScopes::ScopeRender
 		Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
 		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+	}
+
+	void SamplePreFillLens()
+	{
+		// v0.2.52 — THE MISSING MEASUREMENT. Every readback so far ran INSIDE the
+		// fill hook, right after our own delivery, and reported 0x62 lit (12300
+		// samples, 0 dark, across sessions containing sustained blacks). But the
+		// widget quad samples 0x62 much later in the frame, so that only ever
+		// proved "our write is lit when we write it".
+		//
+		// The tint evidence says the black is inside the texture, not over it: the
+		// crescent (a region of 0x62 outside the delivery footprint, drawn by the
+		// SAME quad) keeps its blue while the picture area goes black. Nothing
+		// opaque in front could take one and not the other. So the suspect is a
+		// LATER writer that repaints only the delivery footprint — a viewport-shaped
+		// draw (ImageSpace-style), not a clear (a ClearRenderTargetView would take
+		// the crescent too).
+		//
+		// Sampling here — at fill-hook ENTRY, before our pre-paint and delivery —
+		// reads what 0x62 held after everything else in the PREVIOUS frame finished.
+		//   pre62 DARK while the lens looks black  => a later writer exists; find it
+		//                                             (next: x64dbg conditional BP on
+		//                                             the RT bind choke point
+		//                                             FUN_141dbd380, phys index of
+		//                                             0x62, during the sustained repro).
+		//   pre62 lit while the lens looks black   => 0x62 is intact all frame and the
+		//                                             black is in how the widget draws
+		//                                             it (material / slot-6 bind / UV /
+		//                                             alpha), not in our chain at all.
+		const auto base = REL::Module::get().base();
+		const auto renderer = base + kRendererRVA;
+		const auto rtm = base + kRTManager;
+		const auto px = SampleLogicalRT(rtm, renderer, Addr::kRT_ScopeLens,
+			&g_stage62, g_rbFormat62, g_rbW62, g_rbH62);
+		if (px == ~0ull) {
+			return;
+		}
+		++g_rbPre62Samples;
+		const auto dark = PixelDark(g_rbFormat62, px) ? 1 : 0;
+		if (dark != 0) {
+			++g_rbPre62Dark;
+		}
+		// Log only STATE CHANGES: a sustained black shows up as one DARK line and
+		// one lit line seconds later, which is exactly what we need to correlate
+		// with what the user sees (and it cannot spam the log at 90 Hz).
+		if (dark != g_rbPre62State) {
+			g_rbPre62State = dark;
+			static std::uint32_t logs = 0;
+			if (logs < 120) {
+				++logs;
+				logger::info(
+					FMT_STRING("PREFILL 0x62 -> {} (px={:016X} fmt={} {}x{}) at sample #{}"),
+					dark != 0 ? "DARK"sv : "lit"sv, px, g_rbFormat62, g_rbW62, g_rbH62,
+					g_rbPre62Samples);
+			}
+		}
 	}
 
 	void RetryAfterFault()
