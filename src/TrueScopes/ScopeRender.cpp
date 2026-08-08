@@ -625,6 +625,17 @@ namespace TrueScopes::ScopeRender
 			return -1;
 		}
 
+		// v0.2.60: bracket the sun exec with 1-pixel readbacks of the accumulation
+		// buffer. camdata=0 says the constants we FEED the pass are finite, yet 0x6a
+		// still comes out 100% NaN — so stop inferring and measure causally: sample
+		// 0x6a right after our clear (must be the fog color) and again right after the
+		// exec. Clean-then-NaN means the sun draw generates it internally, and the next
+		// stop is a breakpoint inside the pass. NaN already after the clear means the
+		// writer is something else and the sun has been a red herring throughout.
+		std::uint64_t g_sunPreNaN = 0;
+		std::uint64_t g_sunPostNaN = 0;
+		std::int32_t g_sunNaNState = -1;
+
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
 			using namespace DirectX;
@@ -1094,8 +1105,43 @@ namespace TrueScopes::ScopeRender
 
 						alignas(16) std::uint8_t sunCtx[0x2d0];
 						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
+						// v0.2.60 causal bracket: 0x6a immediately before the sun draw
+						// (must be the fog clear) and immediately after it.
+						std::uint64_t accumPre = 0;
+						const bool bracket = *Settings::diagLensReadback;
+						if (bracket) {
+							accumPre = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
+						}
+
 						Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
+
+						if (bracket) {
+							const auto accumPost =
+								SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
+							const auto preBad = PixelNonFinite(g_rbFormat6a, accumPre);
+							const auto postBad = PixelNonFinite(g_rbFormat6a, accumPost);
+							if (preBad) {
+								++g_sunPreNaN;
+							}
+							if (postBad) {
+								++g_sunPostNaN;
+							}
+							if (const auto st = (preBad ? 2 : 0) + (postBad ? 1 : 0); st != g_sunNaNState) {
+								g_sunNaNState = st;
+								static std::uint32_t logs = 0;
+								if (logs < 60) {
+									++logs;
+									logger::warn(
+										FMT_STRING("SUNBRACKET 0x6a pre={:016X}{} post={:016X}{} — {} (pre={} post={})"),
+										accumPre, preBad ? " NaN"sv : ""sv, accumPost, postBad ? " NaN"sv : ""sv,
+										!preBad && postBad ? "THE SUN DRAW CREATES IT"sv :
+											preBad         ? "already NaN before the sun draw"sv :
+															 "clean"sv,
+										g_sunPreNaN, g_sunPostNaN);
+								}
+							}
+						}
 
 						if (scaling) {
 							std::memcpy(reinterpret_cast<float*>(niLight + 0x16c), savedRGB, sizeof(savedRGB));
@@ -1711,11 +1757,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
-				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects, g_camDataBad,
+				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects, g_camDataBad, g_sunPreNaN, g_sunPostNaN,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
