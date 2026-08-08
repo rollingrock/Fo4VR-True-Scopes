@@ -3,6 +3,8 @@
 #include <DirectXMath.h>
 #include <d3d11.h>
 
+#include <fstream>
+
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 
@@ -226,6 +228,193 @@ namespace TrueScopes::ScopeRender
 			default:
 				return PixelDarkF16(a_raw);
 			}
+		}
+
+		// --- v0.2.54 FULL-TEXTURE DUMP -------------------------------------------
+		// One-pixel sampling has answered "lit" in every mode while the lens is
+		// visibly black, so it has run out of information: it cannot distinguish
+		// "the texture is fine" from "the texture is black everywhere except where
+		// we happen to sample". Dumping the whole surface to a BMP settles it by
+		// inspection — including WHERE any black region sits relative to the
+		// delivery footprint and the crescent.
+		ID3D11Texture2D* g_dumpStage = nullptr;
+		std::uint32_t g_dumpW = 0, g_dumpH = 0, g_dumpFmt = 0;
+		std::uint32_t g_dumpFiles = 0;
+
+		// R11G11B10_FLOAT channel decode: 5-bit exponent (bias 15) + 6/6/5-bit
+		// mantissa, no sign bit.
+		[[nodiscard]] float DecodeSmallFloat(std::uint32_t a_bits, std::uint32_t a_mantBits) noexcept
+		{
+			const auto mantMask = (1u << a_mantBits) - 1u;
+			const auto mant = a_bits & mantMask;
+			const auto exp = (a_bits >> a_mantBits) & 0x1f;
+			if (exp == 0) {
+				return mant == 0 ? 0.0f : std::ldexp(static_cast<float>(mant) / static_cast<float>(mantMask + 1), -14);
+			}
+			if (exp == 0x1f) {
+				return 65504.0f;  // inf/nan -> clamp, we only want to LOOK at it
+			}
+			return std::ldexp(1.0f + static_cast<float>(mant) / static_cast<float>(mantMask + 1),
+				static_cast<int>(exp) - 15);
+		}
+
+		// HDR -> viewable 8-bit: Reinhard + gamma. Keeps both a dark scene and an
+		// overbright one distinguishable from true black, which is the whole point.
+		[[nodiscard]] std::uint8_t ToByte(float a_v) noexcept
+		{
+			const auto tone = a_v <= 0.0f ? 0.0f : a_v / (1.0f + a_v);
+			const auto gamma = std::pow(tone, 1.0f / 2.2f);
+			return static_cast<std::uint8_t>(std::clamp(gamma, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+
+		void WriteBMP(const std::filesystem::path& a_path, const std::uint8_t* a_rows,
+			std::uint32_t a_w, std::uint32_t a_h, std::uint32_t a_pitch, std::uint32_t a_fmt) noexcept
+		{
+			std::ofstream out(a_path, std::ios::binary);
+			if (!out) {
+				return;
+			}
+			const std::uint32_t rowBytes = ((a_w * 3u) + 3u) & ~3u;
+			const std::uint32_t imageBytes = rowBytes * a_h;
+			const std::uint32_t headerBytes = 14u + 40u;
+			const auto put16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+			const auto put32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+			out.write("BM", 2);
+			put32(headerBytes + imageBytes);
+			put32(0);
+			put32(headerBytes);
+			put32(40);
+			put32(a_w);
+			put32(a_h);
+			put16(1);
+			put16(24);
+			put32(0);
+			put32(imageBytes);
+			put32(2835);
+			put32(2835);
+			put32(0);
+			put32(0);
+			std::vector<std::uint8_t> row(rowBytes, 0);
+			for (std::uint32_t y = 0; y < a_h; ++y) {
+				// BMP is bottom-up.
+				const auto* src = a_rows + static_cast<std::size_t>(a_h - 1u - y) * a_pitch;
+				for (std::uint32_t x = 0; x < a_w; ++x) {
+					std::uint8_t b = 0, g = 0, r = 0;
+					switch (a_fmt) {
+					case 26: {  // R11G11B10_FLOAT
+						const auto px = *reinterpret_cast<const std::uint32_t*>(src + x * 4u);
+						r = ToByte(DecodeSmallFloat(px & 0x7ffu, 6));
+						g = ToByte(DecodeSmallFloat((px >> 11) & 0x7ffu, 6));
+						b = ToByte(DecodeSmallFloat((px >> 22) & 0x3ffu, 5));
+						break;
+					}
+					case 28:
+					case 29: {  // R8G8B8A8
+						const auto* p = src + x * 4u;
+						r = p[0];
+						g = p[1];
+						b = p[2];
+						break;
+					}
+					case 87:
+					case 91: {  // B8G8R8A8
+						const auto* p = src + x * 4u;
+						b = p[0];
+						g = p[1];
+						r = p[2];
+						break;
+					}
+					default: {  // assume RGBA16F
+						const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 8u);
+						const auto half = [](std::uint16_t h) {
+							const auto sign = (h >> 15) & 1u;
+							const auto exp = (h >> 10) & 0x1fu;
+							const auto mant = h & 0x3ffu;
+							float v = exp == 0 ? std::ldexp(static_cast<float>(mant) / 1024.0f, -14) :
+												 std::ldexp(1.0f + static_cast<float>(mant) / 1024.0f, static_cast<int>(exp) - 15);
+							return sign ? -v : v;
+						};
+						r = ToByte(half(p[0]));
+						g = ToByte(half(p[1]));
+						b = ToByte(half(p[2]));
+						break;
+					}
+					}
+					row[x * 3u + 0] = b;
+					row[x * 3u + 1] = g;
+					row[x * 3u + 2] = r;
+				}
+				out.write(reinterpret_cast<const char*>(row.data()), rowBytes);
+			}
+		}
+
+		void DumpLogicalRT(std::uintptr_t a_rtm, std::uintptr_t a_renderer, std::uint32_t a_logical,
+			std::string_view a_label, std::uint64_t a_index) noexcept
+		{
+			if (g_dumpFiles >= 80) {
+				return;
+			}
+			const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
+			const auto phys = *reinterpret_cast<const std::int32_t*>(a_rtm + 0x13bc + static_cast<std::uintptr_t>(a_logical) * 4);
+			ID3D11RenderTargetView* rtv = phys >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(a_renderer + 0xa78 + static_cast<std::uintptr_t>(phys) * 0x30) : nullptr;
+			if (!d3dCtx || !rtv) {
+				return;
+			}
+			ID3D11Resource* res = nullptr;
+			rtv->GetResource(&res);
+			auto* tex = static_cast<ID3D11Texture2D*>(res);
+			if (!tex) {
+				return;
+			}
+			D3D11_TEXTURE2D_DESC desc{};
+			tex->GetDesc(&desc);
+			if (!g_dumpStage || g_dumpW != desc.Width || g_dumpH != desc.Height ||
+				g_dumpFmt != static_cast<std::uint32_t>(desc.Format)) {
+				if (g_dumpStage) {
+					g_dumpStage->Release();
+					g_dumpStage = nullptr;
+				}
+				D3D11_TEXTURE2D_DESC sd = desc;
+				sd.Usage = D3D11_USAGE_STAGING;
+				sd.BindFlags = 0;
+				sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+				sd.MiscFlags = 0;
+				sd.MipLevels = 1;
+				sd.ArraySize = 1;
+				sd.SampleDesc = { 1, 0 };
+				ID3D11Device* dev = nullptr;
+				d3dCtx->GetDevice(&dev);
+				if (dev) {
+					if (SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, &g_dumpStage))) {
+						g_dumpW = desc.Width;
+						g_dumpH = desc.Height;
+						g_dumpFmt = desc.Format;
+					}
+					dev->Release();
+				}
+			}
+			if (g_dumpStage) {
+				d3dCtx->CopyResource(g_dumpStage, tex);
+				D3D11_MAPPED_SUBRESOURCE m{};
+				if (SUCCEEDED(d3dCtx->Map(g_dumpStage, 0, D3D11_MAP_READ, 0, &m))) {
+					auto path = logger::log_directory();
+					if (path) {
+						const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
+						if (!path->generic_string().ends_with(gamepath)) {
+							path = path->parent_path().append(gamepath);
+						}
+						*path /= "TrueScopesDumps";
+						std::error_code ec;
+						std::filesystem::create_directories(*path, ec);
+						*path /= fmt::format("{:06}_{}.bmp"sv, a_index, a_label);
+						WriteBMP(*path, static_cast<const std::uint8_t*>(m.pData), g_dumpW, g_dumpH, m.RowPitch, g_dumpFmt);
+						++g_dumpFiles;
+						logger::info(FMT_STRING("DUMP {} -> {} ({}x{} fmt={})"), a_label, path->string(), g_dumpW, g_dumpH, g_dumpFmt);
+					}
+					d3dCtx->Unmap(g_dumpStage, 0);
+				}
+			}
+			res->Release();
 		}
 
 		// One-call sampler: logical RT -> physical (rtm+0x13bc) -> RTV (renderer+
@@ -1025,6 +1214,19 @@ namespace TrueScopes::ScopeRender
 			}
 			if (ismMgr) {
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
+			}
+
+			// v0.2.54: full-surface dump of the composite and the delivered lens,
+			// taken at the same point the 1-pixel readback is taken (right after
+			// delivery) so the two diagnostics describe the same instant.
+			{
+				static std::uint64_t dumpSeq = 0;
+				++dumpSeq;
+				if (const auto every = *Settings::diagDumpLensEveryNRenders;
+					every > 0 && (dumpSeq % static_cast<std::uint64_t>(every)) == 0) {
+					DumpLogicalRT(rtm, renderer, 0x61, "61_composite"sv, dumpSeq);
+					DumpLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens), "62_lens"sv, dumpSeq);
+				}
 			}
 
 			if (*Settings::diagLensReadback) {

@@ -123,6 +123,15 @@ namespace Settings
 	// RED = eye-gate says inactive (fill paused), GREEN = cadence skip. If a black
 	// burst shows as a color instead, the burst is a non-filled frame.
 	MAKE_SETTING(bSetting, "TrueScopesVR", diagPauseTint, false);
+	// v0.2.54: dump the FULL lens chain (0x61 composite + 0x62 delivered) to BMPs
+	// every N renders, into <Documents>/My Games/Fallout4VR/F4SE/TrueScopesDumps.
+	// 0 = off. One-pixel readbacks report "lit" in every mode while the lens is
+	// visibly black, so they can no longer distinguish "texture is fine" from
+	// "texture is black except where we sample" — this shows the whole surface,
+	// including where any black sits relative to the delivery footprint. Costs a
+	// full-surface GPU copy + map + file write on the dump frame (capped at 80
+	// files per session), so use a large N: 180 ~ every 2s at 90Hz.
+	MAKE_SETTING(iSetting, "TrueScopesVR", diagDumpLensEveryNRenders, std::int64_t(0));
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -173,6 +182,7 @@ namespace Settings
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);
+		LOAD(diagDumpLensEveryNRenders);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
