@@ -639,10 +639,20 @@ namespace TrueScopes::ScopeRender
 					if (toggleFn < base || toggleFn >= base + 0x0a000000) {
 						continue;
 					}
+					// v0.2.39: ALSO bypass culling for the sky accumulation. The v0.2.38
+					// toggle got the roots' screen-space glare quads registering
+					// (skyNew=[11:+2 12:+3]) but the DOME geometry still never reached
+					// group 0xC — its huge multibound fails the default frustum/portal
+					// culling. The engine's own forward passes bracket accumulation
+					// with cull+0x158 = 1 (accumulate-all mode, byte-confirmed in the
+					// first-person pass FUN_14284e370); mirror that here.
+					const auto savedCullMode = *reinterpret_cast<std::uint8_t*>(cullBuf + 0x158);
+					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = 1;
 					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 1);
 					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 0);
+					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = savedCullMode;
 					++g_diagSkyRoots;
 				}
 				CapturePassCountsInto(accum, g_skyAfterCounts, g_skyAfterTotal);
