@@ -19,9 +19,10 @@
 // later if this proves its worth; the registry below is where it would attach.
 //
 // SAFETY: binds 127.0.0.1 only, and refuses to start otherwise. It can read
-// arbitrary process memory through /read, which is acceptable for a local dev
-// bench and unacceptable in a shipped mod --- see `devbenchEnabled` in
-// Settings.h and the release note there.
+// arbitrary process memory through /read --- the correct trade for a local dev
+// bench. No release gate is needed: this repo is the RESEARCH repo and never
+// ships; the production mod will be a brand-new repo rebuilt with only shipping
+// code, so this file simply is not copied across. Add endpoints freely.
 
 namespace DevBench
 {

@@ -94,9 +94,9 @@ scopeOffHoldMs = 1500
 # flip any setting above, and tail the log WITHOUT a rebuild + relaunch + headset
 # cycle. Browse it with:  curl http://127.0.0.1:8930/
 #
-# RELEASE GATE: this opens a listening socket on 127.0.0.1 and /read can read
-# arbitrary process memory. Loopback-only and no auth - fine for a local dev
-# bench, not fine in a public release. Set to false before shipping.
+# Loopback-only, no auth; /read can read arbitrary process memory. That is fine
+# here: this is the research repo and it never ships. The production mod will be
+# a brand-new repo rebuilt with only shipping code.
 devbenchEnabled = true
 
 # First port tried; the server walks up to +15 if busy and logs the bound port.

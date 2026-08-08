@@ -729,7 +729,8 @@ namespace DevBench
 		}
 
 		// Loopback only, always. Never make this configurable: the bench reads
-		// arbitrary process memory.
+		// arbitrary process memory. (The research repo needs no release gate --
+		// see DevBench.h -- but it still has no business off this machine.)
 		sockaddr_in addr{};
 		addr.sin_family = AF_INET;
 		::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
@@ -759,9 +760,7 @@ namespace DevBench
 		Settings::postLoadHook = &ReapplyOverrides;
 		g_thread = std::thread(AcceptLoop);
 
-		logger::info(FMT_STRING("devbench: DEV BUILD - listening on http://127.0.0.1:{}/ (GET / for the endpoint list). "
-								"Disable via devbenchEnabled before any public release."),
-			g_port);
+		logger::info(FMT_STRING("devbench: listening on http://127.0.0.1:{}/ (GET / for the endpoint list)"), g_port);
 		return true;
 	}
 

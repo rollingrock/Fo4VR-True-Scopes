@@ -168,11 +168,11 @@ namespace Settings
 	// settings above, and tail the log without a rebuild/relaunch cycle. See
 	// src/DevBench/DevBench.h.
 	//
-	// RELEASE GATE: this opens a listening socket on 127.0.0.1 and can read
-	// arbitrary process memory through /read. It is bound to loopback and has
-	// no auth, which is fine for a local dev bench and NOT fine in a mod
-	// shipped to users. Flip this to false (or drop the DevBench sources from
-	// the source list) before any public build.
+	// Opens a loopback-only listening socket that can read arbitrary process
+	// memory through /read. Correct trade for a local dev bench, and no release
+	// gate is needed: this repo is the RESEARCH repo and never ships. The
+	// production mod will be a brand-new repo rebuilt with only shipping code,
+	// so DevBench is simply not copied across.
 	MAKE_SETTING(bSetting, "TrueScopesVR", devbenchEnabled, true);
 	// First port tried; the server walks up to +15 if it is busy and logs the
 	// one it actually bound. 8930 keeps clear of alandtse/devbench's 8920/8921.
