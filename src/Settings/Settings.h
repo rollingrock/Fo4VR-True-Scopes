@@ -163,6 +163,21 @@ namespace Settings
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
 	MAKE_SETTING(bSetting, "TrueScopesVR", retryAfterFault, true);
+	// --- DevBench (dev tooling, not a gameplay feature) -----------------------
+	// Localhost query server that lets an agent read live state, flip the
+	// settings above, and tail the log without a rebuild/relaunch cycle. See
+	// src/DevBench/DevBench.h.
+	//
+	// RELEASE GATE: this opens a listening socket on 127.0.0.1 and can read
+	// arbitrary process memory through /read. It is bound to loopback and has
+	// no auth, which is fine for a local dev bench and NOT fine in a mod
+	// shipped to users. Flip this to false (or drop the DevBench sources from
+	// the source list) before any public build.
+	MAKE_SETTING(bSetting, "TrueScopesVR", devbenchEnabled, true);
+	// First port tried; the server walks up to +15 if it is busy and logs the
+	// one it actually bound. 8930 keeps clear of alandtse/devbench's 8920/8921.
+	MAKE_SETTING(iSetting, "TrueScopesVR", devbenchPort, std::int64_t(8930));
+
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -170,6 +185,12 @@ namespace Settings
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, false);
 
 #undef MAKE_SETTING
+
+	// Installed by DevBench so live overrides survive the scope-in TOML reload.
+	// Without it, every /config/set would be silently reverted the next time the
+	// player raised the scope --- an experiment that quietly measures the file's
+	// values instead of the ones you set is worse than no experiment.
+	inline std::function<void()> postLoadHook;
 
 	inline void load()
 	{
@@ -214,11 +235,17 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
+		LOAD(devbenchEnabled);
+		LOAD(devbenchPort);
 
 #undef LOAD
 
 		logger::info(
 			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} disableScopeBlackout={} disableApproachFade={}"),
 			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *sunEnabled, *disableScopeBlackout, *disableApproachFade);
+
+		if (postLoadHook) {
+			postLoadHook();
+		}
 	}
 }

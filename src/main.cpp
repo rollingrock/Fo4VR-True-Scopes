@@ -1,3 +1,4 @@
+#include "DevBench/DevBench.h"
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeRender.h"
@@ -76,6 +77,9 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	if (!TrueScopes::ScopeRender::Init()) {
 		logger::error("ScopeRender init failed — lens will use the copy fill"sv);
 	}
+
+	// Dev tooling. Failure here is never fatal — the mod works without it.
+	DevBench::Start();
 
 	logger::info("True Scopes VR loaded"sv);
 	return true;
