@@ -132,6 +132,13 @@ namespace Settings
 	// full-surface GPU copy + map + file write on the dump frame (capped at 80
 	// files per session), so use a large N: 180 ~ every 2s at 90Hz.
 	MAKE_SETTING(iSetting, "TrueScopesVR", diagDumpLensEveryNRenders, std::int64_t(0));
+	// v0.2.56: on each dump event, also dump the intermediate deferred buffers —
+	// G-buffer albedo 0x63 / normals 0x64 and light accum diffuse 0x6a / specular
+	// 0x6b — so one capture shows WHICH stage first contains NaN (magenta) instead
+	// of needing a lensMode ladder with a separate repro per rung. Each dump event
+	// then writes 6 files (~19MB); the per-buffer NaN percentage is logged too, so
+	// the log alone identifies the stage even without opening the images.
+	MAKE_SETTING(bSetting, "TrueScopesVR", diagDumpBuffers, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -183,6 +190,7 @@ namespace Settings
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);
 		LOAD(diagDumpLensEveryNRenders);
+		LOAD(diagDumpBuffers);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

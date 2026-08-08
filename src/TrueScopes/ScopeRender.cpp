@@ -393,7 +393,7 @@ namespace TrueScopes::ScopeRender
 		void DumpLogicalRT(std::uintptr_t a_rtm, std::uintptr_t a_renderer, std::uint32_t a_logical,
 			std::string_view a_label, std::uint64_t a_index) noexcept
 		{
-			if (g_dumpFiles >= 80) {
+			if (g_dumpFiles >= 240) {
 				return;
 			}
 			const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
@@ -1296,6 +1296,20 @@ namespace TrueScopes::ScopeRender
 				++dumpSeq;
 				if (const auto every = *Settings::diagDumpLensEveryNRenders;
 					every > 0 && (dumpSeq % static_cast<std::uint64_t>(every)) == 0) {
+					// v0.2.55 established the composite is NaN on exactly the pixels
+					// covered by world geometry, while the (separately drawn, forward)
+					// sky stays clean — so the corruption is inside the deferred chain.
+					// These four intermediates split it by stage on a single frame:
+					//   0x63 albedo / 0x64 normals   = G-buffer (geometry pass output)
+					//   0x6a diffuse / 0x6b specular = light accumulation
+					// The first buffer showing magenta is where NaN is born; every
+					// stage upstream of it is exonerated.
+					if (*Settings::diagDumpBuffers) {
+						DumpLogicalRT(rtm, renderer, 0x63, "63_gbuf_albedo"sv, dumpSeq);
+						DumpLogicalRT(rtm, renderer, 0x64, "64_gbuf_normals"sv, dumpSeq);
+						DumpLogicalRT(rtm, renderer, 0x6a, "6a_accum_diffuse"sv, dumpSeq);
+						DumpLogicalRT(rtm, renderer, 0x6b, "6b_accum_specular"sv, dumpSeq);
+					}
 					DumpLogicalRT(rtm, renderer, 0x61, "61_composite"sv, dumpSeq);
 					DumpLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens), "62_lens"sv, dumpSeq);
 				}
