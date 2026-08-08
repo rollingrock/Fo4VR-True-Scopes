@@ -566,6 +566,11 @@ namespace TrueScopes::ScopeRender
 		// Correct recipe: source = OUR block+0x90 (proj, valid after SetCamData),
 		// destination = *(ctx+0x25d0)+0x1d0, written any time before the draws
 		// (subsequent commits leave +0x1d0 untouched).
+		// v0.2.58: how often the inverse-projection source was singular (each one
+		// would previously have written a full NaN matrix into the staging block).
+		std::uint64_t g_invProjRejects = 0;
+		std::int32_t g_invProjState = -1;
+
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
 			using namespace DirectX;
@@ -583,8 +588,55 @@ namespace TrueScopes::ScopeRender
 			if (!staging) {
 				return;
 			}
+			// v0.2.58 — THE NaN ROOT CAUSE. XMMatrixInverse returns a matrix of QNaN
+			// when the source is SINGULAR, and passing nullptr for the determinant
+			// meant nothing ever checked. That NaN landed in staging+0x1d0 — the
+			// inverse-projection constant the sun's fullscreen BSDFLightDir pass and
+			// the composite both consume — so one poisoned draw turned the ENTIRE
+			// light accumulation buffer to NaN (measured: 0x6a 100% NaN with a clean
+			// G-buffer, clean specular accum and a clean fog clear). NaN then reached
+			// the lens on exactly the pixels that sample the accum (geometry yes, sky
+			// no, since the sky is our separate forward pass) and displayed as BLACK —
+			// while probing as LIT, because PixelDark tests exponent < 12 and NaN's is
+			// 31. That is the whole "black burst" mystery, five sessions of it.
+			//
+			// The source is a CACHED camera-state block (FindCamBlock), so it can be
+			// stale, recycled or not yet populated for our mono camera — which is why
+			// the black was view-dependent, sticky while the view held still, and
+			// impossible to correlate with anything in our own render.
+			//
+			// Validate, and on failure leave the previous value in place: a stale
+			// inverse-projection is wrong-looking at worst, NaN is a black lens.
 			const auto* proj = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
-			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(nullptr, XMLoadFloat4x4(proj)));
+			const XMMATRIX projM = XMLoadFloat4x4(proj);
+			XMVECTOR det{};
+			const XMMATRIX inv = XMMatrixTranspose(XMMatrixInverse(&det, projM));
+			const auto detX = XMVectorGetX(det);
+			const bool bad = !std::isfinite(detX) || detX == 0.0f ||
+				XMMatrixIsNaN(inv) || XMMatrixIsInfinite(inv);
+			if (bad) {
+				++g_invProjRejects;
+				if (g_invProjState != 1) {
+					g_invProjState = 1;
+					static std::uint32_t logs = 0;
+					if (logs < 40) {
+						++logs;
+						logger::warn(
+							FMT_STRING("INVPROJ singular/non-finite — SKIPPED (det={}, rejects={}) proj rows: "
+									   "[{} {} {} {}] [{} {} {} {}] [{} {} {} {}] [{} {} {} {}]"),
+							detX, g_invProjRejects,
+							proj->m[0][0], proj->m[0][1], proj->m[0][2], proj->m[0][3],
+							proj->m[1][0], proj->m[1][1], proj->m[1][2], proj->m[1][3],
+							proj->m[2][0], proj->m[2][1], proj->m[2][2], proj->m[2][3],
+							proj->m[3][0], proj->m[3][1], proj->m[3][2], proj->m[3][3]);
+					}
+				}
+				return;  // leave staging+0x1d0 and the eye-1 mirror as they were
+			}
+			if (g_invProjState != 0) {
+				g_invProjState = 0;
+				logger::info(FMT_STRING("INVPROJ recovered (det={}, total rejects={})"), detX, g_invProjRejects);
+			}
 			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(staging + 0x1d0), inv);
 
 			// THE EYE-1 STALENESS (root cause, live session pt.2): BSDFLightShader::
@@ -1569,11 +1621,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
-				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62,
+				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
