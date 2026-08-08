@@ -928,6 +928,26 @@ namespace TrueScopes::ScopeRender
 						std::memcpy(g_diagRect, reinterpret_cast<const void*>(camData), sizeof(g_diagRect));
 					}
 					std::memcpy(g_diagViewport, reinterpret_cast<const void*>(ctx + 0x1ee0 + 0x90), sizeof(g_diagViewport));
+					// v0.2.53: the last two floats of that block are the D3D11_VIEWPORT
+					// MinDepth/MaxDepth. D3D11 REQUIRES 0 <= Min <= Max <= 1 and drops
+					// the whole RSSetViewports call otherwise (the previous viewport
+					// then silently stays in effect). The heartbeat has been printing
+					// values like -0.35, 0.41 and 2.75 there, varying per frame with
+					// view direction — flag it explicitly so we stop having to decode
+					// float bits out of the diag ints by hand.
+					{
+						const auto minD = *reinterpret_cast<const float*>(&g_diagViewport[4]);
+						const auto maxD = *reinterpret_cast<const float*>(&g_diagViewport[5]);
+						if (!(minD >= 0.0f && minD <= maxD && maxD <= 1.0f)) {
+							static std::uint32_t badLogs = 0;
+							if (badLogs < 20) {
+								++badLogs;
+								logger::warn(
+									FMT_STRING("VIEWPORT depth range INVALID: min={} max={} (D3D11 needs 0<=min<=max<=1; RSSetViewports is dropped otherwise)"),
+									minD, maxD);
+							}
+						}
+					}
 				}
 			}
 
@@ -976,6 +996,28 @@ namespace TrueScopes::ScopeRender
 				// Raw (un-tonemapped) composite output — separates "composite wrote
 				// darkness" from "the tonemap crushed it".
 				Fn<IsmCopy_t>(0x27b0880)(0x61, Addr::kRT_ScopeLens);
+				break;
+			case 8:
+				// v0.2.53 — RENDER WITHOUT DELIVERY. Everything above runs (the whole
+				// second world render and every piece of engine state it touches), but
+				// nothing is written into the lens RT, so the lens keeps whatever the
+				// fill hook pre-painted (use with diagPauseTint = solid blue).
+				//
+				// Splits the last two variables apart. Field ladder so far: no render +
+				// clear (mode 0) = never black; no render + raw copy (mode 1) = never
+				// black; render + tonemap (mode 2) = black; render + raw copy (mode 7) =
+				// black. Delivery path is therefore irrelevant and the render is the
+				// trigger — while every readback (0x61 post-resolve, 0x61 post-sky, 0x62
+				// post-delivery, 0x62 at next-frame entry) reads LIT through the blacks.
+				//   blue goes black here => the render's SIDE EFFECTS on engine state
+				//       blacken the lens surface; no texture we write is involved, and
+				//       the hunt moves to what our bracket leaves behind (renderer
+				//       flags, RT/DS binds, camera + viewport state, shader property
+				//       cache) at the time the lens quad draws.
+				//   blue survives here   => the black IS written into the lens RT by the
+				//       delivery, and the readback is not reading what the lens samples
+				//       (aux-vs-live texture, or a different logical target) —
+				//       an x64dbg session on the slot-6 bind settles which.
 				break;
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
