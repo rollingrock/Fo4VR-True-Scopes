@@ -76,3 +76,7 @@ disableScopeBlackout = true
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 disableApproachFade = false
+
+# Black-burst hunt (v0.2.43): per-frame 1-pixel readback of accum+composite, dark
+# frames logged. Two GPU sync stalls per render - turn OFF when not hunting.
+diagLensReadback = true

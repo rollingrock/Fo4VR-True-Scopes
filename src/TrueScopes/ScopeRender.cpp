@@ -1,6 +1,7 @@
 #include "TrueScopes/ScopeRender.h"
 
 #include <DirectXMath.h>
+#include <d3d11.h>
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
@@ -130,6 +131,81 @@ namespace TrueScopes::ScopeRender
 		std::int32_t g_diagEyeCount = 0;
 		float g_fogRGB[3] = { 0.05f, 0.05f, 0.05f };  // last-good fog color (ambient base); dim gray until first read
 		std::uint64_t g_diagFogNulls = 0;             // frames where the fog singleton was null (stutter forensics)
+
+		// --- v0.2.43 black-burst forensics: 1-pixel GPU readback of the lens chain.
+		// D3D11 immediate context global (RIP-derived from Renderer::ClearColor
+		// 0x141d8dd80: ID3D11DeviceContext* at 0x146235ab0; RTV at renderer+0xa78+
+		// idx*0x30 => live ID3D11Texture2D* at renderer+0xa70+idx*0x30, the fields
+		// the mode-4 CopyResource restore uses). Each sampled render costs two
+		// Map() sync stalls — diagnostic only, off by default.
+		constexpr std::uintptr_t kD3DContextRVA = 0x6235ab0;
+		ID3D11Texture2D* g_stage61 = nullptr;
+		ID3D11Texture2D* g_stage6a = nullptr;
+		std::uint32_t g_rbFormat61 = 0;
+		std::uint32_t g_rbFormat6a = 0;
+		std::uint32_t g_rbW61 = 0, g_rbH61 = 0, g_rbW6a = 0, g_rbH6a = 0;
+		std::uint64_t g_rbDark61 = 0;   // frames where the composite center pixel was near-black
+		std::uint64_t g_rbDark6a = 0;   // ... and the light-accum center pixel
+		std::uint64_t g_rbSamples = 0;
+
+		bool EnsureStaging(ID3D11DeviceContext* a_ctx, ID3D11Texture2D* a_src,
+			ID3D11Texture2D** a_stage, std::uint32_t& a_fmt, std::uint32_t& a_w, std::uint32_t& a_h) noexcept
+		{
+			if (*a_stage) {
+				return true;
+			}
+			D3D11_TEXTURE2D_DESC desc{};
+			a_src->GetDesc(&desc);
+			a_fmt = desc.Format;
+			a_w = desc.Width;
+			a_h = desc.Height;
+			D3D11_TEXTURE2D_DESC sd = desc;
+			sd.Width = 1;
+			sd.Height = 1;
+			sd.MipLevels = 1;
+			sd.ArraySize = 1;
+			sd.SampleDesc = { 1, 0 };
+			sd.Usage = D3D11_USAGE_STAGING;
+			sd.BindFlags = 0;
+			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			sd.MiscFlags = 0;
+			ID3D11Device* dev = nullptr;
+			a_ctx->GetDevice(&dev);
+			if (!dev) {
+				return false;
+			}
+			const auto ok = SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, a_stage));
+			dev->Release();
+			return ok;
+		}
+
+		std::uint64_t SampleCenterPixel(ID3D11DeviceContext* a_ctx, ID3D11Texture2D* a_src,
+			ID3D11Texture2D* a_stage, std::uint32_t a_w, std::uint32_t a_h) noexcept
+		{
+			const D3D11_BOX box{ a_w / 2, a_h / 2, 0, a_w / 2 + 1, a_h / 2 + 1, 1 };
+			a_ctx->CopySubresourceRegion(a_stage, 0, 0, 0, 0, a_src, 0, &box);
+			D3D11_MAPPED_SUBRESOURCE m{};
+			if (FAILED(a_ctx->Map(a_stage, 0, D3D11_MAP_READ, 0, &m))) {
+				return ~0ull;
+			}
+			const auto v = *reinterpret_cast<const std::uint64_t*>(m.pData);
+			a_ctx->Unmap(a_stage, 0);
+			return v;
+		}
+
+		// Near-black test for RGBA16F-family pixels: each of R/G/B half's magnitude
+		// below ~0.03 (half 0x2A00). Raw hex is logged anyway, so a wrong format
+		// just means classification is off while the data still tells the story.
+		bool PixelDarkF16(std::uint64_t a_raw) noexcept
+		{
+			for (int c = 0; c < 3; ++c) {
+				const auto h = static_cast<std::uint16_t>(a_raw >> (16 * c)) & 0x7fff;
+				if (h >= 0x2a00) {
+					return false;
+				}
+			}
+			return true;
+		}
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -621,6 +697,51 @@ namespace TrueScopes::ScopeRender
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 
+			// v0.2.43 black-burst forensics: sample the center pixel of the light
+			// accum (0x6a) and the composite (0x61) right after the resolve. On a
+			// burst frame (world black, sky fine) exactly one story is possible:
+			// 0x6a dark = the lighting/clear side died; 0x6a lit but 0x61 dark = the
+			// composite consumption died. Aim at a WALL while hunting (the center
+			// pixel must be geometry, not sky).
+			if (*Settings::diagLensReadback) {
+				const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
+				const auto tex61 = *reinterpret_cast<ID3D11Texture2D**>(renderer + 0xa70 + 0x61 * 0x30);
+				const auto tex6a = *reinterpret_cast<ID3D11Texture2D**>(renderer + 0xa70 + 0x6a * 0x30);
+				if (d3dCtx && tex61 && tex6a &&
+					EnsureStaging(d3dCtx, tex61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61) &&
+					EnsureStaging(d3dCtx, tex6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a)) {
+					const auto p61 = SampleCenterPixel(d3dCtx, tex61, g_stage61, g_rbW61, g_rbH61);
+					const auto p6a = SampleCenterPixel(d3dCtx, tex6a, g_stage6a, g_rbW6a, g_rbH6a);
+					++g_rbSamples;
+					const bool dark61 = PixelDarkF16(p61);
+					const bool dark6a = PixelDarkF16(p6a);
+					if (dark61) {
+						++g_rbDark61;
+					}
+					if (dark6a) {
+						++g_rbDark6a;
+					}
+					if (dark61 || dark6a) {
+						static std::uint32_t darkLogs = 0;
+						if (darkLogs < 30) {
+							++darkLogs;
+							logger::warn(
+								FMT_STRING("READBACK dark frame: 0x61={:016X}{} 0x6a={:016X}{} (fmt61={} fmt6a={} {}x{})"),
+								p61, dark61 ? " DARK" : "", p6a, dark6a ? " DARK" : "",
+								g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
+						}
+					} else {
+						static std::uint32_t baselineLogs = 0;
+						if (baselineLogs < 3) {
+							++baselineLogs;
+							logger::info(
+								FMT_STRING("READBACK baseline: 0x61={:016X} 0x6a={:016X} (fmt61={} fmt6a={} {}x{})"),
+								p61, p6a, g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
+						}
+					}
+				}
+			}
+
 			// --- SKY accumulate + draw (post-resolve; groups corrected in v0.2.40) ---
 			// Vanilla order: composite into 0x61, THEN draw sky groups 0x11/0x12/0x13
 			// into 0x61 (slot1 = 0x69, DS 0xC, no clears) — sky depth-tests against
@@ -1007,9 +1128,10 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
+				g_rbSamples, g_rbDark61, g_rbDark6a,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,

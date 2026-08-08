@@ -108,6 +108,10 @@ namespace Settings
 	// 3 = both. Bisects a faulting root live (the sun/cloud root carries the
 	// occlusion-query glare geometry — prime suspect if the sky draw faults).
 	MAKE_SETTING(iSetting, "TrueScopesVR", skyRootMask, std::int64_t(3));
+	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
+	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
+	// Costs two GPU sync stalls per render — enable only while hunting.
+	MAKE_SETTING(bSetting, "TrueScopesVR", diagLensReadback, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -155,6 +159,7 @@ namespace Settings
 		LOAD(skyEnabled);
 		LOAD(skyRootMask);
 		LOAD(retryAfterFault);
+		LOAD(diagLensReadback);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
