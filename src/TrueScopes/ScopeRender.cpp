@@ -206,6 +206,60 @@ namespace TrueScopes::ScopeRender
 			}
 			return true;
 		}
+
+		// Format-aware near-black test (v0.2.47): the scope chain RTs are fmt 26
+		// (R11G11B10_FLOAT, verified live); 0x62 may be an 8-bit display format.
+		bool PixelDark(std::uint32_t a_fmt, std::uint64_t a_raw) noexcept
+		{
+			switch (a_fmt) {
+			case 26: {  // R11G11B10F: dark = every channel exponent < 12 (~< 0.125)
+				const auto px = static_cast<std::uint32_t>(a_raw);
+				return ((px >> 6) & 0x1f) < 12 && ((px >> 17) & 0x1f) < 12 && ((px >> 27) & 0x1f) < 12;
+			}
+			case 28:
+			case 29:
+			case 87:
+			case 91:  // RGBA8/BGRA8 (+sRGB)
+				return (a_raw & 0xff) < 0x18 && ((a_raw >> 8) & 0xff) < 0x18 && ((a_raw >> 16) & 0xff) < 0x18;
+			default:
+				return PixelDarkF16(a_raw);
+			}
+		}
+
+		// One-call sampler: logical RT -> physical (rtm+0x13bc) -> RTV (renderer+
+		// 0xa78+phys*0x30) -> GetResource -> 1px staging copy+map.
+		std::uint64_t SampleLogicalRT(std::uintptr_t a_rtm, std::uintptr_t a_renderer, std::uint32_t a_logical,
+			ID3D11Texture2D** a_stage, std::uint32_t& a_fmt, std::uint32_t& a_w, std::uint32_t& a_h) noexcept
+		{
+			const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
+			const auto phys = *reinterpret_cast<const std::int32_t*>(a_rtm + 0x13bc + static_cast<std::uintptr_t>(a_logical) * 4);
+			ID3D11RenderTargetView* rtv = phys >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(a_renderer + 0xa78 + static_cast<std::uintptr_t>(phys) * 0x30) : nullptr;
+			if (!d3dCtx || !rtv) {
+				static bool failLogged = false;
+				if (!failLogged) {
+					failLogged = true;
+					logger::warn(FMT_STRING("READBACK sample failed: logical={:X} phys={} ctx={} rtv={}"),
+						a_logical, phys, reinterpret_cast<const void*>(d3dCtx), reinterpret_cast<const void*>(rtv));
+				}
+				return ~0ull;
+			}
+			ID3D11Resource* res = nullptr;
+			rtv->GetResource(&res);
+			auto* tex = static_cast<ID3D11Texture2D*>(res);
+			std::uint64_t v = ~0ull;
+			if (tex && EnsureStaging(d3dCtx, tex, a_stage, a_fmt, a_w, a_h)) {
+				v = SampleCenterPixel(d3dCtx, tex, *a_stage, a_w, a_h);
+			}
+			if (res) {
+				res->Release();
+			}
+			return v;
+		}
+		ID3D11Texture2D* g_stage62 = nullptr;
+		std::uint32_t g_rbFormat62 = 0;
+		std::uint32_t g_rbW62 = 0, g_rbH62 = 0;
+		std::uint64_t g_rbDark61Sky = 0;  // 0x61 dark AFTER the sky draw (post-resolve was lit)
+		std::uint64_t g_rbDark62 = 0;     // delivered lens (0x62) dark after the tonemap copy
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -703,76 +757,28 @@ namespace TrueScopes::ScopeRender
 			// 0x6a dark = the lighting/clear side died; 0x6a lit but 0x61 dark = the
 			// composite consumption died. Aim at a WALL while hunting (the center
 			// pixel must be geometry, not sky).
+			// v0.2.47 three-point readback: this (post-resolve) + post-sky + post-
+			// delivery. Crescent-LED result (v0.2.46): bursts happen WITH fills
+			// running (blue crescent, black world) while post-resolve 0x61 is never
+			// dark (v0.2.44) — so the blackness enters in the sky draw or the
+			// tonemap delivery. Whichever sample goes dark first names the stage.
+			std::uint64_t rbPostResolve = ~0ull;
 			if (*Settings::diagLensReadback) {
-				// v0.2.44: the renderer's RT array is indexed by PHYSICAL platform
-				// index — translate logical->physical via the rtm+0x13bc table first
-				// (QCurrentPlatformRenderTarget 0x141db9c70: table[logical]*4), then
-				// take the texture from the byte-proven RTV field (+0xa78, the one
-				// Renderer::ClearColor uses) via GetResource. v0.2.43 indexed with
-				// the logical ids -> null entries -> silent rb=0/0/0.
-				const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
-				const auto phys61 = *reinterpret_cast<const std::int32_t*>(rtm + 0x13bc + 0x61 * 4);
-				const auto phys6a = *reinterpret_cast<const std::int32_t*>(rtm + 0x13bc + 0x6a * 4);
-				ID3D11RenderTargetView* rtv61 = phys61 >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(renderer + 0xa78 + static_cast<std::uintptr_t>(phys61) * 0x30) : nullptr;
-				ID3D11RenderTargetView* rtv6a = phys6a >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(renderer + 0xa78 + static_cast<std::uintptr_t>(phys6a) * 0x30) : nullptr;
-				ID3D11Resource* res61 = nullptr;
-				ID3D11Resource* res6a = nullptr;
-				if (rtv61) {
-					rtv61->GetResource(&res61);
+				rbPostResolve = SampleLogicalRT(rtm, renderer, 0x61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61);
+				const auto p6a = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
+				++g_rbSamples;
+				if (PixelDark(g_rbFormat61, rbPostResolve)) {
+					++g_rbDark61;
 				}
-				if (rtv6a) {
-					rtv6a->GetResource(&res6a);
+				if (PixelDark(g_rbFormat6a, p6a)) {
+					++g_rbDark6a;
 				}
-				const auto tex61 = static_cast<ID3D11Texture2D*>(res61);
-				const auto tex6a = static_cast<ID3D11Texture2D*>(res6a);
-				if (!d3dCtx || !tex61 || !tex6a) {
-					static bool failLogged = false;
-					if (!failLogged) {
-						failLogged = true;
-						logger::warn(
-							FMT_STRING("READBACK init failed: ctx={} phys61={} phys6a={} rtv61={} rtv6a={}"),
-							reinterpret_cast<const void*>(d3dCtx), phys61, phys6a,
-							reinterpret_cast<const void*>(rtv61), reinterpret_cast<const void*>(rtv6a));
-					}
-				}
-				if (d3dCtx && tex61 && tex6a &&
-					EnsureStaging(d3dCtx, tex61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61) &&
-					EnsureStaging(d3dCtx, tex6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a)) {
-					const auto p61 = SampleCenterPixel(d3dCtx, tex61, g_stage61, g_rbW61, g_rbH61);
-					const auto p6a = SampleCenterPixel(d3dCtx, tex6a, g_stage6a, g_rbW6a, g_rbH6a);
-					++g_rbSamples;
-					const bool dark61 = PixelDarkF16(p61);
-					const bool dark6a = PixelDarkF16(p6a);
-					if (dark61) {
-						++g_rbDark61;
-					}
-					if (dark6a) {
-						++g_rbDark6a;
-					}
-					if (dark61 || dark6a) {
-						static std::uint32_t darkLogs = 0;
-						if (darkLogs < 30) {
-							++darkLogs;
-							logger::warn(
-								FMT_STRING("READBACK dark frame: 0x61={:016X}{} 0x6a={:016X}{} (fmt61={} fmt6a={} {}x{})"),
-								p61, dark61 ? " DARK" : "", p6a, dark6a ? " DARK" : "",
-								g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
-						}
-					} else {
-						static std::uint32_t baselineLogs = 0;
-						if (baselineLogs < 3) {
-							++baselineLogs;
-							logger::info(
-								FMT_STRING("READBACK baseline: 0x61={:016X} 0x6a={:016X} (fmt61={} fmt6a={} {}x{})"),
-								p61, p6a, g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
-						}
-					}
-				}
-				if (res61) {
-					res61->Release();
-				}
-				if (res6a) {
-					res6a->Release();
+				static std::uint32_t baselineLogs = 0;
+				if (baselineLogs < 3) {
+					++baselineLogs;
+					logger::info(
+						FMT_STRING("READBACK baseline post-resolve: 0x61={:016X} 0x6a={:016X} (fmt61={} fmt6a={} {}x{})"),
+						rbPostResolve, p6a, g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
 				}
 			}
 
@@ -873,6 +879,14 @@ namespace TrueScopes::ScopeRender
 				g_diagSkyDrawn = 1;
 			}
 
+			std::uint64_t rbPostSky = ~0ull;
+			if (*Settings::diagLensReadback) {
+				rbPostSky = SampleLogicalRT(rtm, renderer, 0x61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61);
+				if (PixelDark(g_rbFormat61, rbPostSky)) {
+					++g_rbDark61Sky;
+				}
+			}
+
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
 			RENDER_STEP(16);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
@@ -941,6 +955,24 @@ namespace TrueScopes::ScopeRender
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 				break;
+			}
+
+			if (*Settings::diagLensReadback) {
+				const auto rbLens = SampleLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens),
+					&g_stage62, g_rbFormat62, g_rbW62, g_rbH62);
+				const bool darkLens = PixelDark(g_rbFormat62, rbLens);
+				if (darkLens) {
+					++g_rbDark62;
+				}
+				if (darkLens || PixelDark(g_rbFormat61, rbPostSky) || PixelDark(g_rbFormat61, rbPostResolve)) {
+					static std::uint32_t darkLogs = 0;
+					if (darkLogs < 30) {
+						++darkLogs;
+						logger::warn(
+							FMT_STRING("READBACK DARK: postResolve61={:016X} postSky61={:016X} lens62={:016X} (fmt62={} {}x{})"),
+							rbPostResolve, rbPostSky, rbLens, g_rbFormat62, g_rbW62, g_rbH62);
+					}
+				}
 			}
 
 			RENDER_STEP(18);
@@ -1162,10 +1194,10 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
-				g_rbSamples, g_rbDark61, g_rbDark6a,
+				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
