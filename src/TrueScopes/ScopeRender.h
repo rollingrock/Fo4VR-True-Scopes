@@ -45,4 +45,50 @@ namespace TrueScopes::ScopeRender
 	// Called on scope-in (after the TOML reload) when retryAfterFault is set —
 	// lets the user bisect a faulting config live instead of restarting the game.
 	void RetryAfterFault();
+
+	// --- DevBench surface (v0.2.65) -----------------------------------------
+	// Everything below exists so the query server can answer questions that
+	// previously required grepping the heartbeat log (emitted only every 300
+	// renders) or attaching a debugger.
+
+	// Request a full-surface dump on the NEXT render, regardless of the
+	// diagDumpLensEveryNRenders cadence. Removes the "set every=N, guess a
+	// window, hope it crosses a multiple" dance — which silently produced zero
+	// files during the 2026-08-08 session because the render rate (~9/s) was far
+	// below the assumed one.
+	void RequestDump();
+
+	// Count of completed dump EVENTS. Poll after RequestDump() to know the dump
+	// actually happened rather than assuming it did.
+	std::uint64_t DumpEventCount();
+
+	// Index (frame counter) used to name the files of the most recent dump event,
+	// i.e. the NNNNNN in <NNNNNN>_62_lens.bmp. 0 = nothing dumped yet.
+	std::uint64_t LastDumpIndex();
+
+	// Live snapshot of the render diagnostics. These are the same values the
+	// heartbeat prints, plus the engine pointers we resolve at Init() — having
+	// those readable means an ad-hoc /read can target the sun pass config, the
+	// render context or the accumulator without re-deriving anything.
+	struct Diagnostics
+	{
+		// resolved once at Init (0 = unresolved)
+		std::uintptr_t ssnArray, accum, gfxState, ctxPtrA, ctxPtrB, sunConfig;
+		// captured each render
+		std::uintptr_t rtm, renderer, camera;
+		// lifecycle
+		std::uint64_t renders;
+		std::int32_t  lastStep;
+		bool          available, faulted, sunBindHooks;
+		// counters (cumulative)
+		std::uint64_t nan61, nan62, sunPreNaN, sunPostNaN, camDataBad, invProjRejects, fogNulls, dumpFiles;
+		// last-render state
+		std::uint32_t passTotal;
+		std::int32_t  lightsShadowed, lightsQueued, eyeCount;
+		std::int32_t  sunPass, sunIsSSN, skyRoots, skyDrawn;
+		std::uint32_t sunCfgFlags;
+		float         camRect[6];
+		std::int32_t  viewport[6];
+	};
+	Diagnostics GetDiagnostics();
 }

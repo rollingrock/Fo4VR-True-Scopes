@@ -123,6 +123,13 @@ namespace TrueScopes::ScopeRender
 		bool g_available = false;
 		bool g_faulted = false;  // fault latch (vs never-initialized) — clearable via RetryAfterFault
 		std::atomic<std::uint32_t> g_renderTid{ 0 };  // thread id while our renderer+4 bracket is live (see Hooks::ScopePassReadHook)
+		// v0.2.65 DevBench surface: render counter promoted out of Render()'s local
+		// static, the per-render engine pointers, and the on-demand dump handshake.
+		std::uint64_t              g_renders = 0;
+		std::uintptr_t             g_lastRtm = 0, g_lastRenderer = 0, g_lastCam = 0;
+		std::atomic_bool           g_dumpRequest{ false };
+		std::atomic<std::uint64_t> g_dumpEvents{ 0 };
+		std::atomic<std::uint64_t> g_lastDumpIndex{ 0 };
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
 		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
 
@@ -388,7 +395,23 @@ namespace TrueScopes::ScopeRender
 					// misreported as a step-17 "vanilla lens copy" fault because the
 					// dump sits inside that step's span. Unknown formats are now
 					// skipped by DumpLogicalRT before we ever map them.
-					case 10: {  // R16G16B16A16_FLOAT
+					// v0.2.65: the G-buffer NORMALS target (0x64) is DXGI format 35 =
+				// R16G16_UNORM — two channels, 4 bytes/pixel, i.e. an encoded
+				// (octahedral or hemi) normal with Z reconstructed in-shader. It had
+				// no case here, so every normals dump was silently skipped and that
+				// buffer has never actually been looked at.
+				// Shown as R=x, G=y, B=0 deliberately: no Z is reconstructed, because
+				// guessing the wrong encoding would produce a plausible-looking image
+				// that lies. Two channels of truth beat three of speculation.
+				// UNORM cannot be NaN, so this buffer never contributes to NaN%.
+				case 35: {  // R16G16_UNORM
+					const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 4u);
+					r = static_cast<std::uint8_t>(p[0] >> 8);
+					g = static_cast<std::uint8_t>(p[1] >> 8);
+					b = 0;
+					break;
+				}
+				case 10: {  // R16G16B16A16_FLOAT
 						const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 8u);
 						const auto half = [](std::uint16_t h) {
 							const auto sign = (h >> 15) & 1u;
@@ -443,6 +466,7 @@ namespace TrueScopes::ScopeRender
 			case 29:  // R8G8B8A8_UNORM_SRGB
 			case 87:  // B8G8R8A8_UNORM
 			case 91:  // B8G8R8A8_UNORM_SRGB
+			case 35:  // R16G16_UNORM — the G-buffer normals target (v0.2.65)
 			case 10:  // R16G16B16A16_FLOAT
 				break;
 			default: {
@@ -772,6 +796,12 @@ namespace TrueScopes::ScopeRender
 			if (!cam) {
 				return;
 			}
+
+			// v0.2.65: publish the per-render engine pointers for DevBench /addresses,
+			// so an ad-hoc /read can target the camera or the RT manager directly.
+			g_lastRtm = rtm;
+			g_lastRenderer = renderer;
+			g_lastCam = cam;
 
 			// Place the camera at the objective end of the scope tube (weapon-local
 			// offset; the node is parented under PrimaryWeaponOffsetNode). SetCameraFOV
@@ -1546,8 +1576,13 @@ namespace TrueScopes::ScopeRender
 			{
 				static std::uint64_t dumpSeq = 0;
 				++dumpSeq;
-				if (const auto every = *Settings::diagDumpLensEveryNRenders;
-					every > 0 && (dumpSeq % static_cast<std::uint64_t>(every)) == 0) {
+				// v0.2.65: an explicit request (DevBench /dump/now) fires on the very
+				// next render regardless of cadence. The modulo path alone silently
+				// produced nothing when the probe window was shorter than the period —
+				// with the render rate ~9/s, `every=200` needs 20+ seconds to be sure.
+				const bool onDemand = g_dumpRequest.exchange(false);
+				const auto every = *Settings::diagDumpLensEveryNRenders;
+				if (onDemand || (every > 0 && (dumpSeq % static_cast<std::uint64_t>(every)) == 0)) {
 					// v0.2.55 established the composite is NaN on exactly the pixels
 					// covered by world geometry, while the (separately drawn, forward)
 					// sky stays clean — so the corruption is inside the deferred chain.
@@ -1564,6 +1599,11 @@ namespace TrueScopes::ScopeRender
 					}
 					DumpLogicalRT(rtm, renderer, 0x61, "61_composite"sv, dumpSeq);
 					DumpLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens), "62_lens"sv, dumpSeq);
+					// Publish AFTER the files are written, so a client that polls
+					// DumpEventCount() and then reads the directory cannot race a
+					// half-written BMP.
+					g_lastDumpIndex.store(dumpSeq);
+					g_dumpEvents.fetch_add(1);
 				}
 			}
 
@@ -1770,8 +1810,8 @@ namespace TrueScopes::ScopeRender
 		// Accumulation diagnostics: first few renders + a heartbeat. "total=0" means
 		// nothing accumulated (coverage problem); nonzero groups that still resolve
 		// black point at the resolve/bind side instead.
-		static std::uint64_t renders = 0;
-		++renders;
+		++g_renders;
+		const auto renders = g_renders;
 		// v0.2.41 stutter-theory verifier: every sunPass value TRANSITION is logged
 		// (rate-limited). If the black-silhouette bursts were dirty-config frames,
 		// pre-fix logs would show 1->0 at burst start and 0->1 at burst end; post-fix
@@ -1927,5 +1967,68 @@ namespace TrueScopes::ScopeRender
 	void SetSunBindHooksInstalled(bool a_installed)
 	{
 		g_sunBindHooksInstalled = a_installed;
+	}
+
+	// --- DevBench surface (v0.2.65) -----------------------------------------
+
+	void RequestDump()
+	{
+		g_dumpRequest.store(true);
+	}
+
+	std::uint64_t DumpEventCount()
+	{
+		return g_dumpEvents.load();
+	}
+
+	std::uint64_t LastDumpIndex()
+	{
+		return g_lastDumpIndex.load();
+	}
+
+	Diagnostics GetDiagnostics()
+	{
+		// Read off the render thread without locking. Every field is a scalar the
+		// render thread writes and nobody else touches, so a torn read costs at
+		// worst one stale value in a diagnostic — not worth a lock on the render
+		// path. Treat a single sample as indicative, not atomic across fields.
+		Diagnostics d{};
+		d.ssnArray = g_ssnArray;
+		d.accum = reinterpret_cast<std::uintptr_t>(g_accum);
+		d.gfxState = g_gfxState;
+		d.ctxPtrA = g_ctxPtrA;
+		d.ctxPtrB = g_ctxPtrB;
+		d.sunConfig = g_sunConfig;
+		d.rtm = g_lastRtm;
+		d.renderer = g_lastRenderer;
+		d.camera = g_lastCam;
+
+		d.renders = g_renders;
+		d.lastStep = static_cast<std::int32_t>(g_lastStep);
+		d.available = g_available && !g_faulted;
+		d.faulted = g_faulted;
+		d.sunBindHooks = g_sunBindHooksInstalled;
+
+		d.nan61 = g_rbNaN61;
+		d.nan62 = g_rbNaN62;
+		d.sunPreNaN = g_sunPreNaN;
+		d.sunPostNaN = g_sunPostNaN;
+		d.camDataBad = g_camDataBad;
+		d.invProjRejects = g_invProjRejects;
+		d.fogNulls = g_diagFogNulls;
+		d.dumpFiles = g_dumpFiles;
+
+		d.passTotal = g_passTotal;
+		d.lightsShadowed = g_diagLightsA;
+		d.lightsQueued = g_diagLightsB;
+		d.eyeCount = g_diagEyeCount;
+		d.sunPass = g_diagSunPass;
+		d.sunIsSSN = g_diagSunIsSSNSun;
+		d.skyRoots = g_diagSkyRoots;
+		d.skyDrawn = g_diagSkyDrawn;
+		d.sunCfgFlags = g_diagSunCfgFlags;
+		std::memcpy(d.camRect, g_diagRect, sizeof(d.camRect));
+		std::memcpy(d.viewport, g_diagViewport, sizeof(d.viewport));
+		return d;
 	}
 }

@@ -370,7 +370,9 @@ namespace DevBench
 			return
 				"{\"ok\":true,\"plugin\":\"TrueScopesVR\",\"tier\":1,\"endpoints\":["
 				"{\"path\":\"/health\",\"desc\":\"liveness + identity; answered without touching game state\"},"
-				"{\"path\":\"/state\",\"desc\":\"render availability, own-resolve flag, render thread id\"},"
+				"{\"path\":\"/state\",\"desc\":\"full render diagnostics: fault latch, lastStep, NaN/sun/camdata counters, last-render pass+light+sky+viewport values\"},"
+				"{\"path\":\"/addresses\",\"desc\":\"resolved engine pointers (ssn, accumulator, gfxState, render ctx, sun config, rtm, renderer, scope camera) as va+rva - feed them to /read\"},"
+				"{\"path\":\"/dump/now\",\"desc\":\"?timeoutMs=5000 - dump the lens chain on the NEXT render and wait for it; returns the file prefix. Set diagDumpBuffers=true first for the G-buffer/accum buffers\"},"
 				"{\"path\":\"/config\",\"desc\":\"every TOML setting and its live value\"},"
 				"{\"path\":\"/config/set\",\"desc\":\"?key=NAME&value=V - set one setting live, no scope-cycle needed\"},"
 				"{\"path\":\"/config/reload\",\"desc\":\"re-read TrueScopesVR.toml now\"},"
@@ -393,15 +395,138 @@ namespace DevBench
 			return out;
 		}
 
+		// Every value the heartbeat prints, available on demand instead of every
+		// 300th render. Before this, answering "is the sun pass running / is
+		// anything NaN / did the sky draw" meant grepping a log line that may not
+		// have been emitted yet.
 		std::string HandleState()
 		{
+			const auto d = TrueScopes::ScopeRender::GetDiagnostics();
+			const auto b = [](bool v) { return std::string{ v ? "true" : "false" }; };
+
 			std::string out = "{\"ok\":true";
-			out += ",\"renderAvailable\":" + std::string{ TrueScopes::ScopeRender::Available() ? "true" : "false" };
-			out += ",\"inOwnResolve\":" + std::string{ TrueScopes::ScopeRender::InOwnResolve() ? "true" : "false" };
+			out += ",\"renderAvailable\":" + b(d.available);
+			out += ",\"faulted\":" + b(d.faulted);
+			out += ",\"lastStep\":" + std::to_string(d.lastStep);
+			out += ",\"renders\":" + std::to_string(d.renders);
+			out += ",\"inOwnResolve\":" + b(TrueScopes::ScopeRender::InOwnResolve());
 			out += ",\"ownRenderThread\":" + std::to_string(TrueScopes::ScopeRender::OwnRenderThread());
+			out += ",\"sunBindHooks\":" + b(d.sunBindHooks);
+
+			out += ",\"counters\":{";
+			out += "\"nan61\":" + std::to_string(d.nan61);
+			out += ",\"nan62\":" + std::to_string(d.nan62);
+			out += ",\"sunPreNaN\":" + std::to_string(d.sunPreNaN);
+			out += ",\"sunPostNaN\":" + std::to_string(d.sunPostNaN);
+			out += ",\"camDataBad\":" + std::to_string(d.camDataBad);
+			out += ",\"invProjRejects\":" + std::to_string(d.invProjRejects);
+			out += ",\"fogNulls\":" + std::to_string(d.fogNulls);
+			out += ",\"dumpFiles\":" + std::to_string(d.dumpFiles);
+			out += "}";
+
+			out += ",\"lastRender\":{";
+			out += "\"passTotal\":" + std::to_string(d.passTotal);
+			out += ",\"lightsShadowed\":" + std::to_string(d.lightsShadowed);
+			out += ",\"lightsQueued\":" + std::to_string(d.lightsQueued);
+			out += ",\"eyeCount\":" + std::to_string(d.eyeCount);
+			out += ",\"sunPass\":" + std::to_string(d.sunPass);
+			out += ",\"sunIsSSN\":" + std::to_string(d.sunIsSSN);
+			out += ",\"sunCfgFlags\":" + Quote(Hex(d.sunCfgFlags));
+			out += ",\"skyRoots\":" + std::to_string(d.skyRoots);
+			out += ",\"skyDrawn\":" + std::to_string(d.skyDrawn);
+			out += ",\"camRect\":[";
+			for (int k = 0; k < 6; ++k) {
+				if (k) out += ",";
+				char buf[48];
+				// camRect[4]/[5] are the D3D11 viewport min/max depth. They were
+				// garbage until v0.2.64 (XMM-argument bug); a non-(0,1) pair here
+				// means that regressed.
+				if (std::isfinite(d.camRect[k])) std::snprintf(buf, sizeof(buf), "%.9g", d.camRect[k]);
+				else                             std::snprintf(buf, sizeof(buf), "\"%s\"", std::isnan(d.camRect[k]) ? "NaN" : "Inf");
+				out += buf;
+			}
+			out += "],\"viewportRaw\":[";
+			for (int k = 0; k < 6; ++k) {
+				if (k) out += ",";
+				out += std::to_string(d.viewport[k]);
+			}
+			out += "]}";
+
 			out += ",\"moduleBase\":" + Quote(Hex(REL::Module::get().base()));
 			out += "}";
 			return out;
+		}
+
+		// The engine pointers we resolve at Init. Publishing them turns /read into
+		// a general probe: you can walk the sun pass config or the render context
+		// without re-deriving an address from a call site first.
+		std::string HandleAddresses()
+		{
+			const auto  d = TrueScopes::ScopeRender::GetDiagnostics();
+			const auto  base = REL::Module::get().base();
+			std::string out = "{\"ok\":true,\"base\":" + Quote(Hex(base)) + ",\"addresses\":{";
+
+			const std::pair<const char*, std::uintptr_t> rows[] = {
+				{ "ssnArray", d.ssnArray },
+				{ "accumulator", d.accum },
+				{ "gfxState", d.gfxState },
+				{ "ctxPtrA", d.ctxPtrA },
+				{ "ctxPtrB", d.ctxPtrB },
+				{ "sunConfig", d.sunConfig },
+				{ "rtManager", d.rtm },
+				{ "renderer", d.renderer },
+				{ "scopeCamera", d.camera },
+			};
+			bool first = true;
+			for (const auto& [name, va] : rows) {
+				if (!first) out += ",";
+				first = false;
+				// Report both forms: the VA for a direct /read, and the RVA so it can
+				// be pasted straight into Ghidra. 0 = not resolved yet (Init failed,
+				// or no render has run so the per-render pointers are unset).
+				out += Quote(name) + ":{\"va\":" + Quote(Hex(va));
+				if (va >= base) out += ",\"rva\":" + Quote(Hex(va - base));
+				out += "}";
+			}
+			out += "}}";
+			return out;
+		}
+
+		// Dump on the NEXT render and wait for it, rather than setting a cadence and
+		// hoping the window is long enough. On 2026-08-08 a 4-second window at
+		// every=200 produced zero files because the render rate is ~9/s, and the
+		// silence looked like a broken code path.
+		std::string HandleDumpNow(const Request& a_req)
+		{
+			std::int64_t timeoutMs = 5000;
+			{
+				const std::string t = a_req.GetOr("timeoutMs", "5000");
+				std::from_chars(t.data(), t.data() + t.size(), timeoutMs);
+			}
+			timeoutMs = std::clamp<std::int64_t>(timeoutMs, 100, 30000);
+
+			const auto before = TrueScopes::ScopeRender::DumpEventCount();
+			TrueScopes::ScopeRender::RequestDump();
+
+			const auto deadline = ::GetTickCount64() + static_cast<std::uint64_t>(timeoutMs);
+			while (TrueScopes::ScopeRender::DumpEventCount() == before && ::GetTickCount64() < deadline) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(15));
+			}
+			const auto after = TrueScopes::ScopeRender::DumpEventCount();
+			if (after == before) {
+				// Say why nothing happened instead of just failing: the overwhelmingly
+				// common cause is that no render is running (scope not raised).
+				return Err("no dump within " + std::to_string(timeoutMs) +
+						   "ms — is the scope raised and rendering? (GET /state, check `renders` advancing)");
+			}
+
+			const auto index = TrueScopes::ScopeRender::LastDumpIndex();
+			char       prefix[32];
+			std::snprintf(prefix, sizeof(prefix), "%06llu", static_cast<unsigned long long>(index));
+			return "{\"ok\":true,\"index\":" + std::to_string(index) +
+				   ",\"filePrefix\":" + Quote(prefix) +
+				   ",\"events\":" + std::to_string(after) +
+				   ",\"note\":\"buffers beyond 61/62 require diagDumpBuffers=true\"}";
 		}
 
 		// Keys set live through /config/set. Re-applied after every
@@ -633,6 +758,8 @@ namespace DevBench
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
 			if (a_req.path == "/health")                        return HandleHealth();
 			if (a_req.path == "/state")                         return HandleState();
+			if (a_req.path == "/addresses")                     return HandleAddresses();
+			if (a_req.path == "/dump/now")                      return HandleDumpNow(a_req);
 			if (a_req.path == "/config")                        return HandleConfig();
 			if (a_req.path == "/config/set")                    return HandleConfigSet(a_req);
 			if (a_req.path == "/config/reload")                 return HandleConfigReload();
