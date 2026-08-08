@@ -16,6 +16,7 @@ namespace TrueScopes::Hooks
 		// engages — but the enable switch still edge-triggers its show/hide block off
 		// this value exactly like vanilla.
 		std::atomic_bool g_scopeActive = false;
+		std::atomic<std::uint64_t> g_lastGateOnTick{ 0 };  // last tick the eye-gate reported ON (hysteresis)
 
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
 
@@ -30,15 +31,32 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk([[maybe_unused]] void* a_renderer, char a_on)
 			{
+				// v0.2.50 GATE HYSTERESIS — THE BLACK-BURST FIX. The vanilla eye-gate
+				// flickers off in 200-900ms windows while aiming/moving; every OFF
+				// edge plays the ScopeMenu widget's fade-to-black over the lens
+				// picture area (reticle above it stays; crescent outside it stays) =
+				// the "black bursts" chased through v0.2.41-49 (all render-side
+				// stages proven lit by three-point GPU readback; the black was never
+				// in the texture). ON propagates instantly; OFF only after the gate
+				// stayed off for scopeOffHoldMs — blips are swallowed, a real
+				// scope-lower still closes the widget, just a beat later.
 				const bool on = a_on != 0;
-				if (g_scopeActive.exchange(on) != on) {
-					logger::info(FMT_STRING("scope active -> {}"), on);
-					if (on) {
+				const auto now = static_cast<std::uint64_t>(::GetTickCount64());
+				if (on) {
+					g_lastGateOnTick.store(now);
+					if (!g_scopeActive.exchange(true)) {
+						logger::info("scope active -> true"sv);
 						// live-tuning loop: re-read the TOML on every scope-in
 						Settings::load();
 						if (*Settings::retryAfterFault) {
 							ScopeRender::RetryAfterFault();
 						}
+					}
+				} else if (g_scopeActive.load()) {
+					const auto holdMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
+					if (now - g_lastGateOnTick.load() >= holdMs) {
+						g_scopeActive.store(false);
+						logger::info("scope active -> false"sv);
 					}
 				}
 				// deliberately NOT writing renderer+3

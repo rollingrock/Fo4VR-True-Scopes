@@ -84,3 +84,7 @@ diagLensReadback = false
 # Burst forensics (v0.2.45): tint non-filled frames - RED = eye-gate pause,
 # GREEN = cadence skip. A colored "burst" means the burst is a non-filled frame.
 diagPauseTint = false
+
+# Eye-gate OFF hysteresis (v0.2.50): swallow the gate blips that played the widget
+# fade-to-black over the lens (the black bursts). 0 = vanilla behavior.
+scopeOffHoldMs = 1500

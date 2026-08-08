@@ -55,7 +55,14 @@ namespace Settings
 	// lensMode 1 never stutters, cadence 2 never stutters, cadence 1 does) —
 	// per-frame engine resource contention; root cause hunt deferred.
 	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(2));
+	// Eye-gate OFF hysteresis in ms (v0.2.50): the vanilla gate flickers off in
+	// 200-900ms windows while aiming, and every off-edge plays the widget's
+	// fade-to-black over the lens (the "black bursts"). Off-edges are only
+	// honored after the gate stayed off this long. 0 = vanilla behavior.
+	MAKE_SETTING(iSetting, "TrueScopesVR", scopeOffHoldMs, std::int64_t(1500));
 	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
+	// WARNING (2026-08-08): currently CRASHES on scope-in (ScopeMenu/input-layer
+	// null-deref, crash-2026-08-08-17-07-51) — needs rework before use.
 	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
 	// works correctly — this just keeps the widget/fill on at all times.
 	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, false);
@@ -147,6 +154,7 @@ namespace Settings
 
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
+		LOAD(scopeOffHoldMs);
 		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
