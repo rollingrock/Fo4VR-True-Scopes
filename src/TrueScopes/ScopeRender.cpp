@@ -91,6 +91,7 @@ namespace TrueScopes::ScopeRender
 		constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;      // g_player (F4SEVR, live-verified)
 		constexpr std::uintptr_t kRTManager = 0x38ac010;         // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
 		constexpr std::uintptr_t kRendererRVA = 0x6239340;       // BSGraphics::Renderer (live-verified)
+		constexpr std::uintptr_t kIsmInstanceRVA = 0x68789e8;    // ImageSpaceManager::pInstance (RIP-decoded from FUN_1427b08c0 +0x63)
 		constexpr std::uintptr_t kCamOffsetInPlayer = 0x720;     // PrimaryWeaponScopeCamera (VR camera type: eye count +0x208, port +0x214, frusta array +0x1a0)
 
 		// --- data resolved at runtime from code anchors ---
@@ -935,6 +936,24 @@ namespace TrueScopes::ScopeRender
 			// the accum itself is blown flat, the sun PASS writes garbage; if the
 			// accum looks sane, the COMPOSITE consumption is at fault.
 			RENDER_STEP(17);
+			// v0.2.49 DELIVERY CAMERA GUARD (black/blue-burst suspect #6, the best
+			// yet): ImageSpace effects select their render camera via the manager's
+			// +0x60 byte (FUN_1427b01a0: 0 -> mgr+0x28 [or +0x38 in VR], 1 -> the
+			// TRANSIENT slot mgr+0x58 that engine stages own around their own
+			// effect renders, e.g. FUN_140c875f0's tail). If a concurrent stage
+			// holds the byte when our delivery runs, the tonemap quad renders with
+			// a foreign/stale camera -> wrong viewport -> silently draws nothing
+			// (lens keeps whatever was painted before = blue with the diag tint)
+			// or garbage over the footprint (black). Force the normal selector for
+			// the duration of our delivery; restore after. (If a racing stage's
+			// own effect glitches for a frame in exchange, we'll see it in the
+			// MAIN view at former-burst moments and refine.)
+			const auto ismMgr = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kIsmInstanceRVA);
+			std::uint8_t savedIsmBusy = 0;
+			if (ismMgr) {
+				savedIsmBusy = *reinterpret_cast<std::uint8_t*>(ismMgr + 0x60);
+				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = 0;
+			}
 			switch (*Settings::lensMode) {
 			case 3:
 				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
@@ -956,6 +975,9 @@ namespace TrueScopes::ScopeRender
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 				break;
+			}
+			if (ismMgr) {
+				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
 			}
 
 			if (*Settings::diagLensReadback) {
