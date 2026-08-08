@@ -56,6 +56,14 @@ accumClearAlpha = 1.0
 # Draw the sky in the lens (v0.2.36). Off = sky regions stay black (the old look).
 skyEnabled = true
 
+# Which sky roots feed the lens sky: 1 = sky dome only, 2 = sun/clouds only, 3 = both.
+# If the render faults at "sky draw", bisect with 1 (the sun/cloud root is the suspect).
+skyRootMask = 3
+
+# After a render fault, re-attempt on the next scope-in instead of staying on the
+# copy-fill fallback for the whole session. Each fault is logged with its step.
+retryAfterFault = true
+
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false

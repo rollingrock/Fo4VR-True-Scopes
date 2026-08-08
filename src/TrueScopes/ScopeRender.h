@@ -25,4 +25,9 @@ namespace TrueScopes::ScopeRender
 	// Hooks::Install reports whether the two resolve bind sites were hooked; the sun
 	// pre-draw is skipped when they are not (it would just be cleared again).
 	void SetSunBindHooksInstalled(bool a_installed);
+
+	// Clear the fault latch so the next Render() attempts the own render again.
+	// Called on scope-in (after the TOML reload) when retryAfterFault is set —
+	// lets the user bisect a faulting config live instead of restarting the game.
+	void RetryAfterFault();
 }

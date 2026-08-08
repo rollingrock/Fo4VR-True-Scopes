@@ -100,6 +100,14 @@ namespace Settings
 	// accumulation didn't already produce group-0xC passes, then draw group 0xC into
 	// 0x61 after the composite (vanilla order: depth-tested, fills only far pixels).
 	MAKE_SETTING(bSetting, "TrueScopesVR", skyEnabled, true);
+	// Which sky roots to accumulate: 1 = dome only (Sky+0x8), 2 = sun/cloud only,
+	// 3 = both. Bisects a faulting root live (the sun/cloud root carries the
+	// occlusion-query glare geometry — prime suspect if the sky draw faults).
+	MAKE_SETTING(iSetting, "TrueScopesVR", skyRootMask, std::int64_t(3));
+	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
+	// session-permanent). Lets a faulting config be bisected via TOML edits without
+	// restarting the game. The faulting step is logged each time.
+	MAKE_SETTING(bSetting, "TrueScopesVR", retryAfterFault, true);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -141,6 +149,8 @@ namespace Settings
 		LOAD(accumClearScale);
 		LOAD(accumClearAlpha);
 		LOAD(skyEnabled);
+		LOAD(skyRootMask);
+		LOAD(retryAfterFault);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

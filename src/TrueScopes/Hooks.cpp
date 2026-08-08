@@ -36,6 +36,9 @@ namespace TrueScopes::Hooks
 					if (on) {
 						// live-tuning loop: re-read the TOML on every scope-in
 						Settings::load();
+						if (*Settings::retryAfterFault) {
+							ScopeRender::RetryAfterFault();
+						}
 					}
 				}
 				// deliberately NOT writing renderer+3

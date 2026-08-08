@@ -103,6 +103,7 @@ namespace TrueScopes::ScopeRender
 
 		void* g_accum = nullptr;
 		bool g_available = false;
+		bool g_faulted = false;  // fault latch (vs never-initialized) — clearable via RetryAfterFault
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
 		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
 
@@ -391,37 +392,22 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
-			// --- SKY accumulation (v0.2.36) ---
+			// --- SKY group check (v0.2.37) ---
 			// The sky is NOT drawn by the deferred resolve: it is accumulator GROUP 0xC,
 			// drawn by vanilla right after the composite (tail of FUN_14284bd00: RT 0x61
 			// mode 3 + queued group draw 0x28bc680(queue,0xC,ctx,0) — inside the
-			// renderer+4 span, which is why the vanilla scoped lens has sky). The world
-			// SSN accumulation may or may not include the sky roots (they are standalone
-			// nodes DrawWorld repositions to the camera each frame); if group 0xC came
-			// out empty, accumulate them explicitly — Sky+0x8 (BSMultiBoundNode, global
-			// 0x146885c00) and its sun/cloud sibling (0x146885c08). Vanilla accumulates
-			// sky roots with flag 0. Guard each root by vtable-in-module sanity: these
-			// are high-.data globals where Ghidra labels have been wrong before.
+			// renderer+4 span, which is why the vanilla scoped lens has sky). Confirmed
+			// 2026-08-08: the world SSN accumulation does NOT include the sky roots
+			// (group 0xC empty here), so we accumulate them explicitly — but AFTER the
+			// resolve, not here. v0.2.36 accumulated them at this point and the resolve
+			// faulted (step 14, rva 0x28912C7, null-deref in pass-technique setup): the
+			// sky/sun/cloud roots file passes into OTHER groups too — groups the resolve
+			// draws — and at least one such pass is invalid outside vanilla's sky stage
+			// (sun glare/occlusion-query geometry suspected). Post-resolve, junk groups
+			// are simply never drawn and FinishAccum releases them properly.
 			RENDER_STEP(12);
 			const auto skyGroup = accum + 0x18 + 0xc * 0x678;
 			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
-			g_diagSkyRoots = 0;
-			if (*Settings::skyEnabled && g_diagSkyEmptyPre != 0) {
-				const auto base = REL::Module::get().base();
-				for (const auto rootRva : { std::uintptr_t{ 0x6885c00 }, std::uintptr_t{ 0x6885c08 } }) {
-					const auto root = *reinterpret_cast<const std::uintptr_t*>(base + rootRva);
-					if (!root || (root & 7) != 0) {
-						continue;
-					}
-					const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(root);
-					if (vtbl < base || vtbl >= base + 0x0a000000) {
-						continue;  // not an engine vtable -> mislabeled global, skip
-					}
-					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
-					++g_diagSkyRoots;
-				}
-			}
-			g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
 
 			// --- SUN (v0.2.26) ---
 			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT. The
@@ -593,16 +579,46 @@ namespace TrueScopes::ScopeRender
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 
-			// --- SKY draw (v0.2.36) ---
+			// --- SKY accumulate + draw (v0.2.37: both post-resolve) ---
 			// Vanilla order: composite into 0x61, THEN draw group 0xC into 0x61 with the
 			// scene DS bound no-clear — sky geometry depth-tests against the world and
-			// fills only far pixels (replacing our black pre-clear). Must run BEFORE
-			// FinishAccum (0x281e750 clears every group's pass lists). Ctx is built
-			// AFTER the binds (v0.2.35 lesson: it snapshots the current slot-0 RT for
-			// screen-size constants). Camera state re-set defensively: the resolve
-			// re-commits internally but never maintains staging+0x1d0.
+			// fills only far pixels (replacing our black pre-clear). Accumulating the
+			// roots here (after the resolve) means whatever they file into OTHER groups
+			// is never drawn — the v0.2.36 step-14 fault — and FinishAccum releases it.
+			// Must run BEFORE FinishAccum (0x281e750 clears every group's pass lists).
+			// Ctx is built AFTER the binds (v0.2.35 lesson: it snapshots the current
+			// slot-0 RT for screen-size constants). Camera state re-set defensively:
+			// the resolve re-commits internally but never maintains staging+0x1d0.
+			// skyRootMask bisects a faulting root without a rebuild: 1 = sky dome only
+			// (Sky+0x8), 2 = sun/cloud only, 3 = both.
 			RENDER_STEP(15);
 			g_diagSkyDrawn = 0;
+			g_diagSkyRoots = 0;
+			g_diagSkyEmptyPost = g_diagSkyEmptyPre;
+			if (*Settings::skyEnabled && g_diagSkyEmptyPre != 0) {
+				const auto base = REL::Module::get().base();
+				const auto mask = static_cast<std::uint32_t>(*Settings::skyRootMask);
+				constexpr struct { std::uintptr_t rva; std::uint32_t bit; } kSkyRoots[] = {
+					{ 0x6885c00, 1 },  // Sky+0x8 (BSMultiBoundNode, the dome)
+					{ 0x6885c08, 2 },  // sun/cloud geometry sibling
+				};
+				for (const auto& r : kSkyRoots) {
+					if (!(mask & r.bit)) {
+						continue;
+					}
+					const auto root = *reinterpret_cast<const std::uintptr_t*>(base + r.rva);
+					if (!root || (root & 7) != 0) {
+						continue;
+					}
+					const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(root);
+					if (vtbl < base || vtbl >= base + 0x0a000000) {
+						continue;  // not an engine vtable -> mislabeled global, skip
+					}
+					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
+					++g_diagSkyRoots;
+				}
+				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
+			}
 			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
@@ -828,6 +844,7 @@ namespace TrueScopes::ScopeRender
 
 		if (!ok) {
 			g_available = false;
+			g_faulted = true;
 			static constexpr std::string_view kSteps[] = {
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
 				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
@@ -895,6 +912,15 @@ namespace TrueScopes::ScopeRender
 	bool Available()
 	{
 		return g_available;
+	}
+
+	void RetryAfterFault()
+	{
+		if (g_faulted && !g_available) {
+			g_faulted = false;
+			g_available = true;
+			logger::info("ScopeRender: fault latch cleared — retrying own render (retryAfterFault)"sv);
+		}
 	}
 
 	bool InOwnResolve()
