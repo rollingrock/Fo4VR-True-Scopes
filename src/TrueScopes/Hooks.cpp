@@ -16,7 +16,8 @@ namespace TrueScopes::Hooks
 		// engages — but the enable switch still edge-triggers its show/hide block off
 		// this value exactly like vanilla.
 		std::atomic_bool g_scopeActive = false;
-		std::atomic<std::uint64_t> g_lastGateOnTick{ 0 };  // last tick the eye-gate reported ON (hysteresis)
+		std::atomic_bool g_gateRaw = false;                // the eye-gate's latest raw report
+		std::atomic<std::uint64_t> g_gateOffTick{ 0 };     // tick of the last true->false gate transition
 
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
 
@@ -40,10 +41,14 @@ namespace TrueScopes::Hooks
 				// in the texture). ON propagates instantly; OFF only after the gate
 				// stayed off for scopeOffHoldMs — blips are swallowed, a real
 				// scope-lower still closes the widget, just a beat later.
+				// v0.2.51 rework: correct whether the arm write arrives per-frame or
+				// only on gate EDGES (v0.2.50 measured the hold from the last ON
+				// *call* — a no-op if calls are edge-triggered). The OFF timestamp
+				// is taken at the true->false TRANSITION only, and the actual
+				// deactivation is polled from the per-frame fill hook.
 				const bool on = a_on != 0;
-				const auto now = static_cast<std::uint64_t>(::GetTickCount64());
 				if (on) {
-					g_lastGateOnTick.store(now);
+					g_gateRaw.store(true);
 					if (!g_scopeActive.exchange(true)) {
 						logger::info("scope active -> true"sv);
 						// live-tuning loop: re-read the TOML on every scope-in
@@ -52,12 +57,8 @@ namespace TrueScopes::Hooks
 							ScopeRender::RetryAfterFault();
 						}
 					}
-				} else if (g_scopeActive.load()) {
-					const auto holdMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
-					if (now - g_lastGateOnTick.load() >= holdMs) {
-						g_scopeActive.store(false);
-						logger::info("scope active -> false"sv);
-					}
+				} else if (g_gateRaw.exchange(false)) {
+					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
 				}
 				// deliberately NOT writing renderer+3
 			}
@@ -99,6 +100,15 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk()
 			{
+				// v0.2.51 hysteresis poll (runs every frame): honor a gate-OFF only
+				// after it persisted scopeOffHoldMs; an ON in between cancels it.
+				if (g_installed && g_scopeActive.load() && !g_gateRaw.load()) {
+					const auto holdMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
+					if (static_cast<std::uint64_t>(::GetTickCount64()) - g_gateOffTick.load() >= holdMs) {
+						g_scopeActive.store(false);
+						logger::info("scope active -> false (held)"sv);
+					}
+				}
 				if (g_installed && *Settings::fillEnabled) {
 					// Burst forensics v2 (v0.2.46): the tonemap delivery repaints only
 					// its own footprint of RT 0x62 — the rounded top-left crescent is
