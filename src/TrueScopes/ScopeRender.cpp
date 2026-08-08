@@ -405,21 +405,21 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
-			// --- SKY group check (v0.2.37) ---
-			// The sky is NOT drawn by the deferred resolve: it is accumulator GROUP 0xC,
-			// drawn by vanilla right after the composite (tail of FUN_14284bd00: RT 0x61
-			// mode 3 + queued group draw 0x28bc680(queue,0xC,ctx,0) — inside the
-			// renderer+4 span, which is why the vanilla scoped lens has sky). Confirmed
-			// 2026-08-08: the world SSN accumulation does NOT include the sky roots
-			// (group 0xC empty here), so we accumulate them explicitly — but AFTER the
-			// resolve, not here. v0.2.36 accumulated them at this point and the resolve
-			// faulted (step 14, rva 0x28912C7, null-deref in pass-technique setup): the
-			// sky/sun/cloud roots file passes into OTHER groups too — groups the resolve
-			// draws — and at least one such pass is invalid outside vanilla's sky stage
-			// (sun glare/occlusion-query geometry suspected). Post-resolve, junk groups
-			// are simply never drawn and FinishAccum releases them properly.
+			// --- SKY group check (v0.2.40 — corrected premise) ---
+			// GROUND TRUTH (static dive 2026-08-08): sky is NOT group 0xC (that is the
+			// refraction group). BSSkyShaderProperty::GetRenderPasses (FUN_14288e400)
+			// hard-codes the group by skyObjectType: dome/sun/stars/moons -> group
+			// 0x11, clouds -> 0x12 (sun GLARE -> 0x17, skipped for now); renderMode
+			// 0x19 passes its only gate. Vanilla draws 0x11/0x12/0x13 in stage
+			// FUN_14284d680 right after the composite: slot0 RT 0x61 (scoped), slot1
+			// aux RT 0x69, DS 0xC, depth-tested — sky fills only far pixels. The
+			// world SSN accumulation DOES include these passes (baseline 11:2 12:3),
+			// but our pre-resolve decal-group drop (9/0x11/0x12/0x13) deletes them —
+			// correctly: they are the stale already-drawn-and-released passes that
+			// faulted v0.2.11 (the resolve draws 0x11/9 internally) and v0.2.36. We
+			// re-register FRESH ones post-resolve and draw them ourselves.
 			RENDER_STEP(12);
-			const auto skyGroup = accum + 0x18 + 0xc * 0x678;
+			const auto skyGroup = accum + 0x18 + 0x11 * 0x678;
 			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
 
 			// --- SUN (v0.2.26) ---
@@ -592,16 +592,16 @@ namespace TrueScopes::ScopeRender
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 
-			// --- SKY accumulate + draw (v0.2.37: both post-resolve) ---
-			// Vanilla order: composite into 0x61, THEN draw group 0xC into 0x61 with the
-			// scene DS bound no-clear — sky geometry depth-tests against the world and
-			// fills only far pixels (replacing our black pre-clear). Accumulating the
-			// roots here (after the resolve) means whatever they file into OTHER groups
-			// is never drawn — the v0.2.36 step-14 fault — and FinishAccum releases it.
-			// Must run BEFORE FinishAccum (0x281e750 clears every group's pass lists).
-			// Ctx is built AFTER the binds (v0.2.35 lesson: it snapshots the current
-			// slot-0 RT for screen-size constants). Camera state re-set defensively:
-			// the resolve re-commits internally but never maintains staging+0x1d0.
+			// --- SKY accumulate + draw (post-resolve; groups corrected in v0.2.40) ---
+			// Vanilla order: composite into 0x61, THEN draw sky groups 0x11/0x12/0x13
+			// into 0x61 (slot1 = 0x69, DS 0xC, no clears) — sky depth-tests against
+			// the world and fills only far pixels (replacing our black pre-clear).
+			// Accumulating the roots here (after the resolve) means the fresh passes
+			// are drawn only by US and then released by FinishAccum; pre-resolve
+			// registration was the v0.2.36 step-14 fault (the resolve draws 0x11/9
+			// internally). Must run BEFORE FinishAccum (0x281e750 clears every
+			// group's pass lists). Ctx is built AFTER the binds (v0.2.35 lesson: it
+			// snapshots the current slot-0 RT for screen-size constants).
 			// skyRootMask bisects a faulting root without a rebuild: 1 = sky dome only
 			// (Sky+0x8), 2 = sun/cloud only, 3 = both.
 			RENDER_STEP(15);
@@ -659,8 +659,10 @@ namespace TrueScopes::ScopeRender
 				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
 			}
 			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
+				// Vanilla sky-stage binds (FUN_14284d680, scoped values): slot 0 stays
+				// 0x61 (the composited scene), slot 1 = aux RT 0x69, DS 0xC, no clears.
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x69, 3);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
@@ -675,7 +677,15 @@ namespace TrueScopes::ScopeRender
 				}
 				alignas(16) std::uint8_t skyCtx[0x2e0];
 				Fn<CtxCtor_t>(0x2812be0)(skyCtx, cam, accum);
-				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0xc, skyCtx, 0);
+				// Draw order + exec flags = vanilla's: 0x11 (dome/sun/stars/moons,
+				// flag 1), 0x12 (clouds, flag 0), 0x13 (flag 0). Vanilla's queued 0x11
+				// uses a SORTED pass builder (FUN_14281df50); e400's default order is
+				// the known gap if sky objects layer wrongly (sun behind dome etc.).
+				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x11, skyCtx, 1);
+				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x12, skyCtx, 0);
+				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x13, skyCtx, 0);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
+				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 				g_diagSkyDrawn = 1;
 			}
 

@@ -6,8 +6,10 @@ fillEnabled = true
 
 # Lens refresh cadence: 1 = every frame, 2 = every other frame, ...
 # The lens render target persists between fills, so higher values just lower the
-# refresh rate of the scope picture.
-fillEveryNFrames = 1
+# refresh rate of the scope picture. 2 is the recommended default: at 1 the scope
+# render can produce intermittent black lens frames in busy scenes (per-frame
+# engine resource contention — under investigation).
+fillEveryNFrames = 2
 
 # What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
 # 2 = real magnified world render from the scope camera (falls back to 1 on failure).

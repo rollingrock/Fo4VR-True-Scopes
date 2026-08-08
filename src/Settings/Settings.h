@@ -50,7 +50,11 @@ namespace Settings
 	MAKE_SETTING(bSetting, "TrueScopesVR", fillEnabled, true);
 	// Fill cadence: 1 = every frame, 2 = every other frame, ... RT 0x62 persists
 	// between frames, so low cadence just lowers the lens refresh rate.
-	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(1));
+	// DEFAULT 2 (v0.2.40): at cadence 1 the own render intermittently produces
+	// black lens frames in content-heavy scenes (user-bisected 2026-08-08:
+	// lensMode 1 never stutters, cadence 2 never stutters, cadence 1 does) —
+	// per-frame engine resource contention; root cause hunt deferred.
+	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(2));
 	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
 	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
 	// works correctly — this just keeps the widget/fill on at all times.
