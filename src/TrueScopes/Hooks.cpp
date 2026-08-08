@@ -66,9 +66,24 @@ namespace TrueScopes::Hooks
 			static void thunk()
 			{
 				if (g_installed && *Settings::fillEnabled) {
+					// Burst forensics v2 (v0.2.46): the tonemap delivery repaints only
+					// its own footprint of RT 0x62 — the rounded top-left crescent is
+					// OUTSIDE it and keeps whatever was painted last (the v0.2.22-era
+					// "camera-independent rounded boundary", finally explained by the
+					// v0.2.45 red leak). That makes the crescent a per-frame status
+					// LED: pre-paint the whole lens BLUE before every fill and RED on
+					// every gate-paused frame while aiming. During a black burst the
+					// crescent color names the writer: BLUE = fills ran and delivered
+					// black (post-composite path), RED = eye-gate paused the fill,
+					// BLACK = some third party cleared the lens RT.
+					static std::uint32_t sinceFill = 1000;
 					if (g_scopeActive.load()) {
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
+							if (*Settings::diagPauseTint) {
+								ScopeRender::TintLens(0.0f, 0.0f, 0.5f);
+							}
+							sinceFill = 0;
 							const bool rendered =
 								*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
 								ScopeRender::Available() &&
@@ -76,14 +91,16 @@ namespace TrueScopes::Hooks
 							if (!rendered && *Settings::lensMode != 0) {
 								ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
 							}
-						} else if (*Settings::diagPauseTint) {
-							// Burst forensics: cadence-skipped frame -> GREEN lens.
+						} else if (*Settings::diagPauseTint && sinceFill < 300) {
+							++sinceFill;
+							// Cadence-skipped frame -> GREEN lens.
 							ScopeRender::TintLens(0.0f, 1.0f, 0.0f);
 						}
-					} else if (*Settings::diagPauseTint) {
-						// Burst forensics: eye-gate says scope inactive (fill paused)
-						// -> RED lens. Only visible if the widget still draws during
-						// these windows — which is exactly the hypothesis under test.
+					} else if (*Settings::diagPauseTint && sinceFill < 300) {
+						++sinceFill;
+						// Eye-gate pause during active aiming -> RED lens. The
+						// sinceFill window keeps the tint from leaking into ordinary
+						// unscoped gameplay (the v0.2.45 always-red artifact).
 						ScopeRender::TintLens(1.0f, 0.0f, 0.0f);
 					}
 				}
