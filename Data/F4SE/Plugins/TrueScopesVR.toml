@@ -9,7 +9,7 @@ fillEnabled = true
 # refresh rate of the scope picture. 2 is the recommended default: at 1 the scope
 # render can produce intermittent black lens frames in busy scenes (per-frame
 # engine resource contention — under investigation).
-fillEveryNFrames = 2
+fillEveryNFrames = 1
 
 # What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
 # 2 = real magnified world render from the scope camera (falls back to 1 on failure).
@@ -79,8 +79,8 @@ disableApproachFade = false
 
 # Black-burst hunt (v0.2.43): per-frame 1-pixel readback of accum+composite, dark
 # frames logged. Two GPU sync stalls per render - turn OFF when not hunting.
-diagLensReadback = true
+diagLensReadback = false
 
 # Burst forensics (v0.2.45): tint non-filled frames - RED = eye-gate pause,
 # GREEN = cadence skip. A colored "burst" means the burst is a non-filled frame.
-diagPauseTint = true
+diagPauseTint = false

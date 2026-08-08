@@ -38,6 +38,13 @@ namespace TrueScopes::Addr
 	// [GHIDRA] original bytes: E8 CD 9C E9 00
 	inline constexpr std::uintptr_t kScopeArmWriteCallSite = 0xefaace;
 
+	// FUN_141d947d0 — the renderer+4 (scoped-pass) READER, exactly 5 bytes:
+	// "0F B6 41 04 C3" (movzx eax, byte [rcx+4]; ret). Entry-hooked in v0.2.48 so
+	// scoped mode is answered ONLY to our render thread while our bracket is live —
+	// concurrent engine threads observing our transient +4=1 is the black-burst
+	// suspect (phantom late-frame scoped actions on the lens RT).
+	inline constexpr std::uintptr_t kScopePassReadFn = 0x1d947d0;
+
 	// Call site inside Main::DrawWorld_And_UI (+0xd87a80), right after the Pip-Boy
 	// local-map block: "call thunk_FUN_14284e950" (accumulator pass-list clear).
 	// Runs every frame in the normal (non-redirected) draw path, render side, renderer

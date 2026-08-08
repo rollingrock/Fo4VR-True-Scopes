@@ -46,6 +46,22 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
+		// Replaces the WHOLE renderer+4 reader FUN_141d947d0 (5 bytes, movzx+ret):
+		// scoped mode is answered only to our render thread while our bracket is
+		// live. Every other thread — including engine jobs racing our mid-frame
+		// render — sees "not scoped", so no phantom scoped-path actions can latch
+		// off our transient +4=1 (black-burst suspect #5). Vanilla never needs a
+		// true answer here: the arm write is suppressed, so vanilla scoped mode
+		// never engages.
+		struct ScopePassReadHook
+		{
+			static char thunk([[maybe_unused]] void* a_renderer)
+			{
+				const auto tid = ScopeRender::OwnRenderThread();
+				return (tid != 0 && tid == ::GetCurrentThreadId()) ? 1 : 0;
+			}
+		};
+
 		// Replaces "call FUN_141d947b0(renderer)" — the guard's state read.
 		struct ScopeStateReadHook
 		{
@@ -178,6 +194,18 @@ namespace TrueScopes::Hooks
 		// Fill hook, every frame in the normal draw path.
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
+
+		// v0.2.48: renderer+4 reader replacement (thread-scoped scoped-mode answer).
+		{
+			REL::Relocation<std::uintptr_t> passReadFn{ REL::Offset(Addr::kScopePassReadFn) };
+			static constexpr std::uint8_t kPassReadOrig[] = { 0x0F, 0xB6, 0x41, 0x04, 0xC3 };
+			if (VerifyBytes(passReadFn, { kPassReadOrig, 5 }, "scope-pass reader fn"sv)) {
+				F4SE::GetTrampoline().write_branch<5>(passReadFn.address(), ScopePassReadHook::thunk);
+				logger::info("scope-pass reader hook installed (renderer+4 answered only to own render thread)"sv);
+			} else {
+				logger::warn("scope-pass reader hook NOT installed (byte mismatch) — concurrent +4 reads stay possible"sv);
+			}
+		}
 
 		// Resolve accum-bind hooks (sun pass survival). Non-fatal: without them the sun
 		// pre-draw is skipped and everything else behaves like v0.2.25.

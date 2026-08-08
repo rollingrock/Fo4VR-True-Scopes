@@ -105,6 +105,7 @@ namespace TrueScopes::ScopeRender
 		void* g_accum = nullptr;
 		bool g_available = false;
 		bool g_faulted = false;  // fault latch (vs never-initialized) — clearable via RetryAfterFault
+		std::atomic<std::uint32_t> g_renderTid{ 0 };  // thread id while our renderer+4 bracket is live (see Hooks::ScopePassReadHook)
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
 		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
 
@@ -1097,6 +1098,10 @@ namespace TrueScopes::ScopeRender
 		auto* stereoMaster = reinterpret_cast<std::uint8_t*>(renderer + 1);
 		const auto savedFlag = *scopePassFlag;
 		const auto savedStereo = *stereoMaster;
+		// v0.2.48: publish our thread id for the +4-reader hook — concurrent engine
+		// threads that call the reader during our bracket must NOT see scoped mode
+		// (phantom late-frame scoped actions on the lens RT = black-burst suspect).
+		g_renderTid.store(::GetCurrentThreadId());
 		*scopePassFlag = 1;
 		*stereoMaster = 0;
 		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind CBs (stereo b8 included)
@@ -1104,6 +1109,7 @@ namespace TrueScopes::ScopeRender
 		g_inOwnResolve.store(false);  // fault path may have skipped the in-function reset
 		*scopePassFlag = savedFlag;
 		*stereoMaster = savedStereo;
+		g_renderTid.store(0);
 		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind for the rest of the frame
 		Fn<RendererFn_t>(0x1d95240)(renderer);  // clear prev-cam cache (vanilla does)
 
@@ -1211,6 +1217,11 @@ namespace TrueScopes::ScopeRender
 	bool Available()
 	{
 		return g_available;
+	}
+
+	std::uint32_t OwnRenderThread()
+	{
+		return g_renderTid.load();
 	}
 
 	void TintLens(float a_r, float a_g, float a_b)

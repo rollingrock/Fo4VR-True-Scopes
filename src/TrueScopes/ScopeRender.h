@@ -30,6 +30,10 @@ namespace TrueScopes::ScopeRender
 	// frames the fill hook skipped). Render-thread only.
 	void TintLens(float a_r, float a_g, float a_b);
 
+	// Thread id that currently holds the renderer+4 scoped bracket (0 = none).
+	// The +4-reader hook answers "scoped" only to this thread.
+	std::uint32_t OwnRenderThread();
+
 	// Clear the fault latch so the next Render() attempts the own render again.
 	// Called on scope-in (after the TOML reload) when retryAfterFault is set —
 	// lets the user bisect a faulting config live instead of restarting the game.
