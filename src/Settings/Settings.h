@@ -143,7 +143,22 @@ namespace Settings
 	// clear/binds, camera state and pre-resolve G-buffer rebind that share its block.
 	// sunEnabled=false is NOT equivalent — it drops all of those too and faults the
 	// delivery (step 17, C0000005) since the ImageSpace copy needs the camera state.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, true);
+	// DEFAULT FLIPPED TO false IN v0.2.62 — this pass is the black-lens bug.
+	// Measured (v0.2.60/61): 0x6a reads the fog clear immediately BEFORE the exec on
+	// every frame and NaN in all channels immediately after it on ~20% of frames
+	// (sun6a=0/891, matching nan=891 exactly), with healthy inputs — eye view
+	// matrices orthonormal, projection correct, eye positions mirrored, camdata=0.
+	// One fullscreen additive draw then makes the whole accumulation buffer NaN,
+	// which displays as BLACK while probing as LIT.
+	// Turning it off costs NOTHING visually: §6.7's tone bisect proved the pass
+	// contributes zero light today (brightness tracks accumClearScale linearly and
+	// scale 0 is pitch black WITH the exec running — the "sunlit" look was always
+	// fog-colored ambient). So this trades a defect for nothing until the pass is
+	// fixed. Remaining suspect for the NaN: the pass config is rebuilt on the
+	// engine's job-queue worker threads while we execute it on the render thread —
+	// our cfgClean/cfgBuilt test is a check-then-use race. Needs a live x64dbg read
+	// of the constant buffer at a NaN draw to confirm.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
