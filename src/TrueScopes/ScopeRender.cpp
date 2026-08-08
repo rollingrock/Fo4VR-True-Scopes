@@ -904,7 +904,16 @@ namespace TrueScopes::ScopeRender
 							g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
 						}
 					}
-					if (cfgClean && cfgBuilt) {
+					// v0.2.57: sunExecEnabled isolates the SUN DRAW ALONE. sunEnabled is
+					// NOT a valid isolation for it — that flag gates this whole block,
+					// which also owns the accum clear, the accum/DS binds, the camera
+					// state and the pre-resolve G-buffer rebind. Turning it off faults
+					// the delivery outright (step 17, C0000005 in the D3D layer) because
+					// the ImageSpace copy then runs with no camera state. Everything
+					// above stays; only the fullscreen additive BSDFLightDir exec below
+					// is skipped, which is exactly the pass suspected of poisoning the
+					// whole of 0x6a (100% NaN with a clean G-buffer and a clean clear).
+					if (cfgClean && cfgBuilt && *Settings::sunExecEnabled) {
 
 					// Render states (dirty-mask at ctx+0x1ee0: |4 = depth-stencil group,
 					// |8 = 0xbc group, |0x10 = blend group — byte-verified in the job).

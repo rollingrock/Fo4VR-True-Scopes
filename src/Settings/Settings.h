@@ -139,6 +139,11 @@ namespace Settings
 	// then writes 6 files (~19MB); the per-buffer NaN percentage is logged too, so
 	// the log alone identifies the stage even without opening the images.
 	MAKE_SETTING(bSetting, "TrueScopesVR", diagDumpBuffers, false);
+	// v0.2.57: skip ONLY the sun's fullscreen BSDFLightDir exec, keeping the accum
+	// clear/binds, camera state and pre-resolve G-buffer rebind that share its block.
+	// sunEnabled=false is NOT equivalent — it drops all of those too and faults the
+	// delivery (step 17, C0000005) since the ImageSpace copy needs the camera state.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, true);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -191,6 +196,7 @@ namespace Settings
 		LOAD(diagPauseTint);
 		LOAD(diagDumpLensEveryNRenders);
 		LOAD(diagDumpBuffers);
+		LOAD(sunExecEnabled);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 
