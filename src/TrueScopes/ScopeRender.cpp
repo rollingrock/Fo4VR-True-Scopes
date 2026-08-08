@@ -1140,6 +1140,47 @@ namespace TrueScopes::ScopeRender
 															 "clean"sv,
 										g_sunPreNaN, g_sunPostNaN);
 								}
+								// v0.2.61: FINITE IS NOT NON-DEGENERATE. camdata=0 only
+								// proved no input was Inf/NaN — but normalize() of a ZERO
+								// vector is 0/0 = NaN, and a zero matrix passes isfinite on
+								// every element. BSDFLightShader::SetupGeometry builds the
+								// Dir-light constants from the staging EYE-1 view matrix
+								// (+0x260, the second 0x210-stride block), which nothing
+								// populates for our mono camera except our own memcpy
+								// mirror. A near-zero eye-1 view matrix would produce
+								// exactly what we measure: finite inputs, a NaN constant,
+								// and a 100%-NaN buffer from one fullscreen additive draw.
+								static std::uint32_t matLogs = 0;
+								if (!preBad && postBad && matLogs < 12) {
+									++matLogs;
+									const auto ctxS = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+									const auto ctxU = ctxS ? ctxS : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
+									if (const auto stg = ctxU ? *reinterpret_cast<std::uintptr_t*>(ctxU + 0x25d0) : 0) {
+										const auto* e0 = reinterpret_cast<const float*>(stg + 0x50);
+										const auto* e1 = reinterpret_cast<const float*>(stg + 0x260);
+										const auto mag = [](const float* m, int row) {
+											return std::sqrt(m[row * 4 + 0] * m[row * 4 + 0] +
+												m[row * 4 + 1] * m[row * 4 + 1] + m[row * 4 + 2] * m[row * 4 + 2]);
+										};
+										logger::warn(
+											FMT_STRING("  eye0 view rowmag=({:.4f},{:.4f},{:.4f}) eye1 view rowmag=({:.4f},{:.4f},{:.4f})"),
+											mag(e0, 0), mag(e0, 1), mag(e0, 2), mag(e1, 0), mag(e1, 1), mag(e1, 2));
+										logger::warn(
+											FMT_STRING("  eye1 view = [{} {} {} {}][{} {} {} {}][{} {} {} {}][{} {} {} {}]"),
+											e1[0], e1[1], e1[2], e1[3], e1[4], e1[5], e1[6], e1[7],
+											e1[8], e1[9], e1[10], e1[11], e1[12], e1[13], e1[14], e1[15]);
+										const auto* p1 = reinterpret_cast<const float*>(stg + 0x2a0);
+										logger::warn(
+											FMT_STRING("  eye1 proj diag=({},{},{},{}) eyePos0=({},{},{}) eyePos1=({},{},{})"),
+											p1[0], p1[5], p1[10], p1[15],
+											*reinterpret_cast<const float*>(ctxU + 0x2590),
+											*reinterpret_cast<const float*>(ctxU + 0x2594),
+											*reinterpret_cast<const float*>(ctxU + 0x2598),
+											*reinterpret_cast<const float*>(ctxU + 0x25a0),
+											*reinterpret_cast<const float*>(ctxU + 0x25a4),
+											*reinterpret_cast<const float*>(ctxU + 0x25a8));
+									}
+								}
 							}
 						}
 
