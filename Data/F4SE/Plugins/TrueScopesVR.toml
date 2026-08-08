@@ -45,6 +45,17 @@ sunBrightnessScale = 1.0
 # only, which looks correct minus highlights; on = re-test after fixes).
 sunSpecEnabled = false
 
+# Tone bisect (v0.2.36): the scope's ambient base level. The light accumulation is
+# pre-cleared to the world fog color (scaled by accumClearScale) with accumClearAlpha
+# in the alpha channel. The lens currently reads paler/washed vs the world; tune live:
+#   accumClearScale 1.0 = current look, 0.0 = the too-dark v0.2.27 look, try 0.5
+#   accumClearAlpha 1.0 = current; try 0.0 (alpha may be a light-mask the composite reads)
+accumClearScale = 1.0
+accumClearAlpha = 1.0
+
+# Draw the sky in the lens (v0.2.36). Off = sky regions stay black (the old look).
+skyEnabled = true
+
 # Force iScopeEnabled:VR to 2 (always-on) after game load. Optional — the vanilla
 # default (1, eye-gated) shows the scope only while aiming down it.
 forceAlwaysOn = false

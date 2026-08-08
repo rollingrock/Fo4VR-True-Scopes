@@ -62,7 +62,9 @@ namespace Settings
 	// Scope render field of view in degrees (phase 2a fixed value; weapon zoomData wiring
 	// comes later).
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 15.0);
-	// Frustum near/far planes for the scope camera (SetCameraFOV params 3/4). near==far
+	// Frustum near/far planes for the scope camera. SetCameraFOV takes them as
+	// (FAR, NEAR) — the code passes them in that order (v0.2.36 depth-inversion fix;
+	// the swapped order reversed the projection → farthest-wins depth). near==far
 	// produces a NaN projection and an eternally black render — the v0.2.x black-lens
 	// root cause. 15 = the engine's default near; far generous for scoped sightlines.
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeNearClip, 15.0);
@@ -86,6 +88,18 @@ namespace Settings
 	// currently garbage (world-pos reconstruction constants — under investigation);
 	// off = sun contributes diffuse only and spec stays cleared. Turn on to re-test.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunSpecEnabled, false);
+	// Tone bisect (v0.2.36): the accum pre-clear is the ambient base light level.
+	// Vanilla lazily clears to the fog RGB with alpha 1; the lens reads paler/cooler
+	// than the world (17:58 outdoor A/B), suspect ambient double-count through this
+	// clear. Scale the fog RGB (0 = black clear = the too-dark v0.2.27 look,
+	// 1 = current) and set the alpha independently (if accum alpha is a mask term
+	// the composite consumes, 1.0 everywhere may add uniform light — try 0).
+	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearScale, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearAlpha, 1.0);
+	// Draw the sky into the lens (v0.2.36): accumulate the sky roots if the world
+	// accumulation didn't already produce group-0xC passes, then draw group 0xC into
+	// 0x61 after the composite (vanilla order: depth-tested, fills only far pixels).
+	MAKE_SETTING(bSetting, "TrueScopesVR", skyEnabled, true);
 	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
 	// full-strength zoomData imod). Core to the world+scope experience.
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
@@ -124,6 +138,9 @@ namespace Settings
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
 		LOAD(sunSpecEnabled);
+		LOAD(accumClearScale);
+		LOAD(accumClearAlpha);
+		LOAD(skyEnabled);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 

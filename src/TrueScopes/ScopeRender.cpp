@@ -24,9 +24,12 @@
 //   * Accumulation = ONE BSShaderUtil::AccumulateScene(cam, ssn, cull, 1) — for an
 //     SSN it adds every attached child. No portal lists, no manual subtrees. Lights
 //     run once per frame by the engine; we do NOT re-run ProcessQueuedLights.
-//   * BSShaderUtil::SetCameraFOV params 3/4 are the frustum NEAR/FAR planes. We
-//     passed 1,1 from v0.2.0 to v0.2.19: near==far -> NaN projection depth rows ->
-//     no geometry ever rasterized. THE root cause of the black/phantom lens era.
+//   * BSShaderUtil::SetCameraFOV params 3/4 are the frustum FAR/NEAR planes — in
+//     that order (v0.2.36 static proof; every vanilla caller passes (far, near)).
+//     We passed 1,1 from v0.2.0 to v0.2.19: near==far -> NaN projection depth rows
+//     -> no geometry rasterized (the black/phantom lens era). Then v0.2.20-35
+//     passed (near, far) = swapped -> reversed projection under the engine's
+//     standard-Z LESS_EQUAL states -> farthest-fragment-wins depth inversion.
 //   * The resolve draws the G-buffer groups itself, then composites into out target
 //     (param_5) via the shader-6 quad. Its internal 0x61->0x62 copy is refraction-only;
 //     the per-frame lens delivery in vanilla is FUN_1427b08c0(0x61, 0x62, 0) from
@@ -43,12 +46,14 @@ namespace TrueScopes::ScopeRender
 		using CullCtor_t = void* (*)(void*, std::uint32_t);                                            // 0x1d4d8e0  BSCullingProcess::ctor(mem, 0)
 		using CullDtor_t = void (*)(void*);                                                            // 0x1d4d960  BSCullingProcess::dtor (Ghidra-mislabeled as ctor)
 		using CullSetAccum_t = void (*)(void*, void*);                                                 // 0x1d4d9c0  BSCullingProcess::SetAccumulator
-		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, NEAR, FAR) — params 3/4 are the frustum near/far planes (live-proven: passing 1,1 gave near==far → NaN projection rows → nothing ever rasterized)
+		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, FAR, NEAR) — param_3=far, param_4=near (v0.2.36 static proof; the v0.2.0-19 "1,1" bug was near==far → NaN projection)
 		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer); also used for 0x1d94990 ResetState
 		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 1)
 		using DeferredResolve_t = void (*)(std::uintptr_t, void*, void*, std::uintptr_t,              // 0x27ff8b0  full deferred render: G-buffer group draws + lighting + composite
 			std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);                              //            (cam, accum, cull, ssn, outTargetIdx=0x61, dsIdx=0xC, 0, 1)
 		using FinishAccum_t = void (*)(void*);                                                        // 0x281e750  thunk_FUN_14281ec00: finish + clear pass lists
+		using GroupEmpty_t = std::uint32_t (*)(std::uintptr_t);                                       // 0x281f2c0  BSShaderAccumulator: group empty check (arg = accum+0x18+idx*0x678; returns 1 iff all four sub-buckets empty)
+		using DrawGroupNow_t = void (*)(void*, std::uint32_t, void*, std::uint32_t);                  // 0x281e400  immediate group renderer (accum, groupIdx, renderCtx, 0) — walks group pass array, execs each via 0x2891040, restores state; skips silently if empty (vanilla sky-draw site: FUN_14284bd00 tail via queued twin 0x28bc680)
 		using CommitTargetsAlt_t = void (*)(std::uintptr_t);                                          // 0x1db9f80  commit target/DS selection
 		using VanillaLensCopy_t = void (*)(std::uint32_t, std::uint32_t, std::uint8_t);               // 0x27b08c0  vanilla lens delivery (0x61, 0x62, 0) — effect 0xf = HDR->display tonemap
 		using SetCurRT_t = void (*)(std::uintptr_t, std::uint32_t, std::int32_t, std::uint32_t);       // 0x1db9dd0  SetCurrentRenderTarget(mgr, slot, logicalIdx, mode); logical->physical via rtm+0x13bc
@@ -122,6 +127,10 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
 		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
+		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
+		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
+		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
+		std::int32_t g_diagSkyDrawn = 0;       // 1 = group 0xC drawn into 0x61 this render
 		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
 		float g_diagRect[6] = {};      // camera-data rect *(ctx+0x25d0)[0..5] — feeds FUN_141d8d480
 		std::int32_t g_diagViewport[6] = {};  // computed viewport ints @ ctx+0x1ee0+0x90
@@ -260,10 +269,20 @@ namespace TrueScopes::ScopeRender
 			const auto saved750 = *mode750;
 			*mode738 = 1;
 			*mode750 = 2;
+			// v0.2.36 THE DEPTH-INVERSION FIX: params 3/4 are (FAR, NEAR) — NOT
+			// (near, far). Static proof: SetCameraFOV stores param_4 into frustum
+			// near-slot / param_3 into far-slot, and every vanilla caller passes the
+			// pair (far, near) — FUN_140c875f0's param_4 is the literal 1.0f constant.
+			// The engine is standard-Z everywhere (proj z-row f/(f-n) in
+			// FUN_141da8e60, DS clear = 1.0, geometry depth mode 3 = LESS_EQUAL +
+			// write). Passing (near, far) built a reversed projection: near→depth 1,
+			// far→depth 0 — under LESS_EQUAL the FARTHEST fragment always won (the
+			// locker-behind-wall bug), and the "near clip slices the gun" complaint
+			// was actually the FAR plane sitting at 15 units.
 			Fn<SetCameraFOV_t>(0x2804a90)(
 				cam, a_fovDeg,
-				static_cast<float>(*Settings::scopeNearClip),
-				static_cast<float>(*Settings::scopeFarClip));
+				static_cast<float>(*Settings::scopeFarClip),
+				static_cast<float>(*Settings::scopeNearClip));
 			*mode738 = saved738;
 			*mode750 = saved750;
 
@@ -372,6 +391,38 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
+			// --- SKY accumulation (v0.2.36) ---
+			// The sky is NOT drawn by the deferred resolve: it is accumulator GROUP 0xC,
+			// drawn by vanilla right after the composite (tail of FUN_14284bd00: RT 0x61
+			// mode 3 + queued group draw 0x28bc680(queue,0xC,ctx,0) — inside the
+			// renderer+4 span, which is why the vanilla scoped lens has sky). The world
+			// SSN accumulation may or may not include the sky roots (they are standalone
+			// nodes DrawWorld repositions to the camera each frame); if group 0xC came
+			// out empty, accumulate them explicitly — Sky+0x8 (BSMultiBoundNode, global
+			// 0x146885c00) and its sun/cloud sibling (0x146885c08). Vanilla accumulates
+			// sky roots with flag 0. Guard each root by vtable-in-module sanity: these
+			// are high-.data globals where Ghidra labels have been wrong before.
+			RENDER_STEP(12);
+			const auto skyGroup = accum + 0x18 + 0xc * 0x678;
+			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
+			g_diagSkyRoots = 0;
+			if (*Settings::skyEnabled && g_diagSkyEmptyPre != 0) {
+				const auto base = REL::Module::get().base();
+				for (const auto rootRva : { std::uintptr_t{ 0x6885c00 }, std::uintptr_t{ 0x6885c08 } }) {
+					const auto root = *reinterpret_cast<const std::uintptr_t*>(base + rootRva);
+					if (!root || (root & 7) != 0) {
+						continue;
+					}
+					const auto vtbl = *reinterpret_cast<const std::uintptr_t*>(root);
+					if (vtbl < base || vtbl >= base + 0x0a000000) {
+						continue;  // not an engine vtable -> mislabeled global, skip
+					}
+					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
+					++g_diagSkyRoots;
+				}
+			}
+			g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
+
 			// --- SUN (v0.2.26) ---
 			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT. The
 			// engine draws the sun once per frame (pre-world stage) into the MAIN view's
@@ -383,7 +434,7 @@ namespace TrueScopes::ScopeRender
 			// clear (bind mode 0) is forced to mode 3 by the Hooks::Install call-site
 			// hooks while g_inOwnResolve — without them the sun would be wiped, so we
 			// skip the draw entirely if they are not installed.
-			RENDER_STEP(12);
+			RENDER_STEP(13);
 			g_diagSunPass = -1;
 			if (g_sunBindHooksInstalled && g_sunConfig && g_gfxState && *Settings::sunEnabled) {
 				const auto cfgClean = *reinterpret_cast<const std::uint8_t*>(g_sunConfig + 0x0) == 0;
@@ -406,10 +457,16 @@ namespace TrueScopes::ScopeRender
 					{
 						using GetFogSingleton_t = std::uintptr_t (*)();
 						const auto fog = Fn<GetFogSingleton_t>(0x27aeeb0)();
-						const float r = fog ? *reinterpret_cast<const float*>(fog + 0x1d4) : 0.0f;
-						const float g = fog ? *reinterpret_cast<const float*>(fog + 0x1d8) : 0.0f;
-						const float b = fog ? *reinterpret_cast<const float*>(fog + 0x1dc) : 0.0f;
-						Fn<SetClearColor_t>(0x1d8dc80)(renderer, r, g, b, 1.0f);
+						// v0.2.36 tone bisect: the lens reads paler/cooler than the world
+						// (17:58 outdoor A/B) — suspect this ambient base double-counts
+						// with the composite's own ambient term, or the alpha channel is
+						// a mask the composite consumes. Both live-tunable.
+						const auto cs = static_cast<float>(*Settings::accumClearScale);
+						const float r = (fog ? *reinterpret_cast<const float*>(fog + 0x1d4) : 0.0f) * cs;
+						const float g = (fog ? *reinterpret_cast<const float*>(fog + 0x1d8) : 0.0f) * cs;
+						const float b = (fog ? *reinterpret_cast<const float*>(fog + 0x1dc) : 0.0f) * cs;
+						Fn<SetClearColor_t>(0x1d8dc80)(renderer, r, g, b,
+							static_cast<float>(*Settings::accumClearAlpha));
 					}
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
 					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
@@ -502,7 +559,7 @@ namespace TrueScopes::ScopeRender
 			// the vanilla scoped frame: light buffers 0x6a/0x6b, DS 0xC. param_6 = 0xC
 			// keeps its tail bind consistent with that. g_inOwnResolve arms the two
 			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
-			RENDER_STEP(13);
+			RENDER_STEP(14);
 			// Ensure the staging inverse-projection is OURS for the resolve's own
 			// lighting/composite too. The resolve re-commits the camera internally,
 			// but the commit never touches staging+0x1d0, so this write survives it.
@@ -536,8 +593,39 @@ namespace TrueScopes::ScopeRender
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 
+			// --- SKY draw (v0.2.36) ---
+			// Vanilla order: composite into 0x61, THEN draw group 0xC into 0x61 with the
+			// scene DS bound no-clear — sky geometry depth-tests against the world and
+			// fills only far pixels (replacing our black pre-clear). Must run BEFORE
+			// FinishAccum (0x281e750 clears every group's pass lists). Ctx is built
+			// AFTER the binds (v0.2.35 lesson: it snapshots the current slot-0 RT for
+			// screen-size constants). Camera state re-set defensively: the resolve
+			// re-commits internally but never maintains staging+0x1d0.
+			RENDER_STEP(15);
+			g_diagSkyDrawn = 0;
+			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
+				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 3);
+				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
+				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				if (g_gfxState) {
+					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
+					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
+					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
+					WriteInverseProj(g_gfxState, cam);
+				}
+				alignas(16) std::uint8_t skyCtx[0x2e0];
+				Fn<CtxCtor_t>(0x2812be0)(skyCtx, cam, accum);
+				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0xc, skyCtx, 0);
+				g_diagSkyDrawn = 1;
+			}
+
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
-			RENDER_STEP(14);
+			RENDER_STEP(16);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
@@ -582,7 +670,7 @@ namespace TrueScopes::ScopeRender
 			// 6 = G-buffer normals 0x64. 4/5 bisect the sun-overbright pipeline: if
 			// the accum itself is blown flat, the sun PASS writes garbage; if the
 			// accum looks sane, the COMPOSITE consumption is at fault.
-			RENDER_STEP(15);
+			RENDER_STEP(17);
 			switch (*Settings::lensMode) {
 			case 3:
 				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
@@ -606,9 +694,9 @@ namespace TrueScopes::ScopeRender
 				break;
 			}
 
-			RENDER_STEP(16);
+			RENDER_STEP(18);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
-			RENDER_STEP(17);
+			RENDER_STEP(19);
 		}
 
 		// SEH wrapper — POD frame only. Captures code, faulting address, register
@@ -744,15 +832,15 @@ namespace TrueScopes::ScopeRender
 				"entry"sv, "SetCameraFOV"sv, "accum prep"sv, "cull ctor"sv, "SetAccumulator"sv,
 				"clear prev-cam cache"sv, "bind MRT+depth"sv, "ProcessQueuedLights"sv,
 				"AccumulateScene"sv, "capture pass counts"sv, "clear decal groups"sv,
-				"flush"sv, "sun dir-light pass"sv, "deferred resolve"sv, "unbind+finish accum"sv,
-				"vanilla lens copy"sv, "cull dtor"sv, "done"sv
+				"flush"sv, "sky accumulation"sv, "sun dir-light pass"sv, "deferred resolve"sv,
+				"sky draw"sv, "unbind+finish accum"sv, "vanilla lens copy"sv, "cull dtor"sv, "done"sv
 			};
 			const auto step = g_lastStep;
 			const auto base = REL::Module::get().base();
 			const auto rva = g_lastExcAddr >= base ? g_lastExcAddr - base : 0;
 			logger::critical(
 				FMT_STRING("ScopeRender FAULTED at step {} ({}), code {:08X} at {:016X} (rva {:X}) — disabled for this session, falling back to copy fill"),
-				step, step >= 0 && step < 18 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
+				step, step >= 0 && step < 20 ? kSteps[step] : "?"sv, g_lastExcCode, g_lastExcAddr, rva);
 			logger::critical(
 				FMT_STRING("  regs: rax={:016X} rbx={:016X} rcx={:016X} rdx={:016X} rsi={:016X} rdi={:016X} rbp={:016X} rsp={:016X}"),
 				g_lastRegs[0], g_lastRegs[1], g_lastRegs[2], g_lastRegs[3], g_lastRegs[4], g_lastRegs[5], g_lastRegs[6], g_lastRegs[7]);
@@ -792,8 +880,9 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sky={}/{}/{}/{} sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
+				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
