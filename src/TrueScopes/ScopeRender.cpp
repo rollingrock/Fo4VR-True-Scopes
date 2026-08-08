@@ -128,6 +128,8 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
 		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
+		float g_fogRGB[3] = { 0.05f, 0.05f, 0.05f };  // last-good fog color (ambient base); dim gray until first read
+		std::uint64_t g_diagFogNulls = 0;             // frames where the fog singleton was null (stutter forensics)
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -459,15 +461,25 @@ namespace TrueScopes::ScopeRender
 					{
 						using GetFogSingleton_t = std::uintptr_t (*)();
 						const auto fog = Fn<GetFogSingleton_t>(0x27aeeb0)();
-						// v0.2.36 tone bisect: the lens reads paler/cooler than the world
-						// (17:58 outdoor A/B) — suspect this ambient base double-counts
-						// with the composite's own ambient term, or the alpha channel is
-						// a mask the composite consumes. Both live-tunable.
+						// v0.2.42 STUTTER SUSPECT: this clear IS the scope's entire
+						// ambient light level (the 10:33 tone bisect proved brightness
+						// tracks accumClearScale linearly and scale 0 = pitch black —
+						// the sun exec contributes NOTHING yet). The old null-fallback
+						// to 0 therefore painted whole frames black whenever the fog
+						// singleton was transiently null (streaming/weather churn —
+						// matches the black-silhouette bursts: sky/depth fine, world
+						// black, content-correlated). Fall back to the LAST GOOD color
+						// instead, and count nulls for the log.
 						const auto cs = static_cast<float>(*Settings::accumClearScale);
-						const float r = (fog ? *reinterpret_cast<const float*>(fog + 0x1d4) : 0.0f) * cs;
-						const float g = (fog ? *reinterpret_cast<const float*>(fog + 0x1d8) : 0.0f) * cs;
-						const float b = (fog ? *reinterpret_cast<const float*>(fog + 0x1dc) : 0.0f) * cs;
-						Fn<SetClearColor_t>(0x1d8dc80)(renderer, r, g, b,
+						if (fog) {
+							g_fogRGB[0] = *reinterpret_cast<const float*>(fog + 0x1d4);
+							g_fogRGB[1] = *reinterpret_cast<const float*>(fog + 0x1d8);
+							g_fogRGB[2] = *reinterpret_cast<const float*>(fog + 0x1dc);
+						} else {
+							++g_diagFogNulls;
+						}
+						Fn<SetClearColor_t>(0x1d8dc80)(renderer,
+							g_fogRGB[0] * cs, g_fogRGB[1] * cs, g_fogRGB[2] * cs,
 							static_cast<float>(*Settings::accumClearAlpha));
 					}
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
@@ -995,8 +1007,9 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
+				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
