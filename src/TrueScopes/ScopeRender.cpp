@@ -366,7 +366,15 @@ namespace TrueScopes::ScopeRender
 						r = p[2];
 						break;
 					}
-					default: {  // assume RGBA16F
+					// v0.2.59: RGBA16F is 8 BYTES per pixel, so this must never be the
+					// fallback for an unrecognized format — a 4-byte surface decoded at
+					// 8 bytes/pixel reads twice the row length and runs off the end of
+					// the mapped staging surface. That is what crashed the dump exactly
+					// 180 renders (= diagDumpLensEveryNRenders) after every scope-in,
+					// misreported as a step-17 "vanilla lens copy" fault because the
+					// dump sits inside that step's span. Unknown formats are now
+					// skipped by DumpLogicalRT before we ever map them.
+					case 10: {  // R16G16B16A16_FLOAT
 						const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 8u);
 						const auto half = [](std::uint16_t h) {
 							const auto sign = (h >> 15) & 1u;
@@ -381,6 +389,8 @@ namespace TrueScopes::ScopeRender
 						b = ToByte(half(p[2]));
 						break;
 					}
+					default:
+						break;  // unreachable: DumpLogicalRT rejects unknown formats
 					}
 					row[x * 3u + 0] = b;
 					row[x * 3u + 1] = g;
@@ -410,6 +420,28 @@ namespace TrueScopes::ScopeRender
 			}
 			D3D11_TEXTURE2D_DESC desc{};
 			tex->GetDesc(&desc);
+			// v0.2.59: only decode formats whose pixel stride we actually know. The
+			// old catch-all assumed 8 bytes/pixel and walked off the end of any 4-byte
+			// surface — the crash that faulted every dump 180 renders after scope-in.
+			switch (desc.Format) {
+			case 26:  // R11G11B10_FLOAT
+			case 28:  // R8G8B8A8_UNORM
+			case 29:  // R8G8B8A8_UNORM_SRGB
+			case 87:  // B8G8R8A8_UNORM
+			case 91:  // B8G8R8A8_UNORM_SRGB
+			case 10:  // R16G16B16A16_FLOAT
+				break;
+			default: {
+				static std::uint32_t skipLogs = 0;
+				if (skipLogs < 10) {
+					++skipLogs;
+					logger::warn(FMT_STRING("DUMP {} SKIPPED — unhandled format {} ({}x{})"),
+						a_label, static_cast<std::uint32_t>(desc.Format), desc.Width, desc.Height);
+				}
+				res->Release();
+				return;
+			}
+			}
 			if (!g_dumpStage || g_dumpW != desc.Width || g_dumpH != desc.Height ||
 				g_dumpFmt != static_cast<std::uint32_t>(desc.Format)) {
 				if (g_dumpStage) {
@@ -568,8 +600,30 @@ namespace TrueScopes::ScopeRender
 		// (subsequent commits leave +0x1d0 untouched).
 		// v0.2.58: how often the inverse-projection source was singular (each one
 		// would previously have written a full NaN matrix into the staging block).
+		// FIELD RESULT: never fires (invproj=0, det ~745) — XMMatrixInverse was NOT
+		// the NaN source. Check kept: it is correct hygiene and costs nothing.
 		std::uint64_t g_invProjRejects = 0;
 		std::int32_t g_invProjState = -1;
+
+		// v0.2.59: find the NaN at its SOURCE instead of inferring it from buffers.
+		// 0x6a comes out 100% NaN from a single fullscreen additive pass while every
+		// input buffer is clean, so the poison is a CONSTANT the pass reads — i.e. a
+		// non-finite float in the staging camera block or the sun light. Scan the
+		// floats we feed it, right before the exec, and name the exact offset.
+		std::uint64_t g_camDataBad = 0;
+		std::int32_t g_camDataState = -1;
+
+		[[nodiscard]] std::int32_t FirstNonFiniteFloat(std::uintptr_t a_base, std::size_t a_bytes) noexcept
+		{
+			const auto* f = reinterpret_cast<const float*>(a_base);
+			const auto n = a_bytes / sizeof(float);
+			for (std::size_t i = 0; i < n; ++i) {
+				if (!std::isfinite(f[i])) {
+					return static_cast<std::int32_t>(i * sizeof(float));
+				}
+			}
+			return -1;
+		}
 
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
@@ -1000,6 +1054,42 @@ namespace TrueScopes::ScopeRender
 							rgb[0] *= scale;
 							rgb[1] *= scale;
 							rgb[2] *= scale;
+						}
+
+						// v0.2.59: scan the constants this pass is about to read. A
+						// fullscreen additive draw turns ALL of 0x6a to NaN only if one
+						// of its uniform inputs is already non-finite — the staging
+						// camera block (both eye slots, view/proj/viewproj + the
+						// inverse-projection at +0x1d0) or the sun light's own floats.
+						// Whatever this names is the actual root cause; the buffer-level
+						// evidence cannot narrow it further.
+						if (*Settings::diagLensReadback) {
+							const auto ctxS = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+							const auto ctxU = ctxS ? ctxS : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
+							const auto staging = ctxU ? *reinterpret_cast<std::uintptr_t*>(ctxU + 0x25d0) : 0;
+							const auto badStaging = staging ? FirstNonFiniteFloat(staging + 0x20, 0x420) : -1;
+							const auto sunL = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248);
+							const auto niL = sunL ? *reinterpret_cast<std::uintptr_t*>(sunL + 0xb8) : 0;
+							const auto badLight = niL ? FirstNonFiniteFloat(niL + 0x16c, 12) : -1;
+							const auto anyBad = badStaging >= 0 || badLight >= 0;
+							if (anyBad) {
+								++g_camDataBad;
+							}
+							if (const auto st = anyBad ? 1 : 0; st != g_camDataState) {
+								g_camDataState = st;
+								static std::uint32_t logs = 0;
+								if (logs < 60) {
+									++logs;
+									if (anyBad) {
+										logger::warn(
+											FMT_STRING("CAMDATA non-finite BEFORE sun exec: staging+0x{:X} (rel 0x20), light+0x{:X}, count={}"),
+											badStaging >= 0 ? 0x20 + badStaging : 0, badLight >= 0 ? 0x16c + badLight : 0,
+											g_camDataBad);
+									} else {
+										logger::info(FMT_STRING("CAMDATA clean again (total bad frames={})"), g_camDataBad);
+									}
+								}
+							}
 						}
 
 						alignas(16) std::uint8_t sunCtx[0x2d0];
@@ -1621,11 +1711,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
-				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects,
+				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects, g_camDataBad,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
