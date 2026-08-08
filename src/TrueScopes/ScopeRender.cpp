@@ -435,15 +435,18 @@ namespace TrueScopes::ScopeRender
 			// skip the draw entirely if they are not installed.
 			RENDER_STEP(13);
 			g_diagSunPass = -1;
-			if (g_sunBindHooksInstalled && g_sunConfig && g_gfxState && *Settings::sunEnabled) {
-				const auto cfgClean = *reinterpret_cast<const std::uint8_t*>(g_sunConfig + 0x0) == 0;
-				const auto cfgBuilt = *reinterpret_cast<const std::uintptr_t*>(g_sunConfig + 0x8) != 0;
-				g_diagSunCfgFlags = *reinterpret_cast<const std::uint32_t*>(g_sunConfig + 0x48);
-				if (const auto lights = *reinterpret_cast<std::uintptr_t*>(g_sunConfig + 0x38)) {
-					const auto cfgSun = *reinterpret_cast<const std::uintptr_t*>(lights);
-					g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
-				}
-				if (cfgClean && cfgBuilt) {
+			// v0.2.41 STUTTER FIX (the 10:22 black-silhouette frames): the fog clear,
+			// accum binds, camera state, and hook arming are INDEPENDENT of the
+			// engine's sun pass-config — but they were gated on its dirty byte.
+			// Frames where the engine had the config dirty (rebuild in flight;
+			// correlates with heavy scenes) skipped the clear AND left the resolve's
+			// accum binds in clear-on-apply mode with the CURRENT clear color = our
+			// step-6 BLACK -> composite = black ambient * albedo = black world
+			// silhouettes (depth fine, sky fine — drawn post-resolve). Now the accum
+			// setup always runs when the hooks are available; only the sun EXEC is
+			// skipped on dirty-config frames (one frame of ambient-only lighting).
+			bool accumSetup = false;
+			if (g_sunBindHooksInstalled && g_gfxState && *Settings::sunEnabled) {
 					// Clear the accum RTs DETERMINISTICALLY (v0.2.23 pattern: bind as
 					// slot 0 + commit + immediate CRTV) — but to the FOG/AMBIENT color,
 					// not black. Vanilla's mode-0 clear-on-apply executes lazily at the
@@ -500,6 +503,20 @@ namespace TrueScopes::ScopeRender
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
 					Fn<DepthMode_t>(0x1d8de10)(renderer, 2);
+					accumSetup = true;
+
+					// Sun exec gate: only when the engine's cached config is usable at
+					// this exact instant (dirty byte clear + built). Diags always read.
+					const auto cfgClean = g_sunConfig && *reinterpret_cast<const std::uint8_t*>(g_sunConfig + 0x0) == 0;
+					const auto cfgBuilt = g_sunConfig && *reinterpret_cast<const std::uintptr_t*>(g_sunConfig + 0x8) != 0;
+					if (g_sunConfig) {
+						g_diagSunCfgFlags = *reinterpret_cast<const std::uint32_t*>(g_sunConfig + 0x48);
+						if (const auto lights = *reinterpret_cast<std::uintptr_t*>(g_sunConfig + 0x38)) {
+							const auto cfgSun = *reinterpret_cast<const std::uintptr_t*>(lights);
+							g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
+						}
+					}
+					if (cfgClean && cfgBuilt) {
 
 					// Render states (dirty-mask at ctx+0x1ee0: |4 = depth-stencil group,
 					// |8 = 0xbc group, |0x10 = blend group — byte-verified in the job).
@@ -578,7 +595,7 @@ namespace TrueScopes::ScopeRender
 			// footprint (flat output = the accum clear color) and screen-space
 			// terms (spec) got garbage UV scaling. Rebind the G-buffer (no clear)
 			// before the call to restore the vanilla invariant.
-			if (g_diagSunPass == 1) {
+			if (accumSetup) {
 				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 3);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 3);
@@ -588,7 +605,7 @@ namespace TrueScopes::ScopeRender
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 3);
 				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
-			g_inOwnResolve.store(g_diagSunPass == 1);
+			g_inOwnResolve.store(accumSetup);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 
@@ -938,6 +955,21 @@ namespace TrueScopes::ScopeRender
 		// black point at the resolve/bind side instead.
 		static std::uint64_t renders = 0;
 		++renders;
+		// v0.2.41 stutter-theory verifier: every sunPass value TRANSITION is logged
+		// (rate-limited). If the black-silhouette bursts were dirty-config frames,
+		// pre-fix logs would show 1->0 at burst start and 0->1 at burst end; post-fix
+		// the transitions may still happen but the lens must stay lit (ambient frame).
+		{
+			static std::int32_t lastSunPass = -2;
+			if (g_diagSunPass != lastSunPass) {
+				static std::uint32_t sunEdgeLogs = 0;
+				if (sunEdgeLogs < 40) {
+					++sunEdgeLogs;
+					logger::info(FMT_STRING("ScopeRender #{}: sunPass {} -> {} (0 = engine sun config dirty/unbuilt this frame)"), renders, lastSunPass, g_diagSunPass);
+				}
+				lastSunPass = g_diagSunPass;
+			}
+		}
 		// Stutter probe: a frame whose world accumulation came back EMPTY renders a
 		// black lens for that frame (composite shades nothing over the black
 		// pre-clear). Log every occurrence, rate-limited.
