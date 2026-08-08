@@ -75,8 +75,22 @@ namespace TrueScopes::ScopeRender
 		// BSShaderUtil::GenerateCone in FUN_14286ffa0). That is why v0.2.25 had working
 		// local lights but no sun: nothing ever drew the sun into OUR 0x6a.
 		using StateSetCamData_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);              // 0x1da8c40  BSGraphics::State: update camera-data block (state, cam, slotSel)
-		using StateSetViewport_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t,             // 0x1da8bf0  BSGraphics::State: viewport from camera port +0x214
-			std::uint8_t, float);                                                                     //            (state, cam, a, b, scale) — resolve calls (state, cam, param_8, 0, 1.0f)
+		// 0x1da8bf0  BSGraphics::State::SetViewportFromCamera(state, cam, slotSel, minDepth, maxDepth)
+		// v0.2.64 SIGNATURE FIX. Args 4 and 5 are the D3D11 viewport MIN/MAX DEPTH, and arg 4
+		// is a FLOAT in XMM3 — not the uint8 this was declared as. Static proof:
+		//   0x141da8bf0  MOVAPS XMM6,XMM3 / ... / MOVAPS XMM3,XMM6   (passes XMM3 straight through)
+		//   0x141da9200  MOVSS [RCX+0x10],XMM2   -> camData rect[4] = MinDepth
+		//                MOVSS [RCX+0x14],XMM3   -> camData rect[5] = MaxDepth
+		//   0x141d8d480  param_2[0x28] = rect[4]; param_2[0x29] = rect[5]  (the D3D11_VIEWPORT)
+		// Every vanilla caller sets up exactly this pair, e.g. FUN_140b03d60:
+		//   XORPS XMM3,XMM3            -> minDepth 0.0   (arg 4, XMM3)
+		//   MOVSS [RSP+0x20],XMM7      -> maxDepth 1.0   (arg 5, stack; 0x142c7f640 == 1.0f, read live)
+		// Declaring arg 4 as uint8 sent our 0 to R9, which the callee never reads, leaving XMM3
+		// holding leftover garbage from earlier FP work. Field evidence: MinDepth = -4.7747655
+		// with MaxDepth = 1.0 (our stack arg landed correctly by luck). D3D11 requires
+		// 0 <= Min <= Max <= 1 and drops the whole RSSetViewports call otherwise, leaving the
+		// PREVIOUS viewport in effect for our entire scope render.
+		using StateSetViewport_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t, float, float);
 		using DepthMode_t = void (*)(std::uintptr_t, std::uint32_t);                                  // 0x1d8dd60 / 0x1d8de10: depth/texture mode setters the resolve runs before lighting
 		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
 		using FindCamBlock_t = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);       // 0x1daaf30  find CameraStateData block (state, camera, sel) in the state+0x140 array (stride 0x480); 0 if absent
@@ -1003,7 +1017,7 @@ namespace TrueScopes::ScopeRender
 					// (specular/world-pos reconstruction input; see WriteInverseView).
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
+					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0.0f, 1.0f);
 					WriteInverseProj(g_gfxState, cam);  // AFTER the commit (see note above)
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
@@ -1368,7 +1382,7 @@ namespace TrueScopes::ScopeRender
 				if (g_gfxState) {
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0, 1.0f);
+					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0.0f, 1.0f);
 					WriteInverseProj(g_gfxState, cam);
 				}
 				alignas(16) std::uint8_t skyCtx[0x2e0];
