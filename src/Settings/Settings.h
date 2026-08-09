@@ -272,6 +272,12 @@ namespace Settings
 	// reading is clean); 0x6a = what the engine would set for a scoped pass.
 	// Kept as an int rather than a bool so 0x24 can be tried without a rebuild.
 	MAKE_SETTING(iSetting, "TrueScopesVR", sunCtxAccumTarget, -1);
+	// v0.2.77 — sample the G-buffer (0x63 albedo / 0x64 normals) immediately before the
+	// sun exec. A deferred directional light shades by SAMPLING the G-buffer, and ours
+	// runs before the resolve that draws the G-buffer geometry — so it may be shading an
+	// empty one, which computes exactly zero. Default ON: cheap, and the ordering
+	// question is the live one.
+	MAKE_SETTING(bSetting, "TrueScopesVR", diagSunOrderProbe, true);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -358,6 +364,7 @@ namespace Settings
 		LOAD(diagDumpBuffers);
 		LOAD(sunExecEnabled);
 		LOAD(sunCtxAccumTarget);
+		LOAD(diagSunOrderProbe);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);

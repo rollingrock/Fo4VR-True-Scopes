@@ -195,6 +195,17 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_rbFormat61 = 0;
 		std::uint32_t g_rbFormat6a = 0;
 		std::uint32_t g_rbW61 = 0, g_rbH61 = 0, g_rbW6a = 0, g_rbH6a = 0;
+		// v0.2.77 ordering probe: the G-buffer as it stands AT THE MOMENT of the sun exec.
+		// The sun is a deferred directional light -- it shades by sampling the G-buffer.
+		// Vanilla fills the G-buffer in the stages BEFORE its sun stage (FUN_14284e9e0
+		// call #22); OUR G-buffer geometry is drawn INSIDE the resolve, which we call
+		// AFTER the sun exec. If that is the defect, albedo/normals read empty here and
+		// populated after the resolve -- and a light shading an empty G-buffer contributes
+		// exactly zero, which is what 0x6a has measured all along.
+		ID3D11Texture2D* g_stage63 = nullptr;
+		ID3D11Texture2D* g_stage64 = nullptr;
+		std::uint32_t g_rbFormat63 = 0, g_rbFormat64 = 0;
+		std::uint32_t g_rbW63 = 0, g_rbH63 = 0, g_rbW64 = 0, g_rbH64 = 0;
 		std::uint64_t g_rbDark61 = 0;   // frames where the composite center pixel was near-black
 		std::uint64_t g_rbDark6a = 0;   // ... and the light-accum center pixel
 		std::uint64_t g_rbSamples = 0;
@@ -1789,6 +1800,22 @@ namespace TrueScopes::ScopeRender
 						// We discarded this byte for the entire sun arc, and reported
 						// `sunPass=1` — meaning "we called it" — in its place. Gotcha #3: a
 						// probe that cannot represent the failure will exonerate every suspect.
+						// v0.2.77 THE ORDERING PROBE. Read the G-buffer this light is about to
+						// shade from, right here, before the draw. Compare with the same two
+						// buffers after the resolve (the end-of-render dump) -- if they are
+						// empty now and populated then, our sun is shading nothing.
+						if (*Settings::diagSunOrderProbe) {
+							const auto g63 = SampleLogicalRT(rtm, renderer, 0x63, &g_stage63, g_rbFormat63, g_rbW63, g_rbH63);
+							const auto g64 = SampleLogicalRT(rtm, renderer, 0x64, &g_stage64, g_rbFormat64, g_rbW64, g_rbH64);
+							static std::uint32_t probeLogs = 0;
+							if (probeLogs < 8) {
+								++probeLogs;
+								logger::info(
+									FMT_STRING("SUN ORDER PROBE (pre-exec): 0x63 albedo={:016X} (fmt={} {}x{}) 0x64 normals={:016X} (fmt={} {}x{}) — zero/empty here means the sun is shading an unfilled G-buffer"),
+									g63, g_rbFormat63, g_rbW63, g_rbH63, g64, g_rbFormat64, g_rbW64, g_rbH64);
+							}
+						}
+
 						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
 						g_diagSunDrew = sunDrew ? 1 : 0;
