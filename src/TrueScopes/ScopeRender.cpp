@@ -150,6 +150,11 @@ namespace TrueScopes::ScopeRender
 		std::int32_t g_diagLightsA = 0;  // *(short*)(ssn+0x1a8): resolve's shadowed-light loop count
 		std::int32_t g_diagLightsB = 0;  // *(short*)(ssn+0x1c0): resolve's queued-light loop count
 		std::int32_t g_diagLightsClamp = -1;  // v0.2.73 perfLightsMax actually applied this render (-1 = none)
+		// v0.2.75: the sun NiLight's world basis / position / color as our exec sees them.
+		float g_diagSunBasis[9] = {};  // rows at niLight+0x70/+0x80/+0x90
+		float g_diagSunPos[3] = {};
+		float g_diagSunRGB[3] = {};
+		float g_diagSunScale = 0.0f;
 		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot BEFORE resolve
 		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
 		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
@@ -2081,6 +2086,33 @@ namespace TrueScopes::ScopeRender
 					g_diagSunSlotPost = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
 				}
 			}
+			// v0.2.75 SUN INPUTS. §6.7 measured that the sun exec adds EXACTLY ZERO on
+			// normal frames; §7.3 measured that on ~20% of frames it turns 100% of 0x6a
+			// to NaN. Those two together say the pass DOES rasterize every pixel (so
+			// §6.7's own "stencil rejects everything" suspect is dead) and computes a
+			// contribution of zero. One input explains both readings: a light DIRECTION
+			// that is zero most frames — dot(N, 0) = 0, no light — and garbage on the
+			// rest — normalize(garbage) or a 0/0 → NaN. That is the signature of an
+			// UNINITIALISED per-frame value, which is exactly what we would expect to
+			// inherit by skipping the engine's pre-world sun stage and exec'ing its
+			// cached pass config directly.
+			//
+			// So log what we actually hand the pass. The NiLight's world rotation rows
+			// live at +0x70/+0x80/+0x90 (3 floats each, stride 0x10) — read off
+			// TS_BSLight_UpdateVisibilityAndFade's own spot-direction math — and a
+			// directional light's direction is a column of that basis. If these are
+			// zeros or garbage, the hypothesis is confirmed without a debugger.
+			if (const auto sunLight = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248)) {
+				if (const auto niSun = *reinterpret_cast<const std::uintptr_t*>(sunLight + 0xb8)) {
+					for (int row = 0; row < 3; ++row) {
+						std::memcpy(&g_diagSunBasis[row * 3],
+							reinterpret_cast<const void*>(niSun + 0x70 + static_cast<std::uintptr_t>(row) * 0x10), 12);
+					}
+					std::memcpy(g_diagSunPos, reinterpret_cast<const void*>(niSun + 0xa0), 12);
+					std::memcpy(g_diagSunRGB, reinterpret_cast<const void*>(niSun + 0x16c), 12);
+					g_diagSunScale = *reinterpret_cast<const float*>(niSun + 0x184);
+				}
+			}
 			g_diagEyeCount = *reinterpret_cast<const std::int32_t*>(cam + 0x208);
 			std::memcpy(g_diagPort, reinterpret_cast<const void*>(cam + 0x214), sizeof(g_diagPort));
 			if (g_ctxPtrA || g_ctxPtrB) {
@@ -2269,6 +2301,30 @@ namespace TrueScopes::ScopeRender
 						DumpLogicalRT(rtm, renderer, 0x64, "64_gbuf_normals"sv, dumpSeq);
 						DumpLogicalRT(rtm, renderer, 0x6a, "6a_accum_diffuse"sv, dumpSeq);
 						DumpLogicalRT(rtm, renderer, 0x6b, "6b_accum_specular"sv, dumpSeq);
+						// v0.2.75 — THE CONTROL. The MAIN VIEW's light accumulation, the
+						// same buffers ours are: renderer+4 is precisely the flag that
+						// remaps 0x24/0x25 -> 0x6a/0x6b for a scoped pass, so these two
+						// are the engine's own output of the very pass we are failing to
+						// reproduce, in the same units, on the same frame.
+						//
+						// Gotcha #3 says to always print a known-good control beside the
+						// unknown; this lighting hunt has never had one. It splits the
+						// question in a single dump:
+						//   0x24 shows real directional light, ours is flat  => our INPUTS
+						//     to the sun pass are wrong; hunt them, the model is right.
+						//   0x24 is ALSO flat                               => the sun does
+						//     NOT reach the main view through the accum either, our whole
+						//     model of where FO4VR's sunlight comes from is wrong, and the
+						//     composite's own 0x40 sun term is where to look instead.
+						// The second outcome would invalidate the entire v0.2.26-62 sun
+						// arc, which is exactly why it is worth one dump to rule out.
+						//
+						// Caveat to keep with the data: our render runs at the fill hook,
+						// so depending on where that sits in the frame these may hold the
+						// PREVIOUS frame's main-view accumulation. Adjacent frame, same
+						// scene - fine as a control, wrong as a per-frame correlation.
+						DumpLogicalRT(rtm, renderer, 0x24, "24_MAIN_accum_diffuse"sv, dumpSeq);
+						DumpLogicalRT(rtm, renderer, 0x25, "25_MAIN_accum_specular"sv, dumpSeq);
 					}
 					DumpLogicalRT(rtm, renderer, 0x61, "61_composite"sv, dumpSeq);
 					DumpLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens), "62_lens"sv, dumpSeq);
@@ -2537,6 +2593,19 @@ namespace TrueScopes::ScopeRender
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
 				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
+
+			// v0.2.75: the sun's own inputs. A basis of zeros (or garbage) here IS the
+			// answer to "why does the sun pass add nothing" — see the note at the
+			// capture site. Printed every heartbeat so it is in the log of any run.
+			logger::info(
+				FMT_STRING("ScopeRender #{}: SUN basis=[{:.4f},{:.4f},{:.4f} | {:.4f},{:.4f},{:.4f} | {:.4f},{:.4f},{:.4f}] pos=({:.1f},{:.1f},{:.1f}) rgb=({:.3f},{:.3f},{:.3f}) scale={:.3f} exec={}"),
+				renders,
+				g_diagSunBasis[0], g_diagSunBasis[1], g_diagSunBasis[2],
+				g_diagSunBasis[3], g_diagSunBasis[4], g_diagSunBasis[5],
+				g_diagSunBasis[6], g_diagSunBasis[7], g_diagSunBasis[8],
+				g_diagSunPos[0], g_diagSunPos[1], g_diagSunPos[2],
+				g_diagSunRGB[0], g_diagSunRGB[1], g_diagSunRGB[2],
+				g_diagSunScale, *Settings::sunExecEnabled);
 
 			// v0.2.73: the stage stopwatch, on its own line. Every condition that
 			// changes the numbers (clamped lights, reduced render scale, sample count,
