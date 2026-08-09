@@ -115,3 +115,23 @@ devbenchPort = 8930
 # test is that `passes total=` should TRACK scopeFovDegrees (639 at 2.4deg,
 # 5788 at 120deg) -- if it goes flat, culling has regressed.
 cullToScopeFrustum = true
+
+# --- v0.2.73 PERF: the stopwatch and its two levers -------------------------
+# perfTimers times each stage of our render on BOTH timelines (GPU via D3D11
+# timestamp queries, CPU via QPC) and reports the means on /state (stageTimes)
+# and in the heartbeat. Flip it false then true to reset the averaging window --
+# that is how you take a clean measurement without restarting anything.
+perfTimers = true
+# LEVER 1 -- render resolution. Scales the scope camera's viewport down to the
+# top-left sub-rect of the fixed 1024^2 scope G-buffer (0.5 = 512x512 = quarter
+# the pixels). The projection is NOT adjusted, so the lens shows the picture
+# shrunk into a corner: WRONG PICTURE, RIGHT MEASUREMENT. It prices the whole
+# G-buffer -> lighting -> composite chain at reduced resolution before any work
+# is spent teaching the delivery to sample a sub-rect. 1.0 = untouched.
+perfRenderScale = 1.0
+# LEVER 2 -- light count. Caps the two light loops the deferred resolve iterates
+# (385 shadowed + 15 queued at Diamond City) for the duration of the resolve
+# only. 0 = no light volumes drawn at all, -1 = untouched. Through a 2.4 deg
+# frustum any light that intersects projects across the whole target, so this
+# prices the light overdraw in one reading.
+perfLightsMax = -1

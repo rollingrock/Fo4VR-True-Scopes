@@ -254,6 +254,10 @@ namespace DevBench
 				{ "scopeCamOffsetY", Kind::Float, &scopeCamOffsetY },
 				{ "scopeCamOffsetZ", Kind::Float, &scopeCamOffsetZ },
 				{ "cullToScopeFrustum", Kind::Bool, &cullToScopeFrustum },
+				// v0.2.73 perf: the stopwatch (off->on resets its window) and its two levers
+				{ "perfTimers", Kind::Bool, &perfTimers },
+				{ "perfRenderScale", Kind::Float, &perfRenderScale },
+				{ "perfLightsMax", Kind::Int, &perfLightsMax },
 				{ "sunEnabled", Kind::Bool, &sunEnabled },
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
@@ -496,6 +500,7 @@ namespace DevBench
 			out += ",\"sunCfgFlags\":" + Quote(Hex(d.sunCfgFlags));
 			out += ",\"skyRoots\":" + std::to_string(d.skyRoots);
 			out += ",\"skyDrawn\":" + std::to_string(d.skyDrawn);
+			out += ",\"lightsClamp\":" + std::to_string(d.lightsClamp);
 			out += ",\"camRect\":[";
 			for (int k = 0; k < 6; ++k) {
 				if (k) out += ",";
@@ -513,6 +518,40 @@ namespace DevBench
 				out += std::to_string(d.viewport[k]);
 			}
 			out += "]}";
+
+			// v0.2.73 stage stopwatch. Mean ms per stage of OUR render since the last
+			// reset, on both timelines. Reset the window with
+			//   /config/set?key=perfTimers&value=false  then  ...&value=true
+			// The GPU and CPU sample counts are reported separately on purpose: they
+			// diverge when the query ring is saturated, and a reader who assumes they
+			// match would silently average two different windows.
+			{
+				const auto t = TrueScopes::ScopeRender::GetStageTimes();
+				const auto ms = [](double v) {
+					char buf[48];
+					std::snprintf(buf, sizeof(buf), "%.3f", std::isfinite(v) ? v : 0.0);
+					return std::string{ buf };
+				};
+				out += ",\"stageTimes\":{";
+				out += "\"enabled\":" + b(t.enabled);
+				out += ",\"gpuQueries\":" + b(t.available);
+				out += ",\"gpuSamples\":" + std::to_string(t.gpuSamples);
+				out += ",\"cpuSamples\":" + std::to_string(t.cpuSamples);
+				out += ",\"disjointDiscarded\":" + std::to_string(t.disjoint);
+				out += ",\"gpuTotalMs\":" + ms(t.gpuTotalMs);
+				out += ",\"cpuTotalMs\":" + ms(t.cpuTotalMs);
+				out += ",\"gpuMs\":{";
+				for (std::size_t i = 0; i < TrueScopes::ScopeRender::kStageCount; ++i) {
+					if (i) out += ",";
+					out += Quote(TrueScopes::ScopeRender::kStageNames[i]) + ":" + ms(t.gpuMs[i]);
+				}
+				out += "},\"cpuMs\":{";
+				for (std::size_t i = 0; i < TrueScopes::ScopeRender::kStageCount; ++i) {
+					if (i) out += ",";
+					out += Quote(TrueScopes::ScopeRender::kStageNames[i]) + ":" + ms(t.cpuMs[i]);
+				}
+				out += "}}";
+			}
 
 			out += ",\"moduleBase\":" + Quote(Hex(REL::Module::get().base()));
 			out += "}";

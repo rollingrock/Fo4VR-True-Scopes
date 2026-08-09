@@ -99,6 +99,39 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t sunCfgFlags;
 		float         camRect[6];
 		std::int32_t  viewport[6];
+		std::int32_t  lightsClamp;  // v0.2.73: perfLightsMax applied last render (-1 = none)
 	};
 	Diagnostics GetDiagnostics();
+
+	// --- v0.2.73 stage stopwatch ---------------------------------------------
+	// Mean milliseconds per stage of our own render since the last reset, measured
+	// on BOTH timelines: GPU via D3D11 timestamp queries, CPU via QPC across the
+	// same marks. Both are needed — AccumulateScene is CPU pass-list building with
+	// near-zero GPU work and the resolve is the reverse, and which one dominates
+	// decides whether the fix is fewer objects or fewer pixels.
+	//
+	// Reset the window by flipping `perfTimers` off then on (DevBench /config/set).
+	inline constexpr std::size_t kStageCount = 7;
+	inline constexpr const char* kStageNames[kStageCount] = {
+		"setup",    // camera + FOV + widget fit + G-buffer binds and clears
+		"lights",   // ShadowSceneNode::ProcessQueuedLights — the per-light fit
+		"accum",    // BSShaderUtil::AccumulateScene — culling + pass-list build
+		"sun",      // accum clears/binds + the BSDFLightDir exec (off by default)
+		"resolve",  // the deferred resolve: G-buffer draw + light volumes + composite
+		"sky",      // sky root accumulation + immediate group draw
+		"deliver"   // FinishAccum + the tonemapped 0x61 -> 0x62 lens copy
+	};
+	struct StageTimes
+	{
+		double        gpuMs[kStageCount];
+		double        cpuMs[kStageCount];
+		double        gpuTotalMs;
+		double        cpuTotalMs;
+		std::uint64_t gpuSamples;  // renders averaged in (GPU)
+		std::uint64_t cpuSamples;  // ... and CPU; differs when the query ring is full
+		std::uint64_t disjoint;    // renders discarded because the GPU clock changed
+		bool          enabled;
+		bool          available;   // false = CreateQuery failed; CPU numbers only
+	};
+	StageTimes GetStageTimes();
 }

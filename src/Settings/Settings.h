@@ -113,6 +113,46 @@ namespace Settings
 	// the engine's own cull helper FUN_141d4dc50 does, for the paths that do read it.
 	// Live-toggleable so the §3.7e ladder is a clean A/B on one flag.
 	MAKE_SETTING(bSetting, "TrueScopesVR", cullToScopeFrustum, true);
+	// --- v0.2.73 PERF: the stopwatch and its two levers ------------------------
+	// Per-stage timing of our own render: D3D11 timestamp queries on the GPU
+	// timeline plus QPC on the CPU, means reported by DevBench /state and the
+	// heartbeat. Flip OFF then ON to reset the accumulators — that is how you take
+	// a clean measurement window without restarting anything.
+	//
+	// Why this exists: the v0.2.72 culling fix took the render 27.3 -> 13.6 ms, but
+	// draw passes fell 19x while time fell only 2x, so the remaining cost is NOT
+	// per-object submission. The two standing suspects (1024^2 render resolution,
+	// 385 shadowed lights) are GUESSES, and the previous two perf theories that were
+	// guesses (v0.2.71's combined frustum, and "the cull object isn't ours") were
+	// both wrong. Measure the stages, then fix the one that is expensive.
+	// Cost when on: 8 timestamp queries per render, collected 2-3 renders later
+	// without ever blocking. Not free, but far below the noise floor of a VR frame.
+	MAKE_SETTING(bSetting, "TrueScopesVR", perfTimers, true);
+	// LEVER 1 — render resolution. Scales the scope camera's viewport to the
+	// top-left sub-rectangle of the (engine-allocated, fixed 1024^2) scope G-buffer:
+	// 0.5 = render at 512x512, quarter the pixels. Applied AFTER SetCameraFOV, which
+	// forces the port back to full-frame {0,1,1,0} itself on every call.
+	// Port semantics verified in Ghidra (TS_BSGraphicsState_BuildViewportFromCamDataRect,
+	// 0x141d8d480): rect = {left, right, top, bottom, minDepth, maxDepth}, and
+	// viewport = (w*left, (1-top)*h, (right-left)*w, (top-bottom)*h).
+	// ⚠️ The projection is NOT touched, so the same image is squeezed into that
+	// sub-rect while the lens delivery still samples the whole surface: the lens
+	// will show the picture shrunk into one corner. THAT IS EXPECTED AND FINE for a
+	// measurement run — it tells us what the resolution is WORTH before any work is
+	// spent making the delivery sample the sub-rect. 1.0 = untouched.
+	MAKE_SETTING(fSetting, "TrueScopesVR", perfRenderScale, 1.0);
+	// LEVER 2 — light count. Clamps the two light-loop counts the deferred resolve
+	// iterates (ShadowSceneNode +0x1a8 shadowed, +0x1c0 queued) across our resolve
+	// call only, restoring them immediately after. 0 = draw no light volumes at all,
+	// -1 = untouched. At a 2.4 deg FOV the engine still processes 385 shadowed
+	// lights; a light volume that intersects a pinhole frustum projects across the
+	// WHOLE target, so the overdraw is plausibly the remaining cost. This says so in
+	// one reading instead of a session of theory.
+	// The heartbeat keeps reporting the true counts (they are re-read after the
+	// restore), so a clamped run is not silently indistinguishable from a normal one
+	// — `lightsClamp=` in the log is the marker.
+	MAKE_SETTING(iSetting, "TrueScopesVR", perfLightsMax, std::int64_t(-1));
+
 	// Draw the engine's sun BSDFLightDir pass into our scope light accumulation before
 	// the resolve (v0.2.26). Requires the resolve accum-bind hooks; falls back to the
 	// v0.2.25 look (ambient + local lights only) when off or unavailable.
@@ -283,6 +323,9 @@ namespace Settings
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
 		LOAD(cullToScopeFrustum);
+		LOAD(perfTimers);
+		LOAD(perfRenderScale);
+		LOAD(perfLightsMax);
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
 		LOAD(sunSpecEnabled);

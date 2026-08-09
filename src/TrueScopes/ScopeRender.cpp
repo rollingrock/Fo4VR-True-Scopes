@@ -149,6 +149,7 @@ namespace TrueScopes::ScopeRender
 		// Live camera / viewport diagnostics captured after the resolve.
 		std::int32_t g_diagLightsA = 0;  // *(short*)(ssn+0x1a8): resolve's shadowed-light loop count
 		std::int32_t g_diagLightsB = 0;  // *(short*)(ssn+0x1c0): resolve's queued-light loop count
+		std::int32_t g_diagLightsClamp = -1;  // v0.2.73 perfLightsMax actually applied this render (-1 = none)
 		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot BEFORE resolve
 		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
 		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
@@ -184,6 +185,240 @@ namespace TrueScopes::ScopeRender
 		std::uint64_t g_rbDark61 = 0;   // frames where the composite center pixel was near-black
 		std::uint64_t g_rbDark6a = 0;   // ... and the light-accum center pixel
 		std::uint64_t g_rbSamples = 0;
+
+		// ---- v0.2.73 THE STOPWATCH — per-stage GPU + CPU timing ------------------
+		//
+		// The v0.2.72 culling fix took the render 27.3 ms -> 13.6 ms, and the shape of
+		// what is left says the remaining cost is not geometry: draw passes fell 19x
+		// (14,441 -> ~700) while time fell 2x. The standing suspects — 1024^2 render
+		// resolution and 385 shadowed lights — are guesses. So were the last two perf
+		// theories, and both were wrong. This measures the stages directly.
+		//
+		// GPU: D3D11 timestamp queries. Eight marks bracket the seven stages of
+		// Render(); a TIMESTAMP_DISJOINT query per render carries the tick frequency
+		// and the validity flag (the GPU clock can change frequency mid-flight, and
+		// the D3D contract is to DISCARD such a frame — counted, never averaged in).
+		// Results are collected 2-3 renders later with DONOTFLUSH, so nothing here
+		// ever stalls the pipeline the way the 1-pixel readbacks do.
+		//
+		// CPU: QueryPerformanceCounter at the same marks. Both are needed —
+		// AccumulateScene is CPU pass-list building with almost no GPU work, while
+		// the resolve is the reverse. A single number could not tell those apart, and
+		// which one it is decides whether the fix is fewer objects or fewer pixels.
+		constexpr std::uint32_t kMarkCount = 8;
+		constexpr std::uint32_t kSegCount = kMarkCount - 1;  // == kStageCount in the header
+		constexpr std::uint32_t kTimerRing = 4;              // renders in flight before we skip timing one
+
+		struct TimerSlot
+		{
+			ID3D11Query* disjoint = nullptr;
+			ID3D11Query* ts[kMarkCount] = {};
+			bool         inFlight = false;
+		};
+		TimerSlot     g_timers[kTimerRing];
+		std::uint32_t g_timerHead = 0;      // slot being written this render
+		std::uint32_t g_timerTail = 0;      // oldest slot awaiting collection
+		std::uint32_t g_timerLive = 0;      // slots in flight
+		bool          g_timersReady = false;
+		bool          g_timersFailed = false;
+		bool          g_timerActive = false;               // this render is being timed
+		ID3D11DeviceContext* g_timerCtx = nullptr;
+
+		double        g_gpuSum[kSegCount] = {};
+		double        g_cpuSum[kSegCount] = {};
+		double        g_gpuTotalSum = 0.0;
+		double        g_cpuTotalSum = 0.0;
+		std::uint64_t g_gpuSamples = 0;
+		std::uint64_t g_cpuSamples = 0;
+		std::uint64_t g_timerDisjoint = 0;  // frames discarded because the GPU clock moved
+		std::int64_t  g_cpuMarks[kMarkCount] = {};
+		std::int64_t  g_qpcFreq = 0;
+
+		void ResetTimerStats() noexcept
+		{
+			for (std::uint32_t i = 0; i < kSegCount; ++i) {
+				g_gpuSum[i] = 0.0;
+				g_cpuSum[i] = 0.0;
+			}
+			g_gpuTotalSum = g_cpuTotalSum = 0.0;
+			g_gpuSamples = g_cpuSamples = g_timerDisjoint = 0;
+		}
+
+		bool EnsureTimers(ID3D11DeviceContext* a_ctx) noexcept
+		{
+			if (g_timersReady) {
+				return true;
+			}
+			if (g_timersFailed || !a_ctx) {
+				return false;
+			}
+			ID3D11Device* dev = nullptr;
+			a_ctx->GetDevice(&dev);
+			if (!dev) {
+				g_timersFailed = true;
+				return false;
+			}
+			bool ok = true;
+			for (auto& s : g_timers) {
+				D3D11_QUERY_DESC qd{};
+				qd.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+				ok = ok && SUCCEEDED(dev->CreateQuery(&qd, &s.disjoint));
+				qd.Query = D3D11_QUERY_TIMESTAMP;
+				for (auto& q : s.ts) {
+					ok = ok && SUCCEEDED(dev->CreateQuery(&qd, &q));
+				}
+			}
+			dev->Release();
+			if (!ok) {
+				// Partial creation is worse than none: release what we got and stay off
+				// for the session rather than reporting timings from half a ring.
+				for (auto& s : g_timers) {
+					if (s.disjoint) {
+						s.disjoint->Release();
+						s.disjoint = nullptr;
+					}
+					for (auto& q : s.ts) {
+						if (q) {
+							q->Release();
+							q = nullptr;
+						}
+					}
+				}
+				g_timersFailed = true;
+				logger::warn(FMT_STRING("PERF TIMERS: CreateQuery failed — stage timing unavailable this session"));
+				return false;
+			}
+			LARGE_INTEGER f{};
+			::QueryPerformanceFrequency(&f);
+			g_qpcFreq = f.QuadPart;
+			g_timersReady = true;
+			logger::info(FMT_STRING("PERF TIMERS: {} timestamp queries ready (ring of {})"), kTimerRing * (kMarkCount + 1), kTimerRing);
+			return true;
+		}
+
+		// Drain every slot whose results have landed. Non-blocking by construction:
+		// DONOTFLUSH means "answer only if it is already back", so a slot that is not
+		// ready simply stays in flight — and if the ring fills, the next render goes
+		// untimed rather than waiting on the GPU.
+		void CollectTimers(ID3D11DeviceContext* a_ctx) noexcept
+		{
+			while (g_timerLive > 0) {
+				auto& s = g_timers[g_timerTail];
+				D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+				if (a_ctx->GetData(s.disjoint, &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) {
+					break;
+				}
+				std::uint64_t t[kMarkCount] = {};
+				bool          have = true;
+				for (std::uint32_t i = 0; i < kMarkCount && have; ++i) {
+					have = a_ctx->GetData(s.ts[i], &t[i], sizeof(t[i]), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+				}
+				if (!have) {
+					break;  // disjoint landed first; retry the whole slot next render
+				}
+				if (dj.Disjoint || dj.Frequency == 0) {
+					++g_timerDisjoint;
+				} else {
+					const double toMs = 1000.0 / static_cast<double>(dj.Frequency);
+					for (std::uint32_t i = 0; i < kSegCount; ++i) {
+						g_gpuSum[i] += static_cast<double>(t[i + 1] - t[i]) * toMs;
+					}
+					g_gpuTotalSum += static_cast<double>(t[kMarkCount - 1] - t[0]) * toMs;
+					++g_gpuSamples;
+				}
+				s.inFlight = false;
+				g_timerTail = (g_timerTail + 1) % kTimerRing;
+				--g_timerLive;
+			}
+		}
+
+		[[nodiscard]] std::int64_t QpcNow() noexcept
+		{
+			LARGE_INTEGER c{};
+			::QueryPerformanceCounter(&c);
+			return c.QuadPart;
+		}
+
+		void TimerMark(std::uint32_t a_mark) noexcept
+		{
+			if (a_mark >= kMarkCount) {
+				return;
+			}
+			g_cpuMarks[a_mark] = QpcNow();
+			if (g_timerActive && g_timerCtx) {
+				g_timerCtx->End(g_timers[g_timerHead].ts[a_mark]);
+			}
+		}
+
+		void TimersBegin() noexcept
+		{
+			// Off->on transition resets the window, so a bench run is "flip it, walk to
+			// the spot, read the mean" with no restart and no arithmetic on the operator.
+			static bool wasEnabled = false;
+			const bool  enabled = *Settings::perfTimers;
+			if (enabled && !wasEnabled) {
+				ResetTimerStats();
+			}
+			wasEnabled = enabled;
+
+			// A render that returned early (null SSN) or faulted inside the SEH guard
+			// left a disjoint query open. Close and abandon that slot instead of
+			// issuing Begin on top of it — an unbalanced Begin/Begin makes every later
+			// reading suspect, and a stopwatch you cannot trust is worse than none.
+			if (g_timerActive && g_timerCtx) {
+				g_timerCtx->End(g_timers[g_timerHead].disjoint);
+				g_timerActive = false;
+			}
+
+			g_timerActive = false;
+			if (!enabled) {
+				return;
+			}
+			if (g_qpcFreq == 0) {
+				// CPU timing must not depend on the D3D queries coming up — if
+				// CreateQuery fails we still want the CPU/GPU split's CPU half.
+				LARGE_INTEGER f{};
+				::QueryPerformanceFrequency(&f);
+				g_qpcFreq = f.QuadPart;
+			}
+			auto* const ctx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
+			if (!EnsureTimers(ctx)) {
+				// CPU marks still work without D3D queries — record them anyway.
+				g_timerCtx = nullptr;
+				TimerMark(0);
+				return;
+			}
+			g_timerCtx = ctx;
+			CollectTimers(ctx);
+			if (g_timerLive < kTimerRing) {
+				ctx->Begin(g_timers[g_timerHead].disjoint);
+				g_timerActive = true;
+			}
+			TimerMark(0);
+		}
+
+		void TimersEnd() noexcept
+		{
+			if (!*Settings::perfTimers) {
+				return;
+			}
+			if (g_qpcFreq > 0 && g_cpuMarks[0] != 0 && g_cpuMarks[kMarkCount - 1] != 0) {
+				const double toMs = 1000.0 / static_cast<double>(g_qpcFreq);
+				for (std::uint32_t i = 0; i < kSegCount; ++i) {
+					g_cpuSum[i] += static_cast<double>(g_cpuMarks[i + 1] - g_cpuMarks[i]) * toMs;
+				}
+				g_cpuTotalSum += static_cast<double>(g_cpuMarks[kMarkCount - 1] - g_cpuMarks[0]) * toMs;
+				++g_cpuSamples;
+			}
+			if (!g_timerActive) {
+				return;
+			}
+			g_timerCtx->End(g_timers[g_timerHead].disjoint);
+			g_timers[g_timerHead].inFlight = true;
+			g_timerHead = (g_timerHead + 1) % kTimerRing;
+			++g_timerLive;
+			g_timerActive = false;
+		}
 
 		bool EnsureStaging(ID3D11DeviceContext* a_ctx, ID3D11Texture2D* a_src,
 			ID3D11Texture2D** a_stage, std::uint32_t& a_fmt, std::uint32_t& a_w, std::uint32_t& a_h) noexcept
@@ -989,6 +1224,9 @@ namespace TrueScopes::ScopeRender
 			// DevBench works without paying a subtree update every frame.
 			ApplyWidgetFit(player);
 
+			// v0.2.73: mark 0 — everything from here to the light fit is "setup".
+			TimersBegin();
+
 			// Zoom FOV: force SetCameraFOV's symmetric-frustum path (instead of HMD eye
 			// projections) exactly like the vanilla scope pass does, then restore.
 			RENDER_STEP(1);
@@ -1019,6 +1257,33 @@ namespace TrueScopes::ScopeRender
 			// shows: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
 			// (which it forces to full-frame {0,1,1,0} itself — do not touch +0x184,
 			// that is per-eye frustum data on this type).
+
+			// v0.2.73 LEVER 1 — RENDER RESOLUTION. Shrink the viewport to the top-left
+			// sub-rect of the fixed-size scope G-buffer. MUST come after SetCameraFOV,
+			// which rewrites this port to full-frame on every call.
+			//
+			// rect = {left, right, top, bottom} and the engine builds
+			//   X = w*left   Y = (1-top)*h   W = (right-left)*w   H = (top-bottom)*h
+			// (TS_BSGraphicsState_BuildViewportFromCamDataRect, 0x141d8d480 — read, not
+			// guessed). {0, s, 1, 1-s} therefore gives an s*w by s*h viewport anchored
+			// at the origin, which is the anchor a future delivery-UV fix wants.
+			//
+			// The PROJECTION is deliberately left alone, so this squeezes the same
+			// image into fewer pixels and the lens shows it shrunk into a corner. That
+			// makes the picture wrong and the measurement right: it prices the whole
+			// G-buffer -> lighting -> composite chain at reduced resolution before any
+			// effort is spent teaching the delivery to sample a sub-rect.
+			{
+				auto scale = static_cast<float>(*Settings::perfRenderScale);
+				if (scale < 1.0f) {
+					scale = scale < 0.05f ? 0.05f : scale;  // a 0 viewport is a D3D error, not an experiment
+					auto* const port = reinterpret_cast<float*>(cam + 0x214);
+					port[0] = 0.0f;
+					port[1] = scale;
+					port[2] = 1.0f;
+					port[3] = 1.0f - scale;
+				}
+			}
 
 			// ============================ v0.2.71 — THE PERF FIX (§3.7e) ==========
 			// Publish the frustum we just built to the slot the CULLER actually reads.
@@ -1162,9 +1427,11 @@ namespace TrueScopes::ScopeRender
 			// released too). With cull+0x18 = our camera this is safe (the v0.2.8
 			// fault was the null camera), and the next main frame re-fits for its own
 			// camera, so the mutation self-heals.
+			TimerMark(1);  // end "setup" (camera, binds, clears)
 			RENDER_STEP(7);
 			using ProcessLights_t = void (*)(std::uintptr_t, void*);
 			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
+			TimerMark(2);  // end "lights" (ProcessQueuedLights — the 385-light fit)
 
 			// ===================== v0.2.72 — WHY NOTHING WAS EVER CULLED =========
 			// The frustum was never the problem (v0.2.71's mirror logged aliased=1:
@@ -1224,6 +1491,7 @@ namespace TrueScopes::ScopeRender
 			if (bypassPrevis) {
 				*reinterpret_cast<volatile std::uint8_t*>(previsTempDisable) = savedPrevis;
 			}
+			TimerMark(3);  // end "accum" (AccumulateScene — CPU pass-list building)
 			// =====================================================================
 
 			RENDER_STEP(9);
@@ -1554,6 +1822,7 @@ namespace TrueScopes::ScopeRender
 			// the vanilla scoped frame: light buffers 0x6a/0x6b, DS 0xC. param_6 = 0xC
 			// keeps its tail bind consistent with that. g_inOwnResolve arms the two
 			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
+			TimerMark(4);  // end "sun" (accum clears + binds + the BSDFLightDir exec)
 			RENDER_STEP(14);
 			// Ensure the staging inverse-projection is OURS for the resolve's own
 			// lighting/composite too. The resolve re-commits the camera internally,
@@ -1584,9 +1853,41 @@ namespace TrueScopes::ScopeRender
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 3);
 				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
+			// v0.2.73 LEVER 2 — LIGHT COUNT. Clamp the two loop counts the resolve
+			// iterates, for the duration of the resolve only. The resolve draws a light
+			// VOLUME per entry (cone/sphere geometry); through a 2.4 deg frustum any
+			// light that intersects at all projects across the entire target, so 385
+			// shadowed lights is 385 potentially full-screen shaded passes. Restored
+			// immediately after, before the heartbeat re-reads the true counts — so a
+			// clamped run reports its real light count AND its clamp, and cannot be
+			// mistaken later for an ordinary reading.
+			const auto   lightsMax = static_cast<std::int32_t>(*Settings::perfLightsMax);
+			const bool   clampLights = lightsMax >= 0;
+			std::int16_t savedLightsA = 0, savedLightsB = 0;
+			auto* const  lightCountA = reinterpret_cast<std::int16_t*>(ssn0 + 0x1a8);
+			auto* const  lightCountB = reinterpret_cast<std::int16_t*>(ssn0 + 0x1c0);
+			if (clampLights) {
+				savedLightsA = *lightCountA;
+				savedLightsB = *lightCountB;
+				const auto cap = static_cast<std::int16_t>(lightsMax);
+				if (*lightCountA > cap) {
+					*lightCountA = cap;
+				}
+				if (*lightCountB > cap) {
+					*lightCountB = cap;
+				}
+			}
+			g_diagLightsClamp = clampLights ? lightsMax : -1;
+
 			g_inOwnResolve.store(accumSetup);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
+
+			if (clampLights) {
+				*lightCountA = savedLightsA;
+				*lightCountB = savedLightsB;
+			}
+			TimerMark(5);  // end "resolve" (G-buffer draw + light volumes + composite)
 
 			// v0.2.43 black-burst forensics: sample the center pixel of the light
 			// accum (0x6a) and the composite (0x61) right after the resolve. On a
@@ -1747,6 +2048,7 @@ namespace TrueScopes::ScopeRender
 			}
 
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
+			TimerMark(6);  // end "sky" (sky accumulation + immediate group draw)
 			RENDER_STEP(16);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
@@ -1924,6 +2226,11 @@ namespace TrueScopes::ScopeRender
 			if (ismMgr) {
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
 			}
+			// Mark 7 — end "deliver" (step 16's unbind/FinishAccum + the tonemap copy
+			// into the lens). Taken BEFORE the diagnostic dumps and readbacks below,
+			// which are off in any perf run and would otherwise be attributed to it.
+			TimerMark(7);
+			TimersEnd();
 
 			// v0.2.54: full-surface dump of the composite and the delivered lens,
 			// taken at the same point the 1-pixel readback is taken (right after
@@ -2219,6 +2526,23 @@ namespace TrueScopes::ScopeRender
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
 				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
+
+			// v0.2.73: the stage stopwatch, on its own line. Every condition that
+			// changes the numbers (clamped lights, reduced render scale, sample count,
+			// discarded frames) prints beside them, so a log line from a bench run
+			// carries its own experimental setup and cannot be misfiled later.
+			if (const auto t = GetStageTimes(); t.cpuSamples != 0) {
+				std::string gpu, cpu;
+				for (std::size_t i = 0; i < kStageCount; ++i) {
+					fmt::format_to(std::back_inserter(gpu), FMT_STRING("{}{}={:.2f}"), i ? " " : "", kStageNames[i], t.gpuMs[i]);
+					fmt::format_to(std::back_inserter(cpu), FMT_STRING("{}{}={:.2f}"), i ? " " : "", kStageNames[i], t.cpuMs[i]);
+				}
+				logger::info(
+					FMT_STRING("ScopeRender #{}: PERF n={}gpu/{}cpu disjoint={} renderScale={:.3f} lightsClamp={} | GPU {:.2f} ms [{}] | CPU {:.2f} ms [{}]"),
+					renders, t.gpuSamples, t.cpuSamples, t.disjoint,
+					*Settings::perfRenderScale, g_diagLightsClamp,
+					t.gpuTotalMs, gpu, t.cpuTotalMs, cpu);
+			}
 		}
 		return true;
 	}
@@ -2390,6 +2714,28 @@ namespace TrueScopes::ScopeRender
 		d.sunCfgFlags = g_diagSunCfgFlags;
 		std::memcpy(d.camRect, g_diagRect, sizeof(d.camRect));
 		std::memcpy(d.viewport, g_diagViewport, sizeof(d.viewport));
+		d.lightsClamp = g_diagLightsClamp;
 		return d;
+	}
+
+	StageTimes GetStageTimes()
+	{
+		static_assert(kSegCount == kStageCount, "stage name table and marker count disagree");
+		StageTimes t{};
+		t.enabled = *Settings::perfTimers;
+		t.available = g_timersReady;
+		t.gpuSamples = g_gpuSamples;
+		t.cpuSamples = g_cpuSamples;
+		t.disjoint = g_timerDisjoint;
+		// Means, not totals: a run's length must not change the numbers you compare.
+		const auto gN = g_gpuSamples ? static_cast<double>(g_gpuSamples) : 1.0;
+		const auto cN = g_cpuSamples ? static_cast<double>(g_cpuSamples) : 1.0;
+		for (std::size_t i = 0; i < kStageCount; ++i) {
+			t.gpuMs[i] = g_gpuSamples ? g_gpuSum[i] / gN : 0.0;
+			t.cpuMs[i] = g_cpuSamples ? g_cpuSum[i] / cN : 0.0;
+		}
+		t.gpuTotalMs = g_gpuSamples ? g_gpuTotalSum / gN : 0.0;
+		t.cpuTotalMs = g_cpuSamples ? g_cpuTotalSum / cN : 0.0;
+		return t;
 	}
 }
