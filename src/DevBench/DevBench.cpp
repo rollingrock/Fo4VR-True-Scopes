@@ -237,6 +237,7 @@ namespace DevBench
 				{ "scopeCamOffsetX", Kind::Float, &scopeCamOffsetX },
 				{ "scopeCamOffsetY", Kind::Float, &scopeCamOffsetY },
 				{ "scopeCamOffsetZ", Kind::Float, &scopeCamOffsetZ },
+				{ "cullToScopeFrustum", Kind::Bool, &cullToScopeFrustum },
 				{ "sunEnabled", Kind::Bool, &sunEnabled },
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },

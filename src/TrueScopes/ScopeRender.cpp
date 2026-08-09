@@ -49,6 +49,7 @@ namespace TrueScopes::ScopeRender
 		using CullCtor_t = void* (*)(void*, std::uint32_t);                                            // 0x1d4d8e0  BSCullingProcess::ctor(mem, 0)
 		using CullDtor_t = void (*)(void*);                                                            // 0x1d4d960  BSCullingProcess::dtor (Ghidra-mislabeled as ctor)
 		using CullSetAccum_t = void (*)(void*, void*);                                                 // 0x1d4d9c0  BSCullingProcess::SetAccumulator
+		using CullSetFrustum_t = void (*)(void*, const void*);                                         // 0x1c452b0  NiCullingProcess::SetFrustum(cull, NiFrustum*) — needs cull+0x18 (camera) set first; fills the 6 planes at cull+0x3c and the enable mask at cull+0x9c
 		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, FAR, NEAR) — param_3=far, param_4=near (v0.2.36 static proof; the v0.2.0-19 "1,1" bug was near==far → NaN projection)
 		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer); also used for 0x1d94990 ResetState
 		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 1)
@@ -155,6 +156,16 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
 		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
+		// v0.2.71 culling forensics: the two frusta the engine keeps on a camera.
+		// eye0 = [cam+0x1a0][0], the one SetCameraFOV writes and the projection uses;
+		// comb = *(cam+0x200), the COMBINED frustum BSCullingGroup::SetCamera culls
+		// with. On a mono camera the engine never refreshes comb's lateral extents,
+		// which is exactly the §3.7e bug. `combPre` is comb as found BEFORE our
+		// mirror, so the log records the stale value that was doing the culling.
+		float g_diagFrustumEye0[7] = {};
+		float g_diagFrustumCombPre[7] = {};
+		std::int32_t g_diagFrustumAliased = -1;  // 1 = [cam+0x200] == [cam+0x1a0] (mirror is a no-op), 0 = distinct, -1 = unknown
+		std::int32_t g_diagCullFix = -1;         // -1 not attempted, 0 skipped (setting off / null ptr), 1 applied
 		float g_fogRGB[3] = { 0.05f, 0.05f, 0.05f };  // last-good fog color (ambient base); dim gray until first read
 		std::uint64_t g_diagFogNulls = 0;             // frames where the fog singleton was null (stutter forensics)
 
@@ -1009,6 +1020,68 @@ namespace TrueScopes::ScopeRender
 			// (which it forces to full-frame {0,1,1,0} itself — do not touch +0x184,
 			// that is per-eye frustum data on this type).
 
+			// ============================ v0.2.71 — THE PERF FIX (§3.7e) ==========
+			// Publish the frustum we just built to the slot the CULLER actually reads.
+			//
+			// AccumulateScene (0x27ff370) ignores the BSCullingProcess's own frustum
+			// for visibility: it builds a stack BSCullingGroup and calls
+			// BSCullingGroup::SetCamera (0x638270), which derives its six clip planes
+			// from *(NiFrustum**)(cam + 0x200) — the COMBINED (all-eye union) frustum
+			// — together with the camera's world transform at cam+0x70/+0xa0.
+			//
+			// SetCameraFOV writes the per-eye frusta at [cam+0x1a0] + eye*0x1c and
+			// rebuilds the combined one ONLY in its `if (1 < eyeCount)` tail
+			// (FUN_141c2bf80, fed by the HMD eye projections). Our scope camera is
+			// mono (eyes=1), so that tail never runs and FUN_141c2bee0 refreshes just
+			// the combined frustum's NEAR field. Its left/right/top/bottom/far stayed
+			// at whatever the engine last left there, so every scope render culled
+			// against a frustum that had nothing to do with the scope: the 2026-08-09
+			// sweep measured 14,411 passes at 2.4° vs 13,672 at 120°, a 50× FOV change
+			// moving the workload ~5% — i.e. no culling at all, ~21 ms a render.
+			//
+			// Mirroring eye 0 into the combined slot is the whole fix. Safe to mutate:
+			// this camera is PrimaryWeaponScopeCamera, which only the vanilla scope
+			// redirect (disarmed under Route B) and we consume, and the engine
+			// rewrites both frusta from scratch on the next SetCameraFOV.
+			{
+				auto* const eye0 = *reinterpret_cast<float**>(cam + 0x1a0);
+				auto* const comb = *reinterpret_cast<float**>(cam + 0x200);
+				if (eye0) {
+					std::memcpy(g_diagFrustumEye0, eye0, sizeof(g_diagFrustumEye0));
+				}
+				if (comb) {
+					std::memcpy(g_diagFrustumCombPre, comb, sizeof(g_diagFrustumCombPre));
+				}
+				g_diagFrustumAliased = (eye0 && comb) ? (eye0 == comb ? 1 : 0) : -1;
+
+				if (*Settings::cullToScopeFrustum && eye0 && comb && eye0 != comb) {
+					// NiFrustum = { left, right, top, bottom, near, far, bool ortho }
+					// = 6 floats + a bool = 0x1c bytes (the per-eye array stride).
+					std::memcpy(comb, eye0, 0x1c);
+					g_diagCullFix = 1;
+				} else {
+					g_diagCullFix = 0;
+				}
+
+				// One-shot evidence line: what the culler was using, and what it gets now.
+				static bool loggedCullFrustum = false;
+				if (!loggedCullFrustum) {
+					loggedCullFrustum = true;
+					logger::info(
+						FMT_STRING("CULL FRUSTUM: eyes={} eye0={} comb={} aliased={} applied={} "
+						           "eye0(l,r,t,b,n,f)=({:.4f},{:.4f},{:.4f},{:.4f},{:.1f},{:.1f}) "
+						           "combPre(l,r,t,b,n,f)=({:.4f},{:.4f},{:.4f},{:.4f},{:.1f},{:.1f})"),
+						*reinterpret_cast<const std::int32_t*>(cam + 0x208),
+						static_cast<const void*>(eye0), static_cast<const void*>(comb),
+						g_diagFrustumAliased, g_diagCullFix,
+						g_diagFrustumEye0[0], g_diagFrustumEye0[1], g_diagFrustumEye0[2],
+						g_diagFrustumEye0[3], g_diagFrustumEye0[4], g_diagFrustumEye0[5],
+						g_diagFrustumCombPre[0], g_diagFrustumCombPre[1], g_diagFrustumCombPre[2],
+						g_diagFrustumCombPre[3], g_diagFrustumCombPre[4], g_diagFrustumCombPre[5]);
+				}
+			}
+			// =====================================================================
+
 			// Accumulator: DEFERRED renderMode 0x19 (0 = forward buckets, which the
 			// resolve never draws — the v0.2.x black-lens root cause), the deferred
 			// enable bytes both engine templates set, world SSN, eye positions.
@@ -1034,6 +1107,20 @@ namespace TrueScopes::ScopeRender
 			alignas(16) std::uint8_t cullBuf[0x1a0];
 			Fn<CullCtor_t>(0x1d4d8e0)(cullBuf, 0);
 			*reinterpret_cast<std::uintptr_t*>(cullBuf + 0x18) = cam;
+			// v0.2.71: also give the culling process its own frustum, exactly as the
+			// engine's cull helper FUN_141d4dc50 does (set +0x18, then SetFrustum).
+			// The ctor zeroes the NiFrustum at +0x20 and the six planes at +0x3c, so
+			// every consumer of them — BSCullingProcess::TestBaseVisibility, which
+			// hands cull+0x3c to the object's vtable+0x170 visibility test — has been
+			// testing against degenerate planes. This is separate from the camera
+			// mirror above: AccumulateScene's own culling uses the CAMERA's combined
+			// frustum, not this. Both are needed and both hang off the one setting so
+			// the §3.7e ladder stays a single-flag A/B.
+			if (*Settings::cullToScopeFrustum) {
+				if (const auto* const eye0 = *reinterpret_cast<const float**>(cam + 0x1a0)) {
+					Fn<CullSetFrustum_t>(0x1c452b0)(cullBuf, eye0);
+				}
+			}
 			RENDER_STEP(4);
 			Fn<CullSetAccum_t>(0x1d4d9c0)(cullBuf, g_accum);
 
@@ -2063,7 +2150,7 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
@@ -2071,6 +2158,7 @@ namespace TrueScopes::ScopeRender
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
 				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
+				g_diagCullFix, g_diagFrustumAliased,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
 				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);

@@ -87,6 +87,32 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetX, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetY, 15.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetZ, 0.0);
+	// v0.2.71 — THE PERF FIX (§3.7e). Cull the scope accumulation against the scope
+	// camera's own frustum instead of whatever was left in the camera's combined
+	// frustum slot.
+	//
+	// BSShaderUtil::AccumulateScene does NOT cull with the BSCullingProcess we hand
+	// it. It builds a fresh BSCullingGroup and calls BSCullingGroup::SetCamera
+	// (0x140638270), which derives the six clip planes from
+	//     *(NiFrustum**)(camera + 0x200)   -- the COMBINED (all-eye union) frustum
+	//     camera + 0x70                    -- the camera's world transform
+	// and NOT from the per-eye frustum array at camera+0x1a0 that SetCameraFOV fills.
+	//
+	// SetCameraFOV only rebuilds the combined frustum in its `if (1 < eyeCount)` tail
+	// (FUN_141c2bf80). Our scope camera is MONO (logged eyes=1), so that tail never
+	// runs: it writes eye 0 at [cam+0x1a0] and, via FUN_141c2bee0, only the NEAR
+	// field of the combined frustum. The lateral extents and far plane stayed at
+	// whatever the engine last left there -- so the accumulation culled against a
+	// frustum unrelated to the scope, and the 2026-08-09 FOV sweep measured a 50x FOV
+	// change moving the workload ~5% (14,411 passes at 2.4 deg vs 13,672 at 120 deg).
+	// Cost: ~21 ms per render, ~2x the whole main scene, all of it geometry that a
+	// 2.4 deg frustum should have rejected before the draw.
+	//
+	// The fix mirrors eye 0 into the combined slot right after SetCameraFOV, and also
+	// sets the culling process's own frustum (NiCullingProcess::SetFrustum) the way
+	// the engine's own cull helper FUN_141d4dc50 does, for the paths that do read it.
+	// Live-toggleable so the §3.7e ladder is a clean A/B on one flag.
+	MAKE_SETTING(bSetting, "TrueScopesVR", cullToScopeFrustum, true);
 	// Draw the engine's sun BSDFLightDir pass into our scope light accumulation before
 	// the resolve (v0.2.26). Requires the resolve accum-bind hooks; falls back to the
 	// v0.2.25 look (ambient + local lights only) when off or unavailable.
@@ -256,6 +282,7 @@ namespace Settings
 		LOAD(scopeCamOffsetX);
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
+		LOAD(cullToScopeFrustum);
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
 		LOAD(sunSpecEnabled);

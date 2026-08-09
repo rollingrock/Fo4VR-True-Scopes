@@ -101,3 +101,11 @@ devbenchEnabled = true
 
 # First port tried; the server walks up to +15 if busy and logs the bound port.
 devbenchPort = 8930
+
+# v0.2.71 — THE PERF FIX. Cull the scope render against the scope camera's own
+# frustum. AccumulateScene culls with the CAMERA's combined (all-eye union) frustum
+# at *(cam+0x200), which SetCameraFOV only rebuilds for cameras with >1 eye — our
+# scope camera is mono, so that frustum was stale and nothing was ever rejected
+# (measured: a 50x FOV change moved the workload ~5%). Set false to reproduce the
+# old ~21 ms behaviour for a clean A/B; watch `passes total=` in the log.
+cullToScopeFrustum = true
