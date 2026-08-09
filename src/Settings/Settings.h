@@ -171,7 +171,20 @@ namespace Settings
 	// clear. Scale the fog RGB (0 = black clear = the too-dark v0.2.27 look,
 	// 1 = current) and set the alpha independently (if accum alpha is a mask term
 	// the composite consumes, 1.0 everywhere may add uniform light — try 0).
-	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearScale, 1.0);
+	// ⚠️⚠️ COUPLED TO sunExecEnabled. Changed 1.0 -> 0.0 in v0.2.83.
+	// This flat fog-coloured fill was always a SUBSTITUTE for the missing sun. Now that
+	// the sun genuinely contributes per-pixel light (v0.2.78 + v0.2.82), stacking the
+	// fill on top just lifts the whole image: at 1.0 with the sun on, the lens is
+	// visibly blown out and washed (user-observed in VR, and 0x6a meanLum 185 vs the
+	// main view's accum at 62).
+	// ⚠️ FOOTGUN: accumClearScale 0 WITH sunExecEnabled false is a near-black lens.
+	// The two must move together.
+	// 🔧 OPEN TUNING (2026-08-09): 0.0 is VR-confirmed good but reads slightly DARKER
+	// than the unscoped world (user: "maybe a bit darker"; visible in screenshot
+	// 20260809161650 — the wall is a warmer mid-grey in the lens, lighter outside).
+	// The right value is between 0 and 1, near the bottom. Bisect with
+	// tools/Invoke-AmbientBisect.ps1 — it is live, no scope cycle needed.
+	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearScale, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearAlpha, 1.0);
 	// Draw the sky into the lens (v0.2.36): accumulate the sky roots if the world
 	// accumulation didn't already produce group-0xC passes, then draw group 0xC into
@@ -260,7 +273,12 @@ namespace Settings
 	// engine's job-queue worker threads while we execute it on the render thread —
 	// our cfgClean/cfgBuilt test is a check-then-use race. Needs a live x64dbg read
 	// of the constant buffer at a NaN draw to confirm.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, false);
+	// ✅ DEFAULT TRUE since v0.2.83 — VR-CONFIRMED 2026-08-09 (screenshot 20260809161650).
+	// This was false from v0.2.62 because the pass wrote NaN and contributed no light.
+	// BOTH causes are now fixed: it ran before the G-buffer existed (v0.2.78) and then
+	// drew into the still-bound G-buffer MRT (v0.2.82). With those, the lens shows a
+	// genuinely sun-lit scene. ⚠️ Coupled to accumClearScale — see the note there.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, true);
 	// v0.2.76 — THE ACCUMULATION TARGET FIELD.
 	// Ghidra 2026-08-09 (TS_DrawWorld_PreWorldLightingStage, 0x142846d60): the engine
 	// re-selects `ctx+0x1c` before EVERY pass in the pre-world lighting stage, from the
@@ -284,7 +302,8 @@ namespace Settings
 	// 0x00000000), so the light had nothing to shade and computed exactly zero.
 	// Default FALSE for one build so the A/B is a single live flag against the measured
 	// baseline (0x6a meanLum 155.0); flip to true and watch that number move.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, false);
+	// ✅ DEFAULT TRUE since v0.2.83 — this IS the fix, not an experiment.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, true);
 	// v0.2.79 — re-write staging+0x1d0 (the inverse projection the sun pass reconstructs
 	// position with) immediately before the exec.
 	// ❌ NEGATIVE RESULT, DEFAULT FALSE (2026-08-09). The hypothesis was that the resolve
