@@ -58,6 +58,10 @@ namespace TrueScopes::ScopeRender
 	// below the assumed one.
 	void RequestDump();
 
+	// Withdraw a pending RequestDump(). A request that outlives its caller's
+	// timeout would otherwise fire on some later render in a different scene.
+	void CancelDumpRequest();
+
 	// Count of completed dump EVENTS. Poll after RequestDump() to know the dump
 	// actually happened rather than assuming it did.
 	std::uint64_t DumpEventCount();

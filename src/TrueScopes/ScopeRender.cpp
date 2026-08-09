@@ -1976,6 +1976,11 @@ namespace TrueScopes::ScopeRender
 		g_dumpRequest.store(true);
 	}
 
+	void CancelDumpRequest()
+	{
+		g_dumpRequest.store(false);
+	}
+
 	std::uint64_t DumpEventCount()
 	{
 		return g_dumpEvents.load();

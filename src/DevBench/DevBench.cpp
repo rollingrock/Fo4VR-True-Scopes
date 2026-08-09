@@ -80,6 +80,37 @@ namespace DevBench
 			}
 		}
 
+		// v0.2.66: the module's true extent, so a heap pointer that merely happens to
+		// sit above the image base is not reported with a meaningless RVA. Live test
+		// caught this: the scope camera at 0x1ec2ea480 was being labelled
+		// rva=0xac2ea480, which would paste into Ghidra as a valid-looking lie.
+		// Read SizeOfImage out of the PE optional header:
+		//   base+0x3C            = e_lfanew
+		//   base+e_lfanew+0x18   = IMAGE_OPTIONAL_HEADER64
+		//   optionalHeader+0x38  = SizeOfImage
+		std::uintptr_t ModuleSize()
+		{
+			static std::uintptr_t cached = 0;
+			if (cached) return cached;
+			const auto base = REL::Module::get().base();
+			std::uint32_t lfanew = 0, sizeOfImage = 0;
+			if (SafeReadBytes(reinterpret_cast<const void*>(base + 0x3C), &lfanew, sizeof(lfanew)) &&
+				lfanew > 0 && lfanew < 0x1000 &&
+				SafeReadBytes(reinterpret_cast<const void*>(base + lfanew + 0x18 + 0x38), &sizeOfImage, sizeof(sizeOfImage)) &&
+				sizeOfImage > 0) {
+				cached = sizeOfImage;
+			} else {
+				cached = 0x08000000;  // 128 MB fallback; Fallout4VR.exe is ~110 MB
+			}
+			return cached;
+		}
+
+		bool InModule(std::uintptr_t a_va)
+		{
+			const auto base = REL::Module::get().base();
+			return a_va >= base && a_va < base + ModuleSize();
+		}
+
 		// ---------------------------------------------------- address expressions
 
 		// Grammar:  expr := term (('+'|'-') term)*
@@ -484,8 +515,17 @@ namespace DevBench
 				// Report both forms: the VA for a direct /read, and the RVA so it can
 				// be pasted straight into Ghidra. 0 = not resolved yet (Init failed,
 				// or no render has run so the per-render pointers are unset).
+				// `rva` appears ONLY for addresses genuinely inside the image —
+				// heap objects (the accumulator, the scope camera) get "heap":true
+				// instead, because an RVA for them would be a plausible-looking lie.
 				out += Quote(name) + ":{\"va\":" + Quote(Hex(va));
-				if (va >= base) out += ",\"rva\":" + Quote(Hex(va - base));
+				if (va == 0) {
+					out += ",\"resolved\":false";
+				} else if (InModule(va)) {
+					out += ",\"rva\":" + Quote(Hex(va - base));
+				} else {
+					out += ",\"heap\":true";
+				}
 				out += "}";
 			}
 			out += "}}";
@@ -514,10 +554,16 @@ namespace DevBench
 			}
 			const auto after = TrueScopes::ScopeRender::DumpEventCount();
 			if (after == before) {
+				// v0.2.66: disarm on timeout. Otherwise the request stays pending and
+				// fires on whatever render happens next — possibly minutes later, in a
+				// completely different scene, surprising whoever is looking at the dump
+				// directory. Live test hit exactly this: a timed-out probe with no
+				// render running produced a dump the moment the scope was raised.
+				TrueScopes::ScopeRender::CancelDumpRequest();
 				// Say why nothing happened instead of just failing: the overwhelmingly
 				// common cause is that no render is running (scope not raised).
 				return Err("no dump within " + std::to_string(timeoutMs) +
-						   "ms — is the scope raised and rendering? (GET /state, check `renders` advancing)");
+						   "ms — is the scope raised and rendering? (GET /state, check `renders` advancing). Request cancelled.");
 			}
 
 			const auto index = TrueScopes::ScopeRender::LastDumpIndex();
