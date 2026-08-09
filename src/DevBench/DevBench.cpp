@@ -81,6 +81,22 @@ namespace DevBench
 			}
 		}
 
+		// v0.2.72: the write counterpart, for /poke. Read-only diagnostics have
+		// repeatedly forced a rebuild + relaunch + walk-back-to-the-bench cycle just
+		// to flip one engine byte and see what happens — the 2026-08-09 culling hunt
+		// stalled on exactly that. One guarded write turns those into live A/Bs.
+		// Deliberately unrestricted as to target: this is the research repo's dev
+		// bench on a loopback socket and it never ships (see STATUS §3B).
+		bool SafeWriteBytes(void* a_dst, const void* a_src, std::size_t a_len) noexcept
+		{
+			__try {
+				std::memcpy(a_dst, a_src, a_len);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		// v0.2.66: the module's true extent, so a heap pointer that merely happens to
 		// sit above the image base is not reported with a meaningless RVA. Live test
 		// caught this: the scope camera at 0x1ec2ea480 was being labelled
@@ -418,6 +434,7 @@ namespace DevBench
 				"{\"path\":\"/config/reload\",\"desc\":\"re-read TrueScopesVR.toml now\"},"
 				"{\"path\":\"/resolve\",\"desc\":\"?addr=EXPR - resolve an address expression to a VA + RVA\"},"
 				"{\"path\":\"/read\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64|ptr|bytes|cstr&count=N\"},"
+				"{\"path\":\"/poke\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V - write one scalar, SEH-guarded; echoes before/after so you have an undo\"},"
 				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
 		}
@@ -773,6 +790,75 @@ namespace DevBench
 			return out;
 		}
 
+		// v0.2.72 — /poke?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V
+		//
+		// Writes ONE scalar to process memory, SEH-guarded, and echoes the previous
+		// value so the caller has an undo without a second round-trip. Reports the
+		// before/after pair because "the write succeeded" and "the value changed" are
+		// different claims — a write to a page the engine rewrites every frame looks
+		// identical to a no-op unless you print both.
+		std::string HandlePoke(const Request& a_req)
+		{
+			const auto* expr = a_req.Get("addr");
+			if (!expr) return Err("need ?addr=EXPR");
+			const auto* valStr = a_req.Get("value");
+			if (!valStr) return Err("need ?value=V");
+
+			std::uint64_t va = 0;
+			std::string   err;
+			if (!ResolveAddress(*expr, va, err)) return Err(err);
+
+			const std::string type = a_req.GetOr("type", "u8");
+
+			std::size_t   stride = 1;
+			std::uint8_t  bytes[8]{};
+			if (type == "u8" || type == "u16" || type == "u32" || type == "u64" ||
+				type == "i32" || type == "i64") {
+				const auto v = std::strtoull(valStr->c_str(), nullptr, 0);
+				if (type == "u8")       { stride = 1; bytes[0] = static_cast<std::uint8_t>(v); }
+				else if (type == "u16") { stride = 2; const auto x = static_cast<std::uint16_t>(v); std::memcpy(bytes, &x, 2); }
+				else if (type == "u32" || type == "i32") { stride = 4; const auto x = static_cast<std::uint32_t>(v); std::memcpy(bytes, &x, 4); }
+				else                    { stride = 8; std::memcpy(bytes, &v, 8); }
+			} else if (type == "f32") {
+				stride = 4;
+				const auto f = std::strtof(valStr->c_str(), nullptr);
+				std::memcpy(bytes, &f, 4);
+			} else if (type == "f64") {
+				stride = 8;
+				const auto d = std::strtod(valStr->c_str(), nullptr);
+				std::memcpy(bytes, &d, 8);
+			} else {
+				return Err("unknown type '" + type + "' (u8/u16/u32/u64/i32/i64/f32/f64)");
+			}
+
+			std::uint8_t before[8]{};
+			if (!SafeReadBytes(reinterpret_cast<const void*>(va), before, stride)) {
+				return Err("read-back of " + Hex(va) + " faulted; refusing to write");
+			}
+			if (!SafeWriteBytes(reinterpret_cast<void*>(va), bytes, stride)) {
+				return Err("write to " + Hex(va) + " faulted (page not writable?)");
+			}
+			std::uint8_t after[8]{};
+			SafeReadBytes(reinterpret_cast<const void*>(va), after, stride);
+
+			auto hexOf = [](const std::uint8_t* p, std::size_t n) {
+				std::string s;
+				for (std::size_t i = n; i-- > 0;) {
+					char b[4];
+					std::snprintf(b, sizeof(b), "%02X", p[i]);
+					s += b;
+				}
+				return s;
+			};
+			std::string out = "{\"ok\":true,\"addr\":" + Quote(Hex(va)) + ",\"type\":" + Quote(type);
+			out += ",\"before\":" + Quote(hexOf(before, stride));
+			out += ",\"after\":" + Quote(hexOf(after, stride));
+			out += ",\"stuck\":";
+			out += (std::memcmp(after, bytes, stride) == 0 ? "false" : "true");
+			out += "}";
+			return out;
+		}
+
 		std::string HandleLog(const Request& a_req)
 		{
 			auto path = logger::log_directory();
@@ -825,6 +911,7 @@ namespace DevBench
 			if (a_req.path == "/config/reload")                 return HandleConfigReload();
 			if (a_req.path == "/resolve")                       return HandleResolve(a_req);
 			if (a_req.path == "/read")                          return HandleRead(a_req);
+			if (a_req.path == "/poke")                          return HandlePoke(a_req);
 			if (a_req.path == "/log")                           return HandleLog(a_req);
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}

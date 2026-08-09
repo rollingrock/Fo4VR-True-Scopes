@@ -1166,8 +1166,65 @@ namespace TrueScopes::ScopeRender
 			using ProcessLights_t = void (*)(std::uintptr_t, void*);
 			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
 
+			// ===================== v0.2.72 — WHY NOTHING WAS EVER CULLED =========
+			// The frustum was never the problem (v0.2.71's mirror logged aliased=1:
+			// [cam+0x200] and [cam+0x1a0] are the SAME buffer, and it already held the
+			// correct 2.4° frustum). The planes are built correctly. They are simply
+			// never TESTED.
+			//
+			// Inside AccumulateScene, the per-object frustum test is gated:
+			//   BSCuller::ProcessVectorFrustum(culler, 0)   -- 0x1d4b9d0, the SIMD
+			//   6-plane test -- runs only if
+			//       culler.count != 0 &&
+			//       (BSPreCulledObjects::QEnabled() == false || culler[+0x3a6f] != 0)
+			// and culler[+0x3a6f] is copied from BSCullingGroup+0x17a, which that
+			// group's constructor (0x6373e0) sets to 0 and nothing in this path ever
+			// sets otherwise. The group is a stack local inside AccumulateScene, so we
+			// cannot reach it.
+			//
+			// That leaves QEnabled(), read live 2026-08-09 as TRUE:
+			//   [0x146878ad0]=1 (enabled) && [0x14391d830]=1 (want) && [0x146878ad1]=0 (temp-disable)
+			// So the engine skips frustum culling entirely here and leans on PREVIS —
+			// precomputed per-cell visibility, computed once per frame for the MAIN
+			// camera in the frame prep (FUN_1427dff70). Our scope render inherits that
+			// whole visible set, which is why a 27x FOV change moved the workload 1.9%
+			// and a far plane of 300 units at Diamond City moved it 0.06%.
+			//
+			// We flip the TEMP-DISABLE byte across our accumulation only. Deliberately
+			// the raw byte and NOT BSPreCulledObjects::SetTempDisabled (0x1427e0de0):
+			// that setter also walks every registered visibility callback and un-hides
+			// the objects previs had hidden. Writing the byte keeps those objects
+			// hidden (their app-cull flags are untouched), so we KEEP previs occlusion
+			// and ADD real frustum culling — which is what we want, not a trade.
+			//
+			// ⚠️ UNVERIFIED PREDICTION, and the honest doubt: ProcessVectorFrustum
+			// writes a per-object VISIBLE mask (255 = inside all six planes), and the
+			// arena reserve zeroes those bytes. If the accumulation consumed that mask,
+			// skipping the test would accumulate NOTHING — yet we accumulate 14,401.
+			// So either the emission ignores the mask (and enabling the test will cut
+			// the pass count), or this whole path is not what produces our passes (and
+			// nothing will change). The heartbeat's `passes total=` discriminates in
+			// one reading, which is why this ships behind a live flag instead of as a
+			// silent change.
+			const auto previsTempDisable = base + 0x6878ad1;
+			std::uint8_t savedPrevis = 0;
+			const bool bypassPrevis = *Settings::cullToScopeFrustum;
+			if (bypassPrevis) {
+				savedPrevis = *reinterpret_cast<volatile std::uint8_t*>(previsTempDisable);
+				*reinterpret_cast<volatile std::uint8_t*>(previsTempDisable) = 1;
+			}
+
 			RENDER_STEP(8);
 			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
+
+			// Restore immediately: this is a process-global the main view reads too.
+			// Worst case a concurrent engine cull sees it disabled for a few hundred
+			// microseconds and does a real frustum test instead of skipping one —
+			// more work, never wrong output.
+			if (bypassPrevis) {
+				*reinterpret_cast<volatile std::uint8_t*>(previsTempDisable) = savedPrevis;
+			}
+			// =====================================================================
 
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
