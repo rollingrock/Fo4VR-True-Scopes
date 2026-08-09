@@ -801,21 +801,35 @@ namespace TrueScopes::ScopeRender
 		//    transform alone does NOTHING VISIBLE — NiAVObject::Update must follow,
 		//    exactly as the engine's own path (FUN_140f0a9f0) does after writing it.
 		//
-		// 2. The engine REWRITES that local transform at equip. Offsets are therefore
-		//    applied to a captured BASELINE, never accumulated onto the current value,
-		//    or repeated application would drift the widget away frame by frame.
-		//    Hooks.cpp calls ResetWidgetFit() on scope-in to re-capture.
+		// 2. The engine REWRITES that local transform at equip. Offsets are applied to a
+		//    captured BASELINE, never accumulated onto the current value.
+		//
+		//    *** v0.2.69 BUG FIX — v0.2.68 invalidated that baseline on the WRONG EVENT. ***
+		//    It dropped the baseline on SCOPE-IN, assuming the engine had rewritten the
+		//    node by then. It has not: the engine rewrites at EQUIP. So every
+		//    scope-out/scope-in cycle re-captured OUR OWN previously written value as the
+		//    new baseline and stacked the offset on top. Field evidence:
+		//        WIDGET FIT baseline: translate=(0.000,-59.800,16.000)
+		//    against a true engine value of (0, 0, 4) — the widget had walked ~60 units off
+		//    the gun and could not be found anywhere in the scene.
+		//
+		//    The correct invalidation signal is not an event at all: compare the node's
+		//    current values with the exact ones we last wrote. Identical => still ours, keep
+		//    the baseline. Different => something else (the engine, at equip) wrote it, so
+		//    what is there now IS pristine and becomes the new baseline. Exact float
+		//    comparison is right here precisely because we wrote those bits ourselves.
 		constexpr std::uintptr_t kScopeParentInPlayer = 0x7d0;
 		constexpr float          kVanillaRenderCircleRadius = 7.852f;
 
-		struct WidgetBaseline
+		struct WidgetState
 		{
-			float tx = 0.0f, ty = 0.0f, tz = 0.0f, scale = 1.0f;
+			float baseTx = 0.0f, baseTy = 0.0f, baseTz = 0.0f, baseScale = 1.0f;
+			float wroteTx = 0.0f, wroteTy = 0.0f, wroteTz = 0.0f, wroteScale = 0.0f;
+			float lastScale = 0.0f, lastOx = 0.0f, lastOy = 0.0f, lastOz = 0.0f;
 			bool  captured = false;
+			bool  applied = false;
 		};
-		WidgetBaseline g_widgetBase;
-		float          g_widgetLast[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		bool           g_widgetApplied = false;
+		WidgetState g_widget;
 
 		void WriteScopeParent(std::uintptr_t a_sp, float a_tx, float a_ty, float a_tz, float a_scale)
 		{
@@ -837,20 +851,53 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
+			auto*      t = reinterpret_cast<float*>(sp + 0x60);
+			auto*      s = reinterpret_cast<float*>(sp + 0x6c);
+			const bool stillOurs = g_widget.applied &&
+			                       t[0] == g_widget.wroteTx && t[1] == g_widget.wroteTy &&
+			                       t[2] == g_widget.wroteTz && *s == g_widget.wroteScale;
+
+			// Re-baseline whenever the node holds something we did NOT write — that is the
+			// engine having rewritten it at equip, and only then is the value pristine.
+			// Doing this on an event (v0.2.68 used scope-in) re-captured our own output and
+			// compounded the offset every cycle; see the note above.
+			if (!stillOurs) {
+				g_widget.baseTx = t[0];
+				g_widget.baseTy = t[1];
+				g_widget.baseTz = t[2];
+				g_widget.baseScale = *s;
+				g_widget.captured = true;
+				g_widget.applied = false;
+				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
+					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
+				// Sanity tripwire for exactly the failure that produced this fix: the engine
+				// parks ScopeParent within a few units of the weapon. A baseline far from
+				// that means we captured corrupted state, and every offset from here is
+				// measured from the wrong origin. Say so loudly rather than fit to garbage.
+				const float d2 = g_widget.baseTx * g_widget.baseTx +
+				                 g_widget.baseTy * g_widget.baseTy +
+				                 g_widget.baseTz * g_widget.baseTz;
+				if (d2 > 50.0f * 50.0f) {
+					logger::warn(FMT_STRING("WIDGET FIT baseline looks CORRUPT (|t|={:.1f} > 50) — "
+					                        "re-equip the weapon to let the engine restore ScopeParent"),
+						std::sqrt(d2));
+				}
+			}
+
 			if (!*Settings::widgetFitEnabled) {
 				// Turned off after being applied: restore the engine's own values once, so
 				// toggling it live is a clean A/B rather than a one-way door.
-				if (g_widgetApplied && g_widgetBase.captured) {
-					WriteScopeParent(sp, g_widgetBase.tx, g_widgetBase.ty, g_widgetBase.tz, g_widgetBase.scale);
-					g_widgetApplied = false;
+				if (stillOurs && g_widget.captured) {
+					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
+					g_widget.applied = false;
 					logger::info("WIDGET FIT off — restored engine transform"sv);
 				}
 				return;
 			}
 
-			const auto aperture = static_cast<float>(*Settings::widgetApertureRadius);
-			const auto override = static_cast<float>(*Settings::widgetScaleOverride);
-			const float scale = override > 0.0f ? override : aperture / kVanillaRenderCircleRadius;
+			const auto  aperture = static_cast<float>(*Settings::widgetApertureRadius);
+			const auto  scaleOverride = static_cast<float>(*Settings::widgetScaleOverride);
+			const float scale = scaleOverride > 0.0f ? scaleOverride : aperture / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
 			// cannot tell that apart from a broken render — refuse instead of guessing.
 			if (!(scale > 0.001f && scale < 8.0f)) {
@@ -858,7 +905,7 @@ namespace TrueScopes::ScopeRender
 				if (!warned) {
 					warned = true;
 					logger::warn(FMT_STRING("WIDGET FIT refused: scale {} out of range (aperture={} override={})"),
-						scale, aperture, override);
+						scale, aperture, scaleOverride);
 				}
 				return;
 			}
@@ -867,32 +914,30 @@ namespace TrueScopes::ScopeRender
 			const auto oy = static_cast<float>(*Settings::widgetOffsetY);
 			const auto oz = static_cast<float>(*Settings::widgetOffsetZ);
 
-			if (!g_widgetBase.captured) {
-				const auto* t = reinterpret_cast<const float*>(sp + 0x60);
-				g_widgetBase.tx = t[0];
-				g_widgetBase.ty = t[1];
-				g_widgetBase.tz = t[2];
-				g_widgetBase.scale = *reinterpret_cast<const float*>(sp + 0x6c);
-				g_widgetBase.captured = true;
-				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
-					g_widgetBase.tx, g_widgetBase.ty, g_widgetBase.tz, g_widgetBase.scale);
-			}
-
-			// Only touch the node when something actually changed — NiAVObject::Update
-			// walks the subtree, and the engine itself only does this at equip.
-			if (g_widgetApplied && g_widgetLast[0] == scale && g_widgetLast[1] == ox &&
-				g_widgetLast[2] == oy && g_widgetLast[3] == oz) {
+			// Only touch the node when something actually changed — NiAVObject::Update walks
+			// the subtree, and the engine itself only does this at equip.
+			if (g_widget.applied && g_widget.lastScale == scale && g_widget.lastOx == ox &&
+				g_widget.lastOy == oy && g_widget.lastOz == oz) {
 				return;
 			}
 
-			WriteScopeParent(sp, g_widgetBase.tx + ox, g_widgetBase.ty + oy, g_widgetBase.tz + oz, scale);
-			g_widgetLast[0] = scale;
-			g_widgetLast[1] = ox;
-			g_widgetLast[2] = oy;
-			g_widgetLast[3] = oz;
-			g_widgetApplied = true;
-			logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) offset=({:.2f},{:.2f},{:.2f})"),
-				scale, aperture, kVanillaRenderCircleRadius, ox, oy, oz);
+			const float nx = g_widget.baseTx + ox;
+			const float ny = g_widget.baseTy + oy;
+			const float nz = g_widget.baseTz + oz;
+			WriteScopeParent(sp, nx, ny, nz, scale);
+			g_widget.wroteTx = nx;
+			g_widget.wroteTy = ny;
+			g_widget.wroteTz = nz;
+			g_widget.wroteScale = scale;
+			g_widget.lastScale = scale;
+			g_widget.lastOx = ox;
+			g_widget.lastOy = oy;
+			g_widget.lastOz = oz;
+			g_widget.applied = true;
+			logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) "
+			                        "base=({:.2f},{:.2f},{:.2f}) offset=({:.2f},{:.2f},{:.2f})"),
+				scale, aperture, kVanillaRenderCircleRadius,
+				g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, ox, oy, oz);
 		}
 
 		// The whole render, POD-only so the SEH wrapper below is legal.
@@ -2041,15 +2086,6 @@ namespace TrueScopes::ScopeRender
 	std::uint32_t OwnRenderThread()
 	{
 		return g_renderTid.load();
-	}
-
-	void ResetWidgetFit()
-	{
-		// Called on scope-in. The engine rewrites ScopeParent's local transform at
-		// equip/3D-change, so the captured baseline goes stale whenever the weapon or
-		// its mods change; dropping it here forces a fresh capture and re-apply.
-		g_widgetBase.captured = false;
-		g_widgetApplied = false;
 	}
 
 	void TintLens(float a_r, float a_g, float a_b)

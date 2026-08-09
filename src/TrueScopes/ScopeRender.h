@@ -30,10 +30,11 @@ namespace TrueScopes::ScopeRender
 	// frames the fill hook skipped). Render-thread only.
 	void TintLens(float a_r, float a_g, float a_b);
 
-	// v0.2.68: drop the cached ScopeParent baseline so the widget fit re-captures and
-	// re-applies. Call on scope-in — the engine rewrites that node's local transform at
-	// equip/3D-change, which invalidates anything captured earlier.
-	void ResetWidgetFit();
+	// (v0.2.68 had a ResetWidgetFit() called on scope-in. REMOVED in v0.2.69: the engine
+	// rewrites ScopeParent at EQUIP, not scope-in, so that reset re-captured our own
+	// output as the new baseline and compounded the offset every scope cycle. The fit now
+	// detects an engine rewrite by comparing the node against the values it last wrote,
+	// which needs no external event and cannot be hooked to the wrong one.)
 
 	// Diagnostic (v0.2.52): 1-pixel readback of the lens RT 0x62 at fill-hook ENTRY,
 	// i.e. what it held after every other writer in the PREVIOUS frame finished. The
