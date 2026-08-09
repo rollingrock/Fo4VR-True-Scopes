@@ -974,11 +974,18 @@ namespace TrueScopes::ScopeRender
 		// known-good control beside the unknown).
 		void ProbeBoundResources(std::string_view a_where) noexcept
 		{
-			static std::uint32_t logs = 0;
-			if (logs >= 8) {
-				return;
+			// v0.2.82: budget PER LABEL. A single shared counter was consumed entirely by
+			// the control condition within 70 ms (~90 renders/s), so the case the probe
+			// existed to capture never logged at all. Same family as gotcha #5.
+			static std::map<std::string, std::uint32_t, std::less<>> logs;
+			if (auto it = logs.find(a_where); it != logs.end()) {
+				if (it->second >= 4) {
+					return;
+				}
+				++it->second;
+			} else {
+				logs.emplace(std::string{ a_where }, 1u);
 			}
-			++logs;
 			auto* const d3d = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
 			if (!d3d) {
 				return;
@@ -1919,6 +1926,26 @@ namespace TrueScopes::ScopeRender
 						}
 
 						ProbeBoundResources(*Settings::sunExecInResolve ? "in-resolve (new)"sv : "pre-resolve (old, control)"sv);
+
+						// v0.2.82 — THE FIX. Measured at the deferred call site:
+						//   pre-resolve (old) : SRV [0,1,5,6,7], RTs bound = 1
+						//   in-resolve  (new) : SRV [0,1,2,3,5,8], RTs bound = 4
+						// FOUR render targets = the G-BUFFER MRT, still bound. The RT manager
+						// STAGES binds and commits them later, and our hook sits on the slot-0
+						// staging call -- before slot 1 is staged and before the commit. So the
+						// sun was drawing into the G-buffer, corrupting albedo/normals; the
+						// resolve's light volumes then read NaN normals and every downstream
+						// buffer inherited it. That is exactly why the damage landed on
+						// precisely the geometry pixels and left the sky clean.
+						//
+						// Bind the accumulation MRT and COMMIT it ourselves, the same way the
+						// pre-resolve path does, so the draw lands where it is supposed to.
+						if (*Settings::sunResolveRebindAccum && *Settings::sunExecInResolve) {
+							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
+							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, *Settings::sunSpecEnabled ? 0x6b : -1, 3);
+							Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+							ProbeBoundResources("in-resolve AFTER rebind"sv);
+						}
 						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
 						g_diagSunDrew = sunDrew ? 1 : 0;

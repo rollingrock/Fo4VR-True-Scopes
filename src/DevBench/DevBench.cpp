@@ -264,6 +264,7 @@ namespace DevBench
 				{ "diagSunOrderProbe", Kind::Bool, &diagSunOrderProbe },
 				{ "sunExecInResolve", Kind::Bool, &sunExecInResolve },
 				{ "sunReapplyInvProj", Kind::Bool, &sunReapplyInvProj },
+				{ "sunResolveRebindAccum", Kind::Bool, &sunResolveRebindAccum },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
 				{ "sunSpecEnabled", Kind::Bool, &sunSpecEnabled },
 				{ "accumClearScale", Kind::Float, &accumClearScale },

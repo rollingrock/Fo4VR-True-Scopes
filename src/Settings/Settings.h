@@ -296,6 +296,17 @@ namespace Settings
 	// ON and OFF and ON again, identical. It is a no-op; kept only so the negative is
 	// re-testable without a rebuild. Do not spend time here again.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunReapplyInvProj, false);
+	// v0.2.82 — bind + COMMIT the light-accumulation MRT immediately before the deferred
+	// sun exec. Measured (v0.2.81 ProbeBoundResources) at the two call sites:
+	//   pre-resolve (old) : PS SRV [0,1,5,6,7],   RTs bound = 1
+	//   in-resolve  (new) : PS SRV [0,1,2,3,5,8], RTs bound = 4
+	// Four render targets is the G-BUFFER MRT, still bound: the RT manager STAGES binds
+	// and commits them later, and ResolveAccumBind0Hook sits on the slot-0 staging call,
+	// before slot 1 is staged and before the commit. The sun was therefore drawing into
+	// the G-buffer, corrupting albedo/normals, and the resolve's light volumes read NaN
+	// normals afterwards -- which is why the NaN was exactly the geometry pixels and the
+	// sky stayed clean.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunResolveRebindAccum, true);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -385,6 +396,7 @@ namespace Settings
 		LOAD(diagSunOrderProbe);
 		LOAD(sunExecInResolve);
 		LOAD(sunReapplyInvProj);
+		LOAD(sunResolveRebindAccum);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);
