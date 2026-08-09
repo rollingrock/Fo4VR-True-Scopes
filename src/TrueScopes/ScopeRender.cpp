@@ -1838,6 +1838,34 @@ namespace TrueScopes::ScopeRender
 							}
 						}
 
+						// v0.2.79 — the inverse projection, RE-APPLIED AT THE POINT OF USE.
+						// staging+0x1d0 is the inverse-projection constant this pass consumes
+						// for position reconstruction, and the engine's camera-state commit
+						// never writes it (finding #15) — we do, in the pre-resolve block.
+						// But with sunExecInResolve the exec now runs AFTER the resolve has
+						// committed its own camera state, so the staging block in effect here
+						// need not be the one we wrote. A stale or zeroed inverse projection
+						// is FINITE, so camDataBad/invProjRejects both read clean (they did:
+						// 0 and 0) while every reconstructed position divides by zero — which
+						// is exactly the measurement: inputs healthy, 0x6a clean before the
+						// draw and 100% NaN after it, every frame (sunPreNaN=0 sunPostNaN=347).
+						// Cheap, validated, and skips itself on a singular source.
+						if (*Settings::sunReapplyInvProj) {
+							static std::uint32_t invLogs = 0;
+							if (invLogs < 6) {
+								++invLogs;
+								const auto ctxI = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+								const auto ctxJ = ctxI ? ctxI : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
+								if (const auto stg = ctxJ ? *reinterpret_cast<std::uintptr_t*>(ctxJ + 0x25d0) : 0) {
+									const auto* m = reinterpret_cast<const float*>(stg + 0x1d0);
+									logger::info(
+										FMT_STRING("INVPROJ at exec (before re-apply): staging={:016X} row0=[{} {} {} {}] row3=[{} {} {} {}]"),
+										stg, m[0], m[1], m[2], m[3], m[12], m[13], m[14], m[15]);
+								}
+							}
+							WriteInverseProj(g_gfxState, cam);
+						}
+
 						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
 						g_diagSunDrew = sunDrew ? 1 : 0;

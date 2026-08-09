@@ -285,6 +285,12 @@ namespace Settings
 	// Default FALSE for one build so the A/B is a single live flag against the measured
 	// baseline (0x6a meanLum 155.0); flip to true and watch that number move.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, false);
+	// v0.2.79 — re-write staging+0x1d0 (the inverse projection the sun pass reconstructs
+	// position with) immediately before the exec. Needed once the exec moved inside the
+	// resolve: the resolve commits its own camera state in between, and a stale or zeroed
+	// inverse projection is FINITE, so every existing finiteness check passes while the
+	// shader divides by zero. Live-toggleable so it is a clean one-flag A/B.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunReapplyInvProj, true);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -373,6 +379,7 @@ namespace Settings
 		LOAD(sunCtxAccumTarget);
 		LOAD(diagSunOrderProbe);
 		LOAD(sunExecInResolve);
+		LOAD(sunReapplyInvProj);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);
