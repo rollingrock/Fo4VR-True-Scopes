@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Settings/Settings.h"
+#include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeRender.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -447,6 +448,11 @@ namespace DevBench
 			out += ",\"faulted\":" + b(d.faulted);
 			out += ",\"lastStep\":" + std::to_string(d.lastStep);
 			out += ",\"renders\":" + std::to_string(d.renders);
+			// v0.2.70 perf instrument: game frames (advances scope-up AND scope-down) plus
+			// the scope state the sample was taken in, so a perf run records its own
+			// condition instead of relying on the operator's notes.
+			out += ",\"frames\":" + std::to_string(TrueScopes::Hooks::FrameCount());
+			out += ",\"scopeActive\":" + b(TrueScopes::Hooks::ScopeActive());
 			out += ",\"inOwnResolve\":" + b(TrueScopes::ScopeRender::InOwnResolve());
 			out += ",\"ownRenderThread\":" + std::to_string(TrueScopes::ScopeRender::OwnRenderThread());
 			out += ",\"sunBindHooks\":" + b(d.sunBindHooks);

@@ -17,6 +17,7 @@ namespace TrueScopes::Hooks
 		// this value exactly like vanilla.
 		std::atomic_bool g_scopeActive = false;
 		std::atomic_bool g_gateRaw = false;                // the eye-gate's latest raw report
+		std::atomic<std::uint64_t> g_frames{ 0 };          // v0.2.70: game frame count (see Hooks.h)
 		std::atomic<std::uint64_t> g_gateOffTick{ 0 };     // tick of the last true->false gate transition
 
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
@@ -100,6 +101,11 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk()
 			{
+				// v0.2.70 perf instrument: this hook is per-frame and runs regardless of
+				// scope state, so it is the game's frame counter. Must stay first and
+				// unconditional — an early return below would otherwise undercount and
+				// silently bias the very measurement it exists to make.
+				g_frames.fetch_add(1, std::memory_order_relaxed);
 				// v0.2.51 hysteresis poll (runs every frame): honor a gate-OFF only
 				// after it persisted scopeOffHoldMs; an ON in between cancels it.
 				if (g_installed && g_scopeActive.load() && !g_gateRaw.load()) {
@@ -291,6 +297,16 @@ namespace TrueScopes::Hooks
 
 		g_installed = true;
 		return true;
+	}
+
+	std::uint64_t FrameCount()
+	{
+		return g_frames.load(std::memory_order_relaxed);
+	}
+
+	bool ScopeActive()
+	{
+		return g_scopeActive.load();
 	}
 
 	void OnGameLoaded()
