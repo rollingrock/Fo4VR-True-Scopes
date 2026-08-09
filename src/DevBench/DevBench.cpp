@@ -313,6 +313,12 @@ namespace DevBench
 					return false;
 				}
 				**static_cast<Settings::bSetting*>(a_e.ptr) = v;
+				// v0.2.74: writing perfTimers resets the timing window, whatever the
+				// value. Doing it here rather than on the render thread's view of the
+				// flag is the whole fix -- see ScopeRender::ResetStageTimers.
+				if (std::string_view{ a_e.name } == "perfTimers") {
+					TrueScopes::ScopeRender::ResetStageTimers();
+				}
 				return true;
 			}
 			case Kind::Int: {
@@ -430,7 +436,8 @@ namespace DevBench
 			return
 				"{\"ok\":true,\"plugin\":\"TrueScopesVR\",\"tier\":1,\"endpoints\":["
 				"{\"path\":\"/health\",\"desc\":\"liveness + identity; answered without touching game state\"},"
-				"{\"path\":\"/state\",\"desc\":\"full render diagnostics: fault latch, lastStep, NaN/sun/camdata counters, last-render pass+light+sky+viewport values\"},"
+				"{\"path\":\"/state\",\"desc\":\"full render diagnostics: fault latch, lastStep, NaN/sun/camdata counters, last-render pass+light+sky+viewport values, stageTimes (per-stage GPU+CPU ms)\"},"
+			"{\"path\":\"/perf/reset\",\"desc\":\"clear the stageTimes averaging window before the next render (also done by any perfTimers write)\"},"
 				"{\"path\":\"/addresses\",\"desc\":\"resolved engine pointers (ssn, accumulator, gfxState, render ctx, sun config, rtm, renderer, scope camera) as va+rva - feed them to /read\"},"
 				"{\"path\":\"/dump/now\",\"desc\":\"?timeoutMs=5000 - dump the lens chain on the NEXT render and wait for it; returns the file prefix. Set diagDumpBuffers=true first for the G-buffer/accum buffers\"},"
 				"{\"path\":\"/config\",\"desc\":\"every TOML setting and its live value\"},"
@@ -943,6 +950,10 @@ namespace DevBench
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
 			if (a_req.path == "/health")                        return HandleHealth();
 			if (a_req.path == "/state")                         return HandleState();
+			if (a_req.path == "/perf/reset") {
+				TrueScopes::ScopeRender::ResetStageTimers();
+				return "{\"ok\":true,\"reset\":\"stageTimes\"}";
+			}
 			if (a_req.path == "/addresses")                     return HandleAddresses();
 			if (a_req.path == "/dump/now")                      return HandleDumpNow(a_req);
 			if (a_req.path == "/config")                        return HandleConfig();

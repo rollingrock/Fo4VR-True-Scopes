@@ -234,6 +234,16 @@ namespace TrueScopes::ScopeRender
 		std::int64_t  g_cpuMarks[kMarkCount] = {};
 		std::int64_t  g_qpcFreq = 0;
 
+		// v0.2.74: set by ResetStageTimers() from the DevBench thread; consumed on the
+		// render thread. v0.2.73 detected the reset as an OFF->ON edge of perfTimers seen
+		// by the render thread, so two /config/set calls back to back landed between
+		// renders and the reset never happened -- the first ladder of the 08-09 session
+		// silently reported session-long running means and damped a 9 ms effect to 1 ms.
+		// A latch cannot miss the window: whenever the flag is set, the next render clears
+		// its accumulators. (Gotcha #3 again: a probe that reports something plausible and
+		// wrong is worse than one that reports nothing.)
+		std::atomic_bool g_timerResetRequest{ false };
+
 		void ResetTimerStats() noexcept
 		{
 			for (std::uint32_t i = 0; i < kSegCount; ++i) {
@@ -352,11 +362,12 @@ namespace TrueScopes::ScopeRender
 
 		void TimersBegin() noexcept
 		{
-			// Off->on transition resets the window, so a bench run is "flip it, walk to
-			// the spot, read the mean" with no restart and no arithmetic on the operator.
+			// Reset the window on either signal: an explicit request (DevBench
+			// /perf/reset or a perfTimers write) or an off->on edge this thread actually
+			// observed. The latch is what makes it reliable -- see g_timerResetRequest.
 			static bool wasEnabled = false;
 			const bool  enabled = *Settings::perfTimers;
-			if (enabled && !wasEnabled) {
+			if (g_timerResetRequest.exchange(false) || (enabled && !wasEnabled)) {
 				ResetTimerStats();
 			}
 			wasEnabled = enabled;
@@ -2716,6 +2727,11 @@ namespace TrueScopes::ScopeRender
 		std::memcpy(d.viewport, g_diagViewport, sizeof(d.viewport));
 		d.lightsClamp = g_diagLightsClamp;
 		return d;
+	}
+
+	void ResetStageTimers()
+	{
+		g_timerResetRequest.store(true);
 	}
 
 	StageTimes GetStageTimes()

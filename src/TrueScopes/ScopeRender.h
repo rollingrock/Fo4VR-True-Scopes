@@ -110,7 +110,11 @@ namespace TrueScopes::ScopeRender
 	// near-zero GPU work and the resolve is the reverse, and which one dominates
 	// decides whether the fix is fewer objects or fewer pixels.
 	//
-	// Reset the window by flipping `perfTimers` off then on (DevBench /config/set).
+	// Reset the window with DevBench `/perf/reset` (or any `perfTimers` write, which
+	// calls the same thing). ⚠️ v0.2.73 detected the reset as an off->on EDGE seen by
+	// the render thread, so two back-to-back /config/set calls landed between renders
+	// and the reset silently never fired -- reporting session-long means that damped a
+	// 9 ms effect to 1 ms. v0.2.74 uses a latch the render thread cannot miss.
 	inline constexpr std::size_t kStageCount = 7;
 	inline constexpr const char* kStageNames[kStageCount] = {
 		"setup",    // camera + FOV + widget fit + G-buffer binds and clears
@@ -134,4 +138,7 @@ namespace TrueScopes::ScopeRender
 		bool          available;   // false = CreateQuery failed; CPU numbers only
 	};
 	StageTimes GetStageTimes();
+
+	// Clear the timing accumulators before the next render. Safe from any thread.
+	void ResetStageTimers();
 }
