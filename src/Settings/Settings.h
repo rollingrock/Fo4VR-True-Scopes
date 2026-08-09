@@ -115,6 +115,17 @@ namespace Settings
 	// 3 = both. Bisects a faulting root live (the sun/cloud root carries the
 	// occlusion-query glare geometry — prime suspect if the sky draw faults).
 	MAKE_SETTING(iSetting, "TrueScopesVR", skyRootMask, std::int64_t(3));
+	// v0.2.67 — THE CRESCENT (§3.2). Unbind the depth-stencil around the lens
+	// delivery. Step 16 of the render restores DS logical 1 (vanilla's post-resolve
+	// pattern), which rtm+0x15fc maps to physical 2 = the MAIN VR EYE's depth-
+	// stencil; the ImageSpace delivery quad then draws with it bound and is
+	// stencil-masked to the headset's hidden-area mesh. That accounts for every
+	// measured property of the artifact: ~20% of 0x62 unwritten, a smooth curve a
+	// quad and a scissor rect both cannot produce, the SAME arc from two different
+	// effects (tonemap 0x27b08c0 and raw copy 0x27b0880, so not the shader), all
+	// four corners clipped asymmetrically, and a boundary that does not move with
+	// the camera. Live-toggleable for a clean A/B: flip it and re-dump 0x62.
+	MAKE_SETTING(bSetting, "TrueScopesVR", deliveryUnbindDS, true);
 	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
 	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
 	// Costs two GPU sync stalls per render — enable only while hunting.
@@ -227,6 +238,7 @@ namespace Settings
 		LOAD(accumClearAlpha);
 		LOAD(skyEnabled);
 		LOAD(skyRootMask);
+		LOAD(deliveryUnbindDS);
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);

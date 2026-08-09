@@ -244,6 +244,7 @@ namespace DevBench
 				{ "accumClearAlpha", Kind::Float, &accumClearAlpha },
 				{ "skyEnabled", Kind::Bool, &skyEnabled },
 				{ "skyRootMask", Kind::Int, &skyRootMask },
+				{ "deliveryUnbindDS", Kind::Bool, &deliveryUnbindDS },
 				{ "retryAfterFault", Kind::Bool, &retryAfterFault },
 				{ "diagLensReadback", Kind::Bool, &diagLensReadback },
 				{ "diagPauseTint", Kind::Bool, &diagPauseTint },

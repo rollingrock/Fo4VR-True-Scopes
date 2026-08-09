@@ -1522,6 +1522,46 @@ namespace TrueScopes::ScopeRender
 				savedIsmBusy = *reinterpret_cast<std::uint8_t*>(ismMgr + 0x60);
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = 0;
 			}
+			// v0.2.67 CRESCENT (§3.2) — unbind the depth-stencil across the delivery.
+			// Step 16 above restores DS logical 1, and the DS translation table at
+			// rtm+0x15fc maps 1 -> physical 2: the MAIN VR EYE's depth-stencil. The
+			// delivery quad has been drawing with it bound, stencil-masked to the
+			// headset's hidden-area mesh — the ~20% four-corner cutout.
+			//
+			// Logical DS 0xA maps to physical -1 in that table = no depth-stencil.
+			// Use 0xA, NOT -1: SelectDS (0x1db9e40) indexes rtm+0x15fc+idx*4
+			// unconditionally, with none of the `param_3 == -1` guard that
+			// SetCurrentRenderTarget (0x1db9dd0) has, so -1 would read rtm+0x15f8
+			// and bind whatever physical index happens to live there.
+			constexpr std::int32_t kDS_None = 0xA;
+			const bool             unbindDS = *Settings::deliveryUnbindDS;
+			{
+				// Forensics for the first few renders: what the delivery would have
+				// inherited. Cheap, self-limiting, and it makes the run informative
+				// whichever way the A/B lands.
+				static std::uint32_t dsLogs = 0;
+				if (dsLogs < 5 && (g_ctxPtrA || g_ctxPtrB)) {
+					auto dsCtx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+					if (!dsCtx && g_ctxPtrB) {
+						dsCtx = *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB);
+					}
+					if (dsCtx) {
+						++dsLogs;
+						logger::info(
+							FMT_STRING("DELIVERY DS: logical={} physical={} mode={} slice={} depthStateOverride={} unbind={}"),
+							*reinterpret_cast<const std::int32_t*>(dsCtx + 0x1f68),
+							*reinterpret_cast<const std::int32_t*>(dsCtx + 0x1f2c),
+							*reinterpret_cast<const std::int32_t*>(dsCtx + 0x1f5c),
+							*reinterpret_cast<const std::int32_t*>(dsCtx + 0x1f30),
+							*reinterpret_cast<const std::uint32_t*>(dsCtx + 0x1ee0 + 0xb0),
+							unbindDS);
+					}
+				}
+			}
+			if (unbindDS) {
+				Fn<SelectDS_t>(0x1db9e40)(rtm, kDS_None, 3, 0);
+				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+			}
 			switch (*Settings::lensMode) {
 			case 3:
 				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
@@ -1565,6 +1605,12 @@ namespace TrueScopes::ScopeRender
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 				break;
+			}
+			if (unbindDS) {
+				// Restore exactly what step 16 left bound, so nothing downstream sees
+				// a DS we removed.
+				Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
+				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
 			if (ismMgr) {
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
