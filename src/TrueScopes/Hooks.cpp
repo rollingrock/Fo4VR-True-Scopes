@@ -56,6 +56,9 @@ namespace TrueScopes::Hooks
 						if (*Settings::retryAfterFault) {
 							ScopeRender::RetryAfterFault();
 						}
+						// The engine rewrites ScopeParent's local transform at equip/3D
+						// change, so any baseline the widget fit captured is stale now.
+						ScopeRender::ResetWidgetFit();
 					}
 				} else if (g_gateRaw.exchange(false)) {
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));

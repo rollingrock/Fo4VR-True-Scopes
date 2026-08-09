@@ -95,6 +95,7 @@ namespace TrueScopes::ScopeRender
 		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
 		using FindCamBlock_t = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);       // 0x1daaf30  find CameraStateData block (state, camera, sel) in the state+0x140 array (stride 0x480); 0 if absent
 		using ExecPassConfig_t = void (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
+		using NiAVObjectUpdate_t = void (*)(std::uintptr_t, void*);                                    // 0x1c22fb0  NiAVObject::Update(obj, NiUpdateData) — recomputes world transforms down the subtree
 		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
 
 		template <class T>
@@ -781,6 +782,119 @@ namespace TrueScopes::ScopeRender
 			return addr + a_instrLen + disp;
 		}
 
+		// --- widget fit (v0.2.68) ------------------------------------------------
+		// The vanilla VR scope widget (Data\Meshes\VR\Scope\world_scope.nif) hangs off
+		// the engine's "ScopeParent" NiNode at player+0x7d0: TS_SetupScopeRig
+		// (0x140ef21a0) does ScopeParent->AttachChild(WSScopeModel->model). Its render
+		// surface `render_circle:0` is a flat disc of radius 7.852 centred exactly on
+		// ScopeParent's origin (measured with tools/nif-inspect.py), so
+		//        scale = aperture_radius / 7.852
+		// fits the widget to a real scope's lens. Shipped scopes measure 0.76–4.56, i.e.
+		// scale 0.097–0.581 — the vanilla widget is 2–6x oversized, which is why the
+		// real scope mesh shows through the middle of it.
+		//
+		// TWO THINGS THIS MUST GET RIGHT, both established by measurement:
+		//
+		// 1. ScopeParent's WORLD transform is NOT recomputed per frame. Read live
+		//    2026-08-09 it was bit-for-bit identical across 3 s while the camera's moved.
+		//    The engine only refreshes it at equip/3D-change. So writing the local
+		//    transform alone does NOTHING VISIBLE — NiAVObject::Update must follow,
+		//    exactly as the engine's own path (FUN_140f0a9f0) does after writing it.
+		//
+		// 2. The engine REWRITES that local transform at equip. Offsets are therefore
+		//    applied to a captured BASELINE, never accumulated onto the current value,
+		//    or repeated application would drift the widget away frame by frame.
+		//    Hooks.cpp calls ResetWidgetFit() on scope-in to re-capture.
+		constexpr std::uintptr_t kScopeParentInPlayer = 0x7d0;
+		constexpr float          kVanillaRenderCircleRadius = 7.852f;
+
+		struct WidgetBaseline
+		{
+			float tx = 0.0f, ty = 0.0f, tz = 0.0f, scale = 1.0f;
+			bool  captured = false;
+		};
+		WidgetBaseline g_widgetBase;
+		float          g_widgetLast[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		bool           g_widgetApplied = false;
+
+		void WriteScopeParent(std::uintptr_t a_sp, float a_tx, float a_ty, float a_tz, float a_scale)
+		{
+			auto* t = reinterpret_cast<float*>(a_sp + 0x60);  // NiAVObject local translate
+			t[0] = a_tx;
+			t[1] = a_ty;
+			t[2] = a_tz;
+			*reinterpret_cast<float*>(a_sp + 0x6c) = a_scale;  // local scale
+			// NiUpdateData, zeroed — the engine's own call site builds a zeroed block of
+			// this shape before calling. Oversized on purpose; zeros are safe.
+			alignas(16) std::uint8_t upd[0x30]{};
+			Fn<NiAVObjectUpdate_t>(0x1c22fb0)(a_sp, upd);
+		}
+
+		void ApplyWidgetFit(std::uintptr_t a_player)
+		{
+			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
+			if (!sp) {
+				return;
+			}
+
+			if (!*Settings::widgetFitEnabled) {
+				// Turned off after being applied: restore the engine's own values once, so
+				// toggling it live is a clean A/B rather than a one-way door.
+				if (g_widgetApplied && g_widgetBase.captured) {
+					WriteScopeParent(sp, g_widgetBase.tx, g_widgetBase.ty, g_widgetBase.tz, g_widgetBase.scale);
+					g_widgetApplied = false;
+					logger::info("WIDGET FIT off — restored engine transform"sv);
+				}
+				return;
+			}
+
+			const auto aperture = static_cast<float>(*Settings::widgetApertureRadius);
+			const auto override = static_cast<float>(*Settings::widgetScaleOverride);
+			const float scale = override > 0.0f ? override : aperture / kVanillaRenderCircleRadius;
+			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
+			// cannot tell that apart from a broken render — refuse instead of guessing.
+			if (!(scale > 0.001f && scale < 8.0f)) {
+				static bool warned = false;
+				if (!warned) {
+					warned = true;
+					logger::warn(FMT_STRING("WIDGET FIT refused: scale {} out of range (aperture={} override={})"),
+						scale, aperture, override);
+				}
+				return;
+			}
+
+			const auto ox = static_cast<float>(*Settings::widgetOffsetX);
+			const auto oy = static_cast<float>(*Settings::widgetOffsetY);
+			const auto oz = static_cast<float>(*Settings::widgetOffsetZ);
+
+			if (!g_widgetBase.captured) {
+				const auto* t = reinterpret_cast<const float*>(sp + 0x60);
+				g_widgetBase.tx = t[0];
+				g_widgetBase.ty = t[1];
+				g_widgetBase.tz = t[2];
+				g_widgetBase.scale = *reinterpret_cast<const float*>(sp + 0x6c);
+				g_widgetBase.captured = true;
+				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
+					g_widgetBase.tx, g_widgetBase.ty, g_widgetBase.tz, g_widgetBase.scale);
+			}
+
+			// Only touch the node when something actually changed — NiAVObject::Update
+			// walks the subtree, and the engine itself only does this at equip.
+			if (g_widgetApplied && g_widgetLast[0] == scale && g_widgetLast[1] == ox &&
+				g_widgetLast[2] == oy && g_widgetLast[3] == oz) {
+				return;
+			}
+
+			WriteScopeParent(sp, g_widgetBase.tx + ox, g_widgetBase.ty + oy, g_widgetBase.tz + oz, scale);
+			g_widgetLast[0] = scale;
+			g_widgetLast[1] = ox;
+			g_widgetLast[2] = oy;
+			g_widgetLast[3] = oz;
+			g_widgetApplied = true;
+			logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) offset=({:.2f},{:.2f},{:.2f})"),
+				scale, aperture, kVanillaRenderCircleRadius, ox, oy, oz);
+		}
+
 		// The whole render, POD-only so the SEH wrapper below is legal.
 		void RenderImpl(float a_fovDeg)
 		{
@@ -812,6 +926,12 @@ namespace TrueScopes::ScopeRender
 				localTranslate[1] = static_cast<float>(*Settings::scopeCamOffsetY);
 				localTranslate[2] = static_cast<float>(*Settings::scopeCamOffsetZ);
 			}
+
+			// Fit the vanilla widget to the real scope's lens. Cheap: it compares against
+			// the last applied values and only touches the node (and runs
+			// NiAVObject::Update) when a setting actually changed, so live tuning through
+			// DevBench works without paying a subtree update every frame.
+			ApplyWidgetFit(player);
 
 			// Zoom FOV: force SetCameraFOV's symmetric-frustum path (instead of HMD eye
 			// projections) exactly like the vanilla scope pass does, then restore.
@@ -1921,6 +2041,15 @@ namespace TrueScopes::ScopeRender
 	std::uint32_t OwnRenderThread()
 	{
 		return g_renderTid.load();
+	}
+
+	void ResetWidgetFit()
+	{
+		// Called on scope-in. The engine rewrites ScopeParent's local transform at
+		// equip/3D-change, so the captured baseline goes stale whenever the weapon or
+		// its mods change; dropping it here forces a fresh capture and re-apply.
+		g_widgetBase.captured = false;
+		g_widgetApplied = false;
 	}
 
 	void TintLens(float a_r, float a_g, float a_b)

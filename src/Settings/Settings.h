@@ -126,6 +126,31 @@ namespace Settings
 	// four corners clipped asymmetrically, and a boundary that does not move with
 	// the camera. Live-toggleable for a clean A/B: flip it and re-dump 0x62.
 	MAKE_SETTING(bSetting, "TrueScopesVR", deliveryUnbindDS, true);
+	// --- widget fit (v0.2.68) -------------------------------------------------
+	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
+	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
+	// "ScopeParent" node (player+0x7d0) and its render surface `render_circle:0` is a
+	// disc of radius 7.852 centred on that node's origin, so
+	//     ScopeParent.scale = widgetApertureRadius / 7.852
+	// Shipped scopes measure an ocular radius of 0.76–4.56 (scale 0.097–0.581), i.e.
+	// vanilla is 2–6x oversized — which is why the real scope mesh currently pokes
+	// through the middle of the widget.
+	// DEFAULT OFF: a wrong scale can make the lens vanish or swallow the view, and
+	// that is indistinguishable from a broken render. Flip it live via DevBench.
+	MAKE_SETTING(bSetting, "TrueScopesVR", widgetFitEnabled, false);
+	// Ocular aperture radius of the equipped scope, in mesh units. Default is the
+	// hunting rifle's glass shape (measured: 1.267). Per-scope lookup is not wired
+	// yet — see STATUS_AND_KNOWN_ISSUES.md for the full measured table.
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetApertureRadius, 1.267);
+	// Bypass the aperture math and set ScopeParent's scale directly (0 = derive).
+	// For bisecting when the derived value looks wrong.
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetScaleOverride, 0.0);
+	// Local-space nudge applied on top of the engine's own ScopeParent translation
+	// (captured as a baseline, never accumulated). For sliding the shrunken widget
+	// onto the real lens once the scale is right.
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetX, 0.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetY, 0.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetZ, 0.0);
 	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
 	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
 	// Costs two GPU sync stalls per render — enable only while hunting.
@@ -239,6 +264,12 @@ namespace Settings
 		LOAD(skyEnabled);
 		LOAD(skyRootMask);
 		LOAD(deliveryUnbindDS);
+		LOAD(widgetFitEnabled);
+		LOAD(widgetApertureRadius);
+		LOAD(widgetScaleOverride);
+		LOAD(widgetOffsetX);
+		LOAD(widgetOffsetY);
+		LOAD(widgetOffsetZ);
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);
