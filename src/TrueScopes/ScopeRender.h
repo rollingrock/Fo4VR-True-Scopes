@@ -21,6 +21,9 @@ namespace TrueScopes::ScopeRender
 	// resolve accum-bind call-site hooks (Hooks.cpp) key off this to force
 	// bind mode 3 (no clear) so our pre-drawn sun pass survives into the composite.
 	bool InOwnResolve();
+	// v0.2.78: invoked by ResolveAccumBind0Hook to run the sun pass INSIDE the resolve,
+	// after the G-buffer geometry exists for it to shade. No-op unless a render deferred one.
+	void RunPendingSunExec() noexcept;
 
 	// Hooks::Install reports whether the two resolve bind sites were hooked; the sun
 	// pre-draw is skipped when they are not (it would just be cleared again).

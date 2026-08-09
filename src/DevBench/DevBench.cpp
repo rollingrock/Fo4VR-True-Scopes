@@ -262,6 +262,7 @@ namespace DevBench
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
 				{ "sunCtxAccumTarget", Kind::Int, &sunCtxAccumTarget },
 				{ "diagSunOrderProbe", Kind::Bool, &diagSunOrderProbe },
+				{ "sunExecInResolve", Kind::Bool, &sunExecInResolve },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
 				{ "sunSpecEnabled", Kind::Bool, &sunSpecEnabled },
 				{ "accumClearScale", Kind::Float, &accumClearScale },

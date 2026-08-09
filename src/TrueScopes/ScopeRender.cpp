@@ -136,6 +136,11 @@ namespace TrueScopes::ScopeRender
 		std::atomic<std::uint64_t> g_dumpEvents{ 0 };
 		std::atomic<std::uint64_t> g_lastDumpIndex{ 0 };
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
+		// v0.2.78: the sun exec, deferred to INSIDE the resolve. Holds a lambda that
+		// closes over Render()'s locals; Render() is on the stack for the whole resolve
+		// call, so those references stay valid. Cleared unconditionally after the resolve
+		// (and on the fault path) so a stale closure can never be invoked on a later frame.
+		std::function<void()> g_pendingSunExec;
 		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
 
 		// Fault forensics: which step the render was in when the SEH guard fired.
@@ -1688,6 +1693,23 @@ namespace TrueScopes::ScopeRender
 					// whole of 0x6a (100% NaN with a clean G-buffer and a clean clear).
 					if (cfgClean && cfgBuilt && *Settings::sunExecEnabled) {
 
+					// v0.2.78 — WHEN this runs is the whole defect (§3.1, proven v0.2.77).
+					// A deferred directional light SHADES BY SAMPLING THE G-BUFFER. Measured
+					// immediately before this exec: 0x63 albedo = 0xFF000000 (the black clear)
+					// and 0x64 normals = 0x00000000 (not a valid normal), while the same two
+					// buffers read as a real image after the resolve. N.L against a zero normal
+					// is exactly zero everywhere -- which is 0x6a's immovable meanLum 155.0, its
+					// indifference to a 10,000x sun, and (on frames where that memory holds
+					// garbage rather than the clear) the ~20% NaN bursts. One mechanism, both
+					// halves. Vanilla has no such problem: FUN_14284e9e0 fills the G-buffer in
+					// the stages before its sun stage (call #22), then resolves (#24); OUR
+					// G-buffer geometry is drawn INSIDE the resolve, which we call below.
+					//
+					// So the body is captured here and, when sunExecInResolve is set, invoked
+					// from ResolveAccumBind0Hook -- the moment the resolve binds the light-accum
+					// buffer, which is after the G-buffer geometry and before the light volumes.
+					const auto runSunExec = [&]() {
+
 					// Render states (dirty-mask at ctx+0x1ee0: |4 = depth-stencil group,
 					// |8 = 0xbc group, |0x10 = blend group — byte-verified in the job).
 					const auto ctxA = g_ctxPtrA ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrA) : 0;
@@ -1909,6 +1931,13 @@ namespace TrueScopes::ScopeRender
 						set(0xb0, 0, 4);  // job's own restore
 						g_diagSunPass = 1;
 					}
+					};  // end runSunExec
+
+					if (*Settings::sunExecInResolve) {
+						g_pendingSunExec = runSunExec;  // fired from inside the resolve
+					} else {
+						runSunExec();                   // pre-v0.2.78 placement, kept for the A/B
+					}
 				} else {
 					g_diagSunPass = 0;
 				}
@@ -1979,6 +2008,7 @@ namespace TrueScopes::ScopeRender
 			g_inOwnResolve.store(accumSetup);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
+			g_pendingSunExec = nullptr;  // never let a stale closure outlive this frame
 
 			if (clampLights) {
 				*lightCountA = savedLightsA;
@@ -2569,6 +2599,7 @@ namespace TrueScopes::ScopeRender
 		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind CBs (stereo b8 included)
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		g_inOwnResolve.store(false);  // fault path may have skipped the in-function reset
+		g_pendingSunExec = nullptr;
 		*scopePassFlag = savedFlag;
 		*stereoMaster = savedStereo;
 		g_renderTid.store(0);
@@ -2804,6 +2835,21 @@ namespace TrueScopes::ScopeRender
 	bool InOwnResolve()
 	{
 		return g_inOwnResolve.load();
+	}
+
+	// v0.2.78: fire the deferred sun exec from inside the resolve. Called by
+	// ResolveAccumBind0Hook right after the light-accum buffer is bound -- i.e. after
+	// the G-buffer geometry has been drawn (which is the entire point; see the note at
+	// the capture site) and before the resolve's own light volumes. One-shot: the slot
+	// is cleared before invoking, so a re-entrant or repeated bind cannot draw twice.
+	void RunPendingSunExec() noexcept
+	{
+		if (!g_pendingSunExec) {
+			return;
+		}
+		auto fn = std::move(g_pendingSunExec);
+		g_pendingSunExec = nullptr;
+		fn();
 	}
 
 	void SetSunBindHooksInstalled(bool a_installed)

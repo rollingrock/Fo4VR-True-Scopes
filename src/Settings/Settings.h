@@ -278,6 +278,13 @@ namespace Settings
 	// empty one, which computes exactly zero. Default ON: cheap, and the ordering
 	// question is the live one.
 	MAKE_SETTING(bSetting, "TrueScopesVR", diagSunOrderProbe, true);
+	// v0.2.78 — THE §3.1 FIX. Run the sun BSDFLightDir exec from inside the resolve
+	// (at the light-accum bind) instead of before it. Proven necessary v0.2.77: at the
+	// old call site the G-buffer is still the black clear (albedo 0xFF000000, normals
+	// 0x00000000), so the light had nothing to shade and computed exactly zero.
+	// Default FALSE for one build so the A/B is a single live flag against the measured
+	// baseline (0x6a meanLum 155.0); flip to true and watch that number move.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -365,6 +372,7 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(sunCtxAccumTarget);
 		LOAD(diagSunOrderProbe);
+		LOAD(sunExecInResolve);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);

@@ -176,6 +176,15 @@ namespace TrueScopes::Hooks
 			static void thunk(std::uintptr_t a_rtm, std::uint32_t a_slot, std::int32_t a_rt, std::uint32_t a_mode)
 			{
 				func(a_rtm, a_slot, a_rt, ScopeRender::InOwnResolve() ? 3 : a_mode);
+				// v0.2.78: this is the moment the resolve binds the light-accumulation
+				// buffer -- AFTER the G-buffer geometry is drawn and BEFORE the light
+				// volumes. That ordering is the entire fix for §3.1: run from Render()
+				// (before the resolve) the sun shades a G-buffer that is still the black
+				// clear, so it contributes exactly zero. No-op unless the render deferred
+				// one, so engine frames and the old placement are untouched.
+				if (ScopeRender::InOwnResolve()) {
+					ScopeRender::RunPendingSunExec();
+				}
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
