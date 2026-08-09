@@ -286,11 +286,16 @@ namespace Settings
 	// baseline (0x6a meanLum 155.0); flip to true and watch that number move.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, false);
 	// v0.2.79 — re-write staging+0x1d0 (the inverse projection the sun pass reconstructs
-	// position with) immediately before the exec. Needed once the exec moved inside the
-	// resolve: the resolve commits its own camera state in between, and a stale or zeroed
-	// inverse projection is FINITE, so every existing finiteness check passes while the
-	// shader divides by zero. Live-toggleable so it is a clean one-flag A/B.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunReapplyInvProj, true);
+	// position with) immediately before the exec.
+	// ❌ NEGATIVE RESULT, DEFAULT FALSE (2026-08-09). The hypothesis was that the resolve
+	// commits its own camera state between our pre-resolve write and the deferred exec,
+	// leaving a stale/zeroed (but FINITE, hence undetected) inverse projection. It does
+	// not. The value logged at the exec is already correct —
+	//     row0=[0.021905374 0 0 ~0]  row3=[0 0 -0.06666266 0.06666666]
+	// — and a controlled A/B in one spot reads 0x6a NaN 80.2% / meanLum 88.9 with this
+	// ON and OFF and ON again, identical. It is a no-op; kept only so the negative is
+	// re-testable without a rebuild. Do not spend time here again.
+	MAKE_SETTING(bSetting, "TrueScopesVR", sunReapplyInvProj, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
