@@ -96,6 +96,10 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t passTotal;
 		std::int32_t  lightsShadowed, lightsQueued, eyeCount;
 		std::int32_t  sunPass, sunIsSSN, skyRoots, skyDrawn;
+		// v0.2.76: sunPass means "we called the exec"; sunDrew is its RETURN VALUE,
+		// i.e. whether FUN_142891040's technique gate let the draw happen at all.
+		std::int32_t  sunDrew;
+		std::uint64_t sunDrewCount, sunGatedCount;
 		std::uint32_t sunCfgFlags;
 		float         camRect[6];
 		std::int32_t  viewport[6];

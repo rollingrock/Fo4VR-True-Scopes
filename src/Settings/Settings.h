@@ -261,6 +261,17 @@ namespace Settings
 	// our cfgClean/cfgBuilt test is a check-then-use race. Needs a live x64dbg read
 	// of the constant buffer at a NaN draw to confirm.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, false);
+	// v0.2.76 — THE ACCUMULATION TARGET FIELD.
+	// Ghidra 2026-08-09 (TS_DrawWorld_PreWorldLightingStage, 0x142846d60): the engine
+	// re-selects `ctx+0x1c` before EVERY pass in the pre-world lighting stage, from the
+	// renderer+4 reader:  ctx+0x1c = FUN_141d947d0(renderer) ? 0x6a : 0x24  — i.e. it is
+	// the LIGHT-ACCUMULATION TARGET, and 0xffffffff is used for "none" elsewhere in the
+	// same function. Our sun context comes from FUN_142812be0, which zeroes that field
+	// and never sets it, so we have been exec'ing the sun pass with accum target 0.
+	// -1 = leave the constructor's value alone (the pre-v0.2.76 behaviour, so the first
+	// reading is clean); 0x6a = what the engine would set for a scoped pass.
+	// Kept as an int rather than a bool so 0x24 can be tried without a rebuild.
+	MAKE_SETTING(iSetting, "TrueScopesVR", sunCtxAccumTarget, -1);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -346,6 +357,7 @@ namespace Settings
 		LOAD(diagDumpLensEveryNRenders);
 		LOAD(diagDumpBuffers);
 		LOAD(sunExecEnabled);
+		LOAD(sunCtxAccumTarget);
 		LOAD(disableScopeBlackout);
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);

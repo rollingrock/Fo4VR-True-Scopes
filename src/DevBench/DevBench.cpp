@@ -260,6 +260,7 @@ namespace DevBench
 				{ "perfLightsMax", Kind::Int, &perfLightsMax },
 				{ "sunEnabled", Kind::Bool, &sunEnabled },
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
+				{ "sunCtxAccumTarget", Kind::Int, &sunCtxAccumTarget },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
 				{ "sunSpecEnabled", Kind::Bool, &sunSpecEnabled },
 				{ "accumClearScale", Kind::Float, &accumClearScale },
@@ -504,6 +505,11 @@ namespace DevBench
 			out += ",\"eyeCount\":" + std::to_string(d.eyeCount);
 			out += ",\"sunPass\":" + std::to_string(d.sunPass);
 			out += ",\"sunIsSSN\":" + std::to_string(d.sunIsSSN);
+			// v0.2.76: sunPass = "we called the exec"; sunDrew = its return value, i.e.
+			// whether FUN_142891040's technique gate actually let the draw happen.
+			out += ",\"sunDrew\":" + std::to_string(d.sunDrew);
+			out += ",\"sunDrewCount\":" + std::to_string(d.sunDrewCount);
+			out += ",\"sunGatedCount\":" + std::to_string(d.sunGatedCount);
 			out += ",\"sunCfgFlags\":" + Quote(Hex(d.sunCfgFlags));
 			out += ",\"skyRoots\":" + std::to_string(d.skyRoots);
 			out += ",\"skyDrawn\":" + std::to_string(d.skyDrawn);

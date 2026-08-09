@@ -95,7 +95,10 @@ namespace TrueScopes::ScopeRender
 		using DepthMode_t = void (*)(std::uintptr_t, std::uint32_t);                                  // 0x1d8dd60 / 0x1d8de10: depth/texture mode setters the resolve runs before lighting
 		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
 		using FindCamBlock_t = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);       // 0x1daaf30  find CameraStateData block (state, camera, sel) in the state+0x140 array (stride 0x480); 0 if absent
-		using ExecPassConfig_t = void (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
+		// v0.2.76: RETURNS char, and it is not decorative — see the gate note at the call
+		// site. Declared void until now, so the one bit that says whether the sun pass
+		// actually drew was not merely unchecked, it was unrepresentable.
+		using ExecPassConfig_t = char (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
 		using NiAVObjectUpdate_t = void (*)(std::uintptr_t, void*);                                    // 0x1c22fb0  NiAVObject::Update(obj, NiUpdateData) — recomputes world transforms down the subtree
 		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
 
@@ -159,6 +162,11 @@ namespace TrueScopes::ScopeRender
 		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
 		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
 		std::int32_t g_diagSunPass = -1;      // -1 not attempted, 0 config invalid, 1 executed
+		// v0.2.76: "executed" above only ever meant "we made the call". These are the
+		// return value of FUN_142891040 — whether the draw actually happened.
+		std::int32_t g_diagSunDrew = -1;      // -1 not attempted, 0 gated off, 1 drew
+		std::uint64_t g_sunDrewCount = 0;
+		std::uint64_t g_sunGatedCount = 0;
 		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
 		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
@@ -1742,6 +1750,16 @@ namespace TrueScopes::ScopeRender
 
 						alignas(16) std::uint8_t sunCtx[0x2d0];
 						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
+
+						// v0.2.76: the accumulation target. TS_DrawWorld_PreWorldLightingStage
+						// (0x142846d60) sets ctx+0x1c = renderer+4 ? 0x6a : 0x24 before every
+						// pass it draws — six sites — and 0xffffffff where it wants none.
+						// FUN_142812be0 zeroes the field, so every sun exec we have ever done
+						// ran with accum target 0. Default -1 leaves it alone so the gate
+						// measurement below reads the historical behaviour, not a mixed change.
+						if (const auto tgt = *Settings::sunCtxAccumTarget; tgt >= 0) {
+							*reinterpret_cast<std::uint32_t*>(sunCtx + 0x1c) = static_cast<std::uint32_t>(tgt);
+						}
 						// v0.2.60 causal bracket: 0x6a immediately before the sun draw
 						// (must be the fog clear) and immediately after it.
 						std::uint64_t accumPre = 0;
@@ -1750,8 +1768,44 @@ namespace TrueScopes::ScopeRender
 							accumPre = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
 						}
 
-						Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
+						// ⚠️ THE GATE (Ghidra 2026-08-09, FUN_142891040). This does NOT
+						// unconditionally draw. It is:
+						//
+						//   ok = (ctx+0x40 == cfg+0x48 && ctx+0x38 == cfg->shader)
+						//        || FUN_142891280(cfg+0x48, shader, ctx);   // SetupTechnique
+						//   if (ok) { ...SetupGeometry, draw, restore... }
+						//   return ok;
+						//
+						// FUN_142891280 calls shader->vtable[0x20](shader, technique, ctx) and
+						// caches (shader, technique) into ctx+0x38/+0x40 on success, clearing
+						// them on failure. Our ctx is FRESH every render, so +0x38/+0x40 are 0,
+						// the fast path can never match, and EVERY frame depends on
+						// SetupTechnique(0x20201) succeeding. If it fails, this returns 0 and
+						// nothing is drawn at all — which is exactly "the pass executes and
+						// adds precisely zero" (§6.7, re-confirmed against the v0.2.75 control:
+						// main accum 0x24 fully sun-lit with cast shadows, our 0x6a a perfectly
+						// uniform grey, identical with the exec on and off).
+						//
+						// We discarded this byte for the entire sun arc, and reported
+						// `sunPass=1` — meaning "we called it" — in its place. Gotcha #3: a
+						// probe that cannot represent the failure will exonerate every suspect.
+						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
+						g_diagSunDrew = sunDrew ? 1 : 0;
+						if (sunDrew) {
+							++g_sunDrewCount;
+						} else {
+							++g_sunGatedCount;
+						}
+						// State transitions only — this runs ~90×/s.
+						if (static std::int32_t lastDrew = -1; lastDrew != g_diagSunDrew) {
+							lastDrew = g_diagSunDrew;
+							logger::info(
+								FMT_STRING("SUN EXEC {} — FUN_142891040 returned {} (technique 0x{:X}, ctxAccumTarget {}). drew={} gated={}"),
+								sunDrew ? "DREW" : "GATED OFF (SetupTechnique refused; nothing was rasterised)",
+								static_cast<int>(sunDrew), g_diagSunCfgFlags, *Settings::sunCtxAccumTarget,
+								g_sunDrewCount, g_sunGatedCount);
+						}
 
 						if (bracket) {
 							const auto accumPost =
@@ -2581,13 +2635,14 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunDrew={} (drew={} gated={}) sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
 				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects, g_camDataBad, g_sunPreNaN, g_sunPostNaN,
 				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
-				g_diagSunPass, g_diagSunCfgFlags, g_diagSunIsSSNSun,
+				g_diagSunPass, g_diagSunDrew, g_sunDrewCount, g_sunGatedCount,
+				g_diagSunCfgFlags, g_diagSunIsSSNSun,
 				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
 				g_diagCullFix, g_diagFrustumAliased,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
@@ -2788,6 +2843,9 @@ namespace TrueScopes::ScopeRender
 		d.lightsQueued = g_diagLightsB;
 		d.eyeCount = g_diagEyeCount;
 		d.sunPass = g_diagSunPass;
+		d.sunDrew = g_diagSunDrew;
+		d.sunDrewCount = g_sunDrewCount;
+		d.sunGatedCount = g_sunGatedCount;
 		d.sunIsSSN = g_diagSunIsSSNSun;
 		d.skyRoots = g_diagSkyRoots;
 		d.skyDrawn = g_diagSkyDrawn;
