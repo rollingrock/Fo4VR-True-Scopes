@@ -102,10 +102,16 @@ devbenchEnabled = true
 # First port tried; the server walks up to +15 if busy and logs the bound port.
 devbenchPort = 8930
 
-# v0.2.71 — THE PERF FIX. Cull the scope render against the scope camera's own
-# frustum. AccumulateScene culls with the CAMERA's combined (all-eye union) frustum
-# at *(cam+0x200), which SetCameraFOV only rebuilds for cameras with >1 eye — our
-# scope camera is mono, so that frustum was stale and nothing was ever rejected
-# (measured: a 50x FOV change moved the workload ~5%). Set false to reproduce the
-# old ~21 ms behaviour for a clean A/B; watch `passes total=` in the log.
+# v0.2.72 — THE PERF FIX (VR-confirmed: our render 27.3 ms -> 13.6 ms, passes
+# ~14,400 -> ~700 at Diamond City). Cull the scope render to its own frustum.
+#
+# The engine does NOT frustum-cull here: BSCuller::ProcessVectorFrustum is gated off
+# whenever BSPreCulledObjects::QEnabled() is true, because Fallout 4 uses PREVIS --
+# precomputed per-cell visibility, computed once per frame FOR THE PLAYER'S CAMERA.
+# Our scope render inherited that whole visible set, so a 27x FOV change moved the
+# workload 1.9% and a 300-unit far clip in Diamond City moved it 0.06%.
+# This flips previs off across our accumulation only (keeping its occlusion, adding
+# frustum culling). Set false to reproduce the old cost for a clean A/B; the sharp
+# test is that `passes total=` should TRACK scopeFovDegrees (639 at 2.4deg,
+# 5788 at 120deg) -- if it goes flat, culling has regressed.
 cullToScopeFrustum = true
