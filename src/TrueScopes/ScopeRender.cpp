@@ -961,6 +961,58 @@ namespace TrueScopes::ScopeRender
 		std::uint64_t g_sunPostNaN = 0;
 		std::int32_t g_sunNaNState = -1;
 
+		// v0.2.81 — WHAT IS ACTUALLY BOUND when the sun pass draws.
+		// The sun NaNs on exactly the pixels it shades (0x6a magenta below the horizon,
+		// sky clean) from inputs that all probe healthy. The remaining per-pixel inputs
+		// are the G-buffer textures themselves -- and a pass sampling an UNBOUND SRV reads
+		// zeros, which is a fine way to divide by zero and produce NaN. Our hook fires at
+		// the resolve's light-accum BIND, which may be before the resolve has bound the
+		// G-buffer as shader resources for its own light volumes.
+		//
+		// Ask D3D rather than reason about it. Logged at BOTH call sites so the old
+		// placement is the control beside the new one (gotcha #3: always print a
+		// known-good control beside the unknown).
+		void ProbeBoundResources(std::string_view a_where) noexcept
+		{
+			static std::uint32_t logs = 0;
+			if (logs >= 8) {
+				return;
+			}
+			++logs;
+			auto* const d3d = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
+			if (!d3d) {
+				return;
+			}
+			ID3D11ShaderResourceView* srv[16] = {};
+			d3d->PSGetShaderResources(0, 16, srv);
+			std::string bound;
+			int count = 0;
+			for (int i = 0; i < 16; ++i) {
+				if (srv[i]) {
+					++count;
+					fmt::format_to(std::back_inserter(bound), FMT_STRING("{}{}"), bound.empty() ? "" : ",", i);
+					srv[i]->Release();  // PSGetShaderResources AddRefs every returned view
+				}
+			}
+			ID3D11RenderTargetView* rtv[4] = {};
+			ID3D11DepthStencilView* dsv = nullptr;
+			d3d->OMGetRenderTargets(4, rtv, &dsv);
+			int rtCount = 0;
+			for (auto*& r : rtv) {
+				if (r) {
+					++rtCount;
+					r->Release();
+				}
+			}
+			const bool haveDS = dsv != nullptr;
+			if (dsv) {
+				dsv->Release();
+			}
+			logger::info(
+				FMT_STRING("SUN BINDINGS [{}]: PS SRV slots bound = {} of 16 [{}], RTs bound = {}, DS bound = {} — zero SRVs here means the pass samples unbound textures"),
+				a_where, count, bound, rtCount, haveDS);
+		}
+
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
 			using namespace DirectX;
@@ -1866,6 +1918,7 @@ namespace TrueScopes::ScopeRender
 							WriteInverseProj(g_gfxState, cam);
 						}
 
+						ProbeBoundResources(*Settings::sunExecInResolve ? "in-resolve (new)"sv : "pre-resolve (old, control)"sv);
 						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
 						g_diagSunDrew = sunDrew ? 1 : 0;
