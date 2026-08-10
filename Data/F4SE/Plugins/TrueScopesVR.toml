@@ -47,12 +47,17 @@ sunBrightnessScale = 1.0
 # only, which looks correct minus highlights; on = re-test after fixes).
 sunSpecEnabled = false
 
-# Tone bisect (v0.2.36): the scope's ambient base level. The light accumulation is
-# pre-cleared to the world fog color (scaled by accumClearScale) with accumClearAlpha
-# in the alpha channel. The lens currently reads paler/washed vs the world; tune live:
-#   accumClearScale 1.0 = current look, 0.0 = the too-dark v0.2.27 look, try 0.5
-#   accumClearAlpha 1.0 = current; try 0.0 (alpha may be a light-mask the composite reads)
-accumClearScale = 0.0
+# LENS BRIGHTNESS (ambient fill) -- a knob you are MEANT to touch.
+# Flat fog-coloured fill added to the lens lighting before the sun and local lights.
+# Higher = brighter, flatter, more washed out. Lower = deeper contrast, darker shadows.
+#   0.04  default -- bisected in VR against the unscoped world on 2026-08-10
+#         (0.00 read slightly dark, 0.08 slightly bright, so the match is between)
+#   0.30  noticeably lifted
+#   1.00  blown out. This was the value before v0.2.83, from when the fill was
+#         standing in for a sun that contributed nothing.
+# WARNING: coupled to sunExecEnabled below. A low value with the sun OFF is a
+# near-black lens -- the fill was always a SUBSTITUTE for the missing sun.
+accumClearScale = 0.04
 accumClearAlpha = 1.0
 
 # Draw the sky in the lens (v0.2.36). Off = sky regions stay black (the old look).

@@ -171,20 +171,19 @@ namespace Settings
 	// clear. Scale the fog RGB (0 = black clear = the too-dark v0.2.27 look,
 	// 1 = current) and set the alpha independently (if accum alpha is a mask term
 	// the composite consumes, 1.0 everywhere may add uniform light — try 0).
-	// ⚠️⚠️ COUPLED TO sunExecEnabled. Changed 1.0 -> 0.0 in v0.2.83.
-	// This flat fog-coloured fill was always a SUBSTITUTE for the missing sun. Now that
-	// the sun genuinely contributes per-pixel light (v0.2.78 + v0.2.82), stacking the
-	// fill on top just lifts the whole image: at 1.0 with the sun on, the lens is
-	// visibly blown out and washed (user-observed in VR, and 0x6a meanLum 185 vs the
-	// main view's accum at 62).
-	// ⚠️ FOOTGUN: accumClearScale 0 WITH sunExecEnabled false is a near-black lens.
-	// The two must move together.
-	// 🔧 OPEN TUNING (2026-08-09): 0.0 is VR-confirmed good but reads slightly DARKER
-	// than the unscoped world (user: "maybe a bit darker"; visible in screenshot
-	// 20260809161650 — the wall is a warmer mid-grey in the lens, lighter outside).
-	// The right value is between 0 and 1, near the bottom. Bisect with
-	// tools/Invoke-AmbientBisect.ps1 — it is live, no scope cycle needed.
-	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearScale, 0.0);
+	// 🎛️ USER-FACING: LENS BRIGHTNESS / AMBIENT FILL.
+	// A flat fog-coloured fill added to the light accumulation before the sun and local
+	// lights. Raising it lifts the shadows and washes the image out; lowering it deepens
+	// contrast. Exposed deliberately as a taste / display-calibration knob (user's call,
+	// 2026-08-10) rather than a fixed constant -- headsets and preferences differ.
+	//   0.04  default. Bisected in VR against the unscoped world: 0.00 read slightly
+	//         dark, 0.08 slightly bright, so the match sits between them.
+	//   0.30  noticeably lifted;  1.0  blown out (this was the pre-v0.2.83 value, when
+	//         the fill was standing in for a sun that contributed nothing).
+	// ⚠️ COUPLED TO sunExecEnabled. This fill was always a SUBSTITUTE for the missing
+	// sun; with a real sun it stacks on top. FOOTGUN: a low value WITH sunExecEnabled
+	// false is a near-black lens. Move the two together.
+	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearScale, 0.04);
 	MAKE_SETTING(fSetting, "TrueScopesVR", accumClearAlpha, 1.0);
 	// Draw the sky into the lens (v0.2.36): accumulate the sky roots if the world
 	// accumulation didn't already produce group-0xC passes, then draw group 0xC into
