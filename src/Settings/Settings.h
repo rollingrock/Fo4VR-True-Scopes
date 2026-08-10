@@ -216,10 +216,16 @@ namespace Settings
 	// DEFAULT OFF: a wrong scale can make the lens vanish or swallow the view, and
 	// that is indistinguishable from a broken render. Flip it live via DevBench.
 	MAKE_SETTING(bSetting, "TrueScopesVR", widgetFitEnabled, false);
-	// Ocular aperture radius of the equipped scope, in mesh units. Default is the
-	// hunting rifle's glass shape (measured: 1.267). Per-scope lookup is not wired
-	// yet — see STATUS_AND_KNOWN_ISSUES.md for the full measured table.
+	// Ocular aperture radius, in mesh units, for scopes the plugin does NOT
+	// recognise — modded optics, or a vanilla one whose node name is missing from
+	// the built-in table. Default is the hunting rifle's glass shape (measured
+	// 1.267). Recognised scopes use their own radius instead; see perScopeAperture.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetApertureRadius, 1.267);
+	// v0.2.85: look the aperture up PER SCOPE from the node names in the equipped
+	// weapon's 3D, instead of using one number for every optic. The shipped table
+	// covers the 26 vanilla scopes; [Scopes] in the TOML overrides and extends it.
+	// Turn this off to go back to the single widgetApertureRadius above.
+	MAKE_SETTING(bSetting, "TrueScopesVR", perScopeAperture, true);
 	// Bypass the aperture math and set ScopeParent's scale directly (0 = derive).
 	// For bisecting when the derived value looks wrong.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetScaleOverride, 0.0);
@@ -358,6 +364,29 @@ namespace Settings
 	// values instead of the ones you set is worse than no experiment.
 	inline std::function<void()> postLoadHook;
 
+	// --- [Scopes] : per-scope aperture overrides (v0.2.85) --------------------
+	// A free-form table, `NodeName = radius`, keyed by a node name from the
+	// equipped weapon's 3D. It is NOT a fixed list of settings, because the whole
+	// point is that a user can add an entry for a scope the plugin has never seen
+	// -- the log prints the node names whenever a lookup misses, so adding one is
+	// copy-paste rather than reverse engineering.
+	//
+	// Written on the game thread at scope-in, read on the render thread during a
+	// probe, hence the lock. Contention is nil (both are rare events); correctness
+	// is not, since the map reallocates on reload.
+	inline std::mutex                                     scopeApertureLock;
+	inline std::map<std::string, double, std::less<>>     scopeApertures;
+
+	// Radius for a node name, or 0.0 when the user has not overridden it. 0 means
+	// "no opinion" rather than "zero radius": a real 0 would collapse the widget,
+	// so it is rejected at load rather than being allowed to mean something.
+	[[nodiscard]] inline double ScopeApertureOverride(std::string_view a_node)
+	{
+		const std::scoped_lock lock(scopeApertureLock);
+		const auto             it = scopeApertures.find(a_node);
+		return it == scopeApertures.end() ? 0.0 : it->second;
+	}
+
 	inline void load()
 	{
 		toml::table config;
@@ -400,6 +429,7 @@ namespace Settings
 		LOAD(deliveryUnbindDS);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
+		LOAD(perScopeAperture);
 		LOAD(widgetScaleOverride);
 		LOAD(widgetOffsetX);
 		LOAD(widgetOffsetY);
@@ -421,6 +451,35 @@ namespace Settings
 		LOAD(devbenchPort);
 
 #undef LOAD
+
+		// [Scopes] -- every key is a node name, so it cannot be a LOAD() list.
+		{
+			std::map<std::string, double, std::less<>> fresh;
+			if (const auto* scopes = config["Scopes"].as_table()) {
+				for (const auto& [key, value] : *scopes) {
+					double radius = 0.0;
+					if (const auto* f = value.as_floating_point()) {
+						radius = f->get();
+					} else if (const auto* i = value.as_integer()) {
+						radius = static_cast<double>(i->get());
+					}
+					// A zero or absurd radius makes the lens vanish or swallow the
+					// view, which reads as a broken render rather than a bad setting.
+					// Say which entry is wrong instead of silently fitting to it.
+					if (radius > 0.01 && radius < 64.0) {
+						fresh.emplace(std::string(key.str()), radius);
+					} else {
+						logger::warn(FMT_STRING("[Scopes] {} = {} ignored (expected a radius between 0.01 and 64)"),
+							std::string(key.str()), radius);
+					}
+				}
+			}
+			const std::scoped_lock lock(scopeApertureLock);
+			scopeApertures = std::move(fresh);
+			if (!scopeApertures.empty()) {
+				logger::info(FMT_STRING("[Scopes]: {} aperture override(s) loaded"), scopeApertures.size());
+			}
+		}
 
 		logger::info(
 			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} disableScopeBlackout={} disableApproachFade={}"),

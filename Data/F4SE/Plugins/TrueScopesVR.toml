@@ -159,16 +159,48 @@ sunResolveRebindAccum = true
 
 # ---------------------------------------------------------------------------
 # WIDGET FIT — fit the vanilla oversized render disc to the real scope lens.
-# VR-confirmed values for the HUNTING RIFLE (user: "pretty damn close").
-#   ScopeParent.scale = widgetApertureRadius / 7.852  -> 1.267/7.852 = 0.1614
-# ⚠️ widgetApertureRadius and scopeFovDegrees are COUPLED: M = theta_disc /
-# theta_render, so shrinking the disc 6.2x divides the zoom by 6.2 unless
-# scopeFovDegrees drops with it (15 -> 2.4). Never change one alone.
-# ⚠️ Per-scope: the measured 14-scope table is in STATUS §3.7; these are the
-# hunting rifle's numbers and every other scope is currently mis-fitted.
+#   ScopeParent.scale = aperture radius / 7.852  ->  1.267/7.852 = 0.1614
+# VR-confirmed on the HUNTING RIFLE (user: "pretty damn close").
+#
+# ⚠️ aperture and scopeFovDegrees are COUPLED: M = theta_disc / theta_render,
+# so shrinking the disc 6.2x divides the zoom by 6.2 unless scopeFovDegrees
+# drops with it (15 -> 2.4). Never change one alone.
+#
+# v0.2.85: the aperture is now PER SCOPE. The plugin reads the node names out
+# of the equipped weapon's 3D and looks the radius up (built-in table below,
+# [Scopes] overrides it). widgetApertureRadius is only the fallback for a scope
+# it does not recognise. Set perScopeAperture = false for the old behaviour of
+# one radius for every optic.
 widgetFitEnabled = true
+perScopeAperture = true
 widgetApertureRadius = 1.267
 widgetScaleOverride = 0.0
 widgetOffsetX = 0.0
 widgetOffsetY = -1.8
 widgetOffsetZ = 0.0
+
+# ---------------------------------------------------------------------------
+# PER-SCOPE APERTURE OVERRIDES
+#
+# Key = a node name from the equipped weapon's 3D (normally the scope mesh's
+# root node), value = the ocular lens radius in mesh units. Anything here wins
+# over the plugin's built-in table.
+#
+# TO ADD A SCOPE: equip it, raise it, then look in TrueScopesVR.log for
+#     SCOPE IDENT: no table entry. Add one under [Scopes] ... keyed by one of: ...
+# Pick the name that looks like the scope and give it a radius. Larger = bigger
+# disc in the lens. Start near the radius of the hole you actually look through
+# and nudge until the picture fills the tube without spilling past it.
+#
+# The built-in table covers the 26 vanilla scopes. One caveat worth knowing:
+# only the hunting rifle ships a distinct glass shape, so its 1.267 is a real
+# clear aperture; the other 25 are measured on the tube body, which reads about
+# 15% high. If a vanilla scope's picture spills slightly past the lens, trimming
+# its radius here is the fix.
+#
+# THIS MUST BE THE LAST SECTION IN THE FILE — every key below a TOML section
+# header belongs to that section, so anything added after it would silently
+# stop being a TrueScopesVR setting.
+[Scopes]
+# HuntingScope = 1.267
+# PlasmaScope = 4.564

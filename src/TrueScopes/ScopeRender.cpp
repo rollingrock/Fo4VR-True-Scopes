@@ -7,6 +7,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
+#include "TrueScopes/ScopeIdent.h"
 
 // Phase 2: mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62.
 //
@@ -1240,7 +1241,10 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
-			const auto  aperture = static_cast<float>(*Settings::widgetApertureRadius);
+			// v0.2.85: per-scope, from the equipped weapon's node names. Falls back
+			// to the widgetApertureRadius setting for an unrecognised scope, so an
+			// optic the table has never seen behaves exactly as it did before.
+			const auto  aperture = ScopeIdent::ApertureRadius();
 			const auto  scaleOverride = static_cast<float>(*Settings::widgetScaleOverride);
 			const float scale = scaleOverride > 0.0f ? scaleOverride : aperture / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
@@ -1316,6 +1320,13 @@ namespace TrueScopes::ScopeRender
 				localTranslate[1] = static_cast<float>(*Settings::scopeCamOffsetY);
 				localTranslate[2] = static_cast<float>(*Settings::scopeCamOffsetZ);
 			}
+
+			// Identify the equipped scope (v0.2.85). Runs only when something asked
+			// for it — scope-in, or a DevBench request — because it walks the weapon's
+			// 3D and calls into the engine's inventory code, neither of which belongs
+			// in a per-frame path. Must precede ApplyWidgetFit, which consumes the
+			// aperture it resolves.
+			ScopeIdent::RunIfRequested(player);
 
 			// Fit the vanilla widget to the real scope's lens. Cheap: it compares against
 			// the last applied values and only touches the node (and runs

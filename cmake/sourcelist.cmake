@@ -3,5 +3,6 @@ set(sources ${sources}
 	src/PCH.cpp
 	src/DevBench/DevBench.cpp
 	src/TrueScopes/Hooks.cpp
+	src/TrueScopes/ScopeIdent.cpp
 	src/TrueScopes/ScopeRender.cpp
 )

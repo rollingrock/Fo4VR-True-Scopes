@@ -2,6 +2,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
+#include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/ScopeRender.h"
 
 namespace TrueScopes::Hooks
@@ -54,6 +55,10 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> true"sv);
 						// live-tuning loop: re-read the TOML on every scope-in
 						Settings::load();
+						// ...and re-identify the scope: the weapon or its mods may have
+						// changed since we last looked. Ordered after load() so the probe
+						// resolves against the freshly parsed [Scopes] overrides.
+						ScopeIdent::Request();
 						if (*Settings::retryAfterFault) {
 							ScopeRender::RetryAfterFault();
 						}

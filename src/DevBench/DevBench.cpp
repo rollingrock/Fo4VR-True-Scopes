@@ -11,6 +11,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
+#include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/ScopeRender.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -274,6 +275,7 @@ namespace DevBench
 				{ "deliveryUnbindDS", Kind::Bool, &deliveryUnbindDS },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
+				{ "perScopeAperture", Kind::Bool, &perScopeAperture },
 				{ "widgetScaleOverride", Kind::Float, &widgetScaleOverride },
 				{ "widgetOffsetX", Kind::Float, &widgetOffsetX },
 				{ "widgetOffsetY", Kind::Float, &widgetOffsetY },
@@ -451,7 +453,8 @@ namespace DevBench
 				"{\"path\":\"/resolve\",\"desc\":\"?addr=EXPR - resolve an address expression to a VA + RVA\"},"
 				"{\"path\":\"/read\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64|ptr|bytes|cstr&count=N\"},"
 				"{\"path\":\"/poke\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V - write one scalar, SEH-guarded; echoes before/after so you have an undo\"},"
-				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"}"
+				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"},"
+				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the aperture in use and where it came from\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
 		}
 
@@ -955,6 +958,61 @@ namespace DevBench
 			return out;
 		}
 
+		// Which scope is equipped, and everything the per-scope fit derives from it.
+		// The node NAMES are the point: when the aperture falls back, they are what a
+		// user needs to add a [Scopes] entry, and reading them here beats grepping a
+		// log line that only prints on a scope-in.
+		std::string HandleScope(const Request& a_req)
+		{
+			if (a_req.GetOr("probe", "0") != "0") {
+				// A probe runs on the render thread, so it needs a render to happen.
+				// Wait briefly rather than returning last cycle's answer to a caller
+				// who explicitly asked for a fresh one.
+				const auto before = TrueScopes::ScopeIdent::Get();
+				TrueScopes::ScopeIdent::Request();
+				const auto deadline = ::GetTickCount64() + 3000;
+				while (::GetTickCount64() < deadline) {
+					const auto now = TrueScopes::ScopeIdent::Get();
+					if (now.probed && (!before.probed || now.nodesVisited != before.nodesVisited ||
+										  now.weaponFormID != before.weaponFormID)) {
+						break;
+					}
+					std::this_thread::sleep_for(std::chrono::milliseconds(20));
+				}
+			}
+
+			const auto  i = TrueScopes::ScopeIdent::Get();
+			std::string out = "{\"ok\":true";
+			out += ",\"probed\":" + std::string(i.probed ? "true" : "false");
+			out += ",\"faulted\":" + std::string(i.faulted ? "true" : "false");
+			out += ",\"weaponFormID\":" + Quote(Hex(i.weaponFormID));
+			out += ",\"weaponNode\":" + Quote(i.weaponNode);
+			out += ",\"fovMult\":" + std::to_string(i.fovMult);
+			out += ",\"zoomFovAt90\":" + std::to_string(i.zoomFovAt90);
+			out += ",\"aperture\":" + std::to_string(i.aperture);
+			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
+			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");
+			out += ",\"nodesVisited\":" + std::to_string(i.nodesVisited);
+			out += ",\"names\":[";
+			for (std::uint32_t n = 0; n < i.nameCount; ++n) {
+				if (n) {
+					out += ",";
+				}
+				out += Quote(i.names[n]);
+			}
+			out += "],\"table\":{";
+			bool first = true;
+			for (const auto& e : TrueScopes::ScopeIdent::Table()) {
+				if (!first) {
+					out += ",";
+				}
+				first = false;
+				out += Quote(e.node) + ":" + std::to_string(e.aperture);
+			}
+			out += "}}";
+			return out;
+		}
+
 		std::string Route(const Request& a_req)
 		{
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
@@ -973,6 +1031,7 @@ namespace DevBench
 			if (a_req.path == "/read")                          return HandleRead(a_req);
 			if (a_req.path == "/poke")                          return HandlePoke(a_req);
 			if (a_req.path == "/log")                           return HandleLog(a_req);
+			if (a_req.path == "/scope")                         return HandleScope(a_req);
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}
 
