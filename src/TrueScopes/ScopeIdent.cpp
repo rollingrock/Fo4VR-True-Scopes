@@ -157,7 +157,40 @@ namespace TrueScopes::ScopeIdent
 		// Depth-first, breadth-capped. A weapon's 3D is small (tens of nodes), but
 		// a bounded walk means a corrupt count or a cyclic graph costs a bounded
 		// number of reads instead of hanging the render thread.
-		void Walk(std::uintptr_t a_node, Info& a_out, int a_depth)
+		// v0.2.89: the attach point, and why identification hangs off it.
+		//
+		// The first complete walk (hunting rifle, long scope) ended:
+		//     ... P-Barrel, HuntingRifleBarrel:0, ProjectileNode,
+		//         P-Scope, HuntingScope:0, HuntingScope:1, HuntingScope:2
+		// Two facts in that tail:
+		//
+		// 1. The scope hangs off the receiver's "P-Scope" connect point. Matching
+		//    table keys against P-Scope's SUBTREE instead of the whole weapon is
+		//    what makes a key like "Scope" safe -- searching all 50 nodes would
+		//    happily match some unrelated receiver or sight node and then fit the
+		//    lens to it with complete confidence.
+		//
+		// 2. The mod's NIF ROOT NODE IS NOT INSTANTIATED. The mesh's root is named
+		//    "HuntingScope"; at runtime its SHAPES are attached directly, named
+		//    "HuntingScope:0/:1/:2". So the runtime name is the offline root name
+		//    plus a ":N" suffix, and the v0.2.85 table -- keyed on bare root names
+		//    measured from the meshes -- could never have matched anything. Strip
+		//    at the colon and the offline census keys work unchanged.
+		[[nodiscard]] bool IsScopeAttachPoint(const char* a_name)
+		{
+			return a_name && _stricmp(a_name, "P-Scope") == 0;
+		}
+
+		// "HuntingScope:2" -> "HuntingScope". Shapes from one mesh share the stem,
+		// so all three of the hunting rifle's shapes resolve to the same key.
+		void StripShapeSuffix(char (&a_name)[kNameLen])
+		{
+			if (auto* colon = std::strchr(a_name, ':'); colon) {
+				*colon = '\0';
+			}
+		}
+
+		void Walk(std::uintptr_t a_node, Info& a_out, int a_depth, bool a_inScope)
 		{
 			if (!a_node) {
 				return;
@@ -171,12 +204,32 @@ namespace TrueScopes::ScopeIdent
 			}
 			++a_out.nodesVisited;
 
-			if (a_out.nameCount < kMaxNames) {
-				if (NodeName(a_node, a_out.names[a_out.nameCount])) {
+			char name[kNameLen] = {};
+			const bool named = NodeName(a_node, name);
+			if (named) {
+				if (a_out.nameCount < kMaxNames) {
+					CopyName(a_out.names[a_out.nameCount], name);
 					++a_out.nameCount;
+				} else {
+					++a_out.nameOverflow;
 				}
-			} else {
-				++a_out.nameOverflow;
+			}
+
+			// Everything below the attach point is the scope, including the point
+			// itself (harmless: "P-Scope" is not a table key).
+			const bool inScope = a_inScope || (named && IsScopeAttachPoint(name));
+			if (inScope && named && a_out.scopeNameCount < kMaxScopeNames) {
+				char key[kNameLen] = {};
+				CopyName(key, name);
+				StripShapeSuffix(key);
+				bool dupe = IsScopeAttachPoint(key);
+				for (std::uint32_t i = 0; !dupe && i < a_out.scopeNameCount; ++i) {
+					dupe = std::strcmp(a_out.scopeNames[i], key) == 0;
+				}
+				if (!dupe && key[0]) {
+					CopyName(a_out.scopeNames[a_out.scopeNameCount], key);
+					++a_out.scopeNameCount;
+				}
 			}
 
 			if (!IsNode(a_node)) {
@@ -188,7 +241,7 @@ namespace TrueScopes::ScopeIdent
 				return;
 			}
 			for (std::uint16_t i = 0; i < count; ++i) {
-				Walk(*reinterpret_cast<std::uintptr_t*>(children + i * 8ull), a_out, a_depth + 1);
+				Walk(*reinterpret_cast<std::uintptr_t*>(children + i * 8ull), a_out, a_depth + 1, inScope);
 			}
 		}
 
@@ -240,7 +293,7 @@ namespace TrueScopes::ScopeIdent
 			}
 			a_out.weaponNode = node;
 			NodeName(node, a_out.weaponNodeName);
-			Walk(node, a_out, 0);
+			Walk(node, a_out, 0, false);
 		}
 
 		// SEH wrapper. Its own function because __try cannot coexist with objects
@@ -266,17 +319,21 @@ namespace TrueScopes::ScopeIdent
 			if (!*Settings::perScopeAperture) {
 				return;
 			}
-			for (std::uint32_t i = 0; i < a_out.nameCount; ++i) {
-				if (const auto over = Settings::ScopeApertureOverride(a_out.names[i]); over > 0.0) {
-					CopyName(a_out.matched, a_out.names[i]);
+			// Only names from under P-Scope are candidates. Matching the whole
+			// weapon would let a key like "Scope" hit an unrelated node and fit the
+			// lens to it with complete confidence -- a wrong answer that looks like
+			// a right one, which is the failure mode this project keeps meeting.
+			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
+				if (const auto over = Settings::ScopeApertureOverride(a_out.scopeNames[i]); over > 0.0) {
+					CopyName(a_out.matched, a_out.scopeNames[i]);
 					a_out.aperture = static_cast<float>(over);
 					a_out.fromTable = true;
 					return;
 				}
 			}
-			for (std::uint32_t i = 0; i < a_out.nameCount; ++i) {
+			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
 				for (const auto& e : kTable) {
-					if (std::strcmp(e.node, a_out.names[i]) == 0) {
+					if (std::strcmp(e.node, a_out.scopeNames[i]) == 0) {
 						CopyName(a_out.matched, e.node);
 						a_out.aperture = e.aperture;
 						a_out.fromTable = true;
@@ -313,17 +370,25 @@ namespace TrueScopes::ScopeIdent
 			// When nothing matched, the names ARE the finding: they are what a user
 			// (or the next session) needs in order to add a [Scopes] entry. Print
 			// them rather than making someone attach a debugger to see them.
-			if (!a_i.fromTable && a_i.nameCount) {
-				std::string all;
-				for (std::uint32_t i = 0; i < a_i.nameCount; ++i) {
-					if (i) {
-						all += ", ";
+			if (!a_i.fromTable) {
+				if (a_i.scopeNameCount) {
+					std::string all;
+					for (std::uint32_t i = 0; i < a_i.scopeNameCount; ++i) {
+						if (i) {
+							all += ", ";
+						}
+						all += a_i.scopeNames[i];
 					}
-					all += a_i.names[i];
+					logger::info(FMT_STRING("SCOPE IDENT: no table entry. Add one under [Scopes] in "
+					                        "TrueScopesVR.toml keyed by one of: {}"),
+						all);
+				} else {
+					// No P-Scope subtree at all: either this weapon mounts its optic
+					// somewhere else, or there is no optic on it. Distinguishable from
+					// "found it, do not know it", and worth saying so.
+					logger::info("SCOPE IDENT: no P-Scope attach point in this weapon's 3D — "
+					             "nothing to key on, using the fallback aperture"sv);
 				}
-				logger::info(FMT_STRING("SCOPE IDENT: no table entry. Add one under [Scopes] in "
-				                        "TrueScopesVR.toml keyed by one of: {}"),
-					all);
 			}
 		}
 	}

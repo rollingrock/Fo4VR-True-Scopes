@@ -1158,7 +1158,14 @@ namespace DevBench
 			out += ",\"nodesVisited\":" + std::to_string(i.nodesVisited);
 			out += ",\"nameOverflow\":" + std::to_string(i.nameOverflow);
 			out += ",\"clipped\":" + std::to_string(i.clipped);
-			out += ",\"names\":[";
+			out += ",\"scopeNames\":[";
+			for (std::uint32_t n = 0; n < i.scopeNameCount; ++n) {
+				if (n) {
+					out += ",";
+				}
+				out += Quote(i.scopeNames[n]);
+			}
+			out += "],\"names\":[";
 			for (std::uint32_t n = 0; n < i.nameCount; ++n) {
 				if (n) {
 					out += ",";

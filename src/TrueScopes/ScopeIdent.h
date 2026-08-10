@@ -34,6 +34,10 @@ namespace TrueScopes::ScopeIdent
 	// then reported "no table match" as if the walk had failed. A truncated name
 	// list is now also counted and warned about, so the same silence cannot recur.
 	inline constexpr std::size_t kMaxNames = 192;
+	// Names found under the weapon's P-Scope attach point, de-duplicated and
+	// with their ":N" shape suffix stripped. A scope is a handful of shapes,
+	// so this is generous.
+	inline constexpr std::size_t kMaxScopeNames = 16;
 	inline constexpr std::size_t kNameLen = 64;
 
 	struct Info
@@ -53,6 +57,8 @@ namespace TrueScopes::ScopeIdent
 		std::uint32_t  clipped = 0;       // subtrees refused by the depth/node caps
 		std::uintptr_t weaponNode = 0;    // so a /read can walk the tree by hand
 		char           names[kMaxNames][kNameLen] = {};
+		std::uint32_t  scopeNameCount = 0;
+		char           scopeNames[kMaxScopeNames][kNameLen] = {};
 	};
 
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
