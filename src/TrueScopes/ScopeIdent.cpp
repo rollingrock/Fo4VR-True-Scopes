@@ -323,13 +323,26 @@ namespace TrueScopes::ScopeIdent
 			// weapon would let a key like "Scope" hit an unrelated node and fit the
 			// lens to it with complete confidence -- a wrong answer that looks like
 			// a right one, which is the failure mode this project keeps meeting.
+			// A TOML entry wins outright, and it may specify position, radius or
+			// both -- an entry with only offsets means "the built-in radius is
+			// fine, where you put it is not", which is exactly the defect the
+			// 2026-08-10 screenshots showed.
 			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
-				if (const auto over = Settings::ScopeApertureOverride(a_out.scopeNames[i]); over > 0.0) {
-					CopyName(a_out.matched, a_out.scopeNames[i]);
-					a_out.aperture = static_cast<float>(over);
+				const auto e = Settings::ScopeEntryFor(a_out.scopeNames[i]);
+				const bool haveOffset = !std::isnan(e.offsetX) || !std::isnan(e.offsetY) || !std::isnan(e.offsetZ);
+				if (e.aperture <= 0.0 && !haveOffset) {
+					continue;
+				}
+				CopyName(a_out.matched, a_out.scopeNames[i]);
+				a_out.offsetX = static_cast<float>(e.offsetX);
+				a_out.offsetY = static_cast<float>(e.offsetY);
+				a_out.offsetZ = static_cast<float>(e.offsetZ);
+				if (e.aperture > 0.0) {
+					a_out.aperture = static_cast<float>(e.aperture);
 					a_out.fromTable = true;
 					return;
 				}
+				break;  // offsets taken; fall through so the built-in radius still applies
 			}
 			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
 				for (const auto& e : kTable) {
@@ -436,6 +449,28 @@ namespace TrueScopes::ScopeIdent
 			return static_cast<float>(*Settings::widgetApertureRadius);
 		}
 		return g_info.aperture;
+	}
+
+	void WidgetOffsets(float& a_x, float& a_y, float& a_z)
+	{
+		a_x = static_cast<float>(*Settings::widgetOffsetX);
+		a_y = static_cast<float>(*Settings::widgetOffsetY);
+		a_z = static_cast<float>(*Settings::widgetOffsetZ);
+		const std::scoped_lock lock(g_lock);
+		if (!g_info.probed || !*Settings::perScopeAperture) {
+			return;
+		}
+		// Per axis, not all-or-nothing: a scope that only needs its vertical
+		// position corrected should not have to restate the other two.
+		if (!std::isnan(g_info.offsetX)) {
+			a_x = g_info.offsetX;
+		}
+		if (!std::isnan(g_info.offsetY)) {
+			a_y = g_info.offsetY;
+		}
+		if (!std::isnan(g_info.offsetZ)) {
+			a_z = g_info.offsetZ;
+		}
 	}
 
 	float FovMult()

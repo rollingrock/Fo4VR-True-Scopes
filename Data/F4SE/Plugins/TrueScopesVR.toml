@@ -22,9 +22,15 @@ lensMode = 2
 # Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
 # driven by the weapon's zoom data later.
 # 0 = derive from the weapon's own magnification (see Settings.h); any positive
-# value overrides it. 2.4 is the hand-tuned hunting rifle value, kept until the
-# derived figure is confirmed in VR against it.
-scopeFovDegrees = 2.4
+# value overrides it.
+#
+# VR-CONFIRMED 2026-08-10 on the hunting rifle's 6x long scope: derived reads
+# 1.53-1.60 deg against the old hand-tuned 2.40. User verdict: "it's more
+# magnified, looked fine", no visible breathing as the field tracks head
+# distance. The old 2.4 was showing about 4.2x on a scope that claims 6x --
+# tuned to look good rather than to be faithful, which is why the two numbers
+# were never going to agree.
+scopeFovDegrees = 0.0
 
 # Scope camera frustum near/far planes. near must be < far (near==far is a NaN
 # projection and a black lens). 15 = engine default near.
@@ -178,8 +184,12 @@ widgetFitEnabled = true
 perScopeAperture = true
 widgetApertureRadius = 1.267
 widgetScaleOverride = 0.0
+# Fallback widget position for scopes with no per-scope entry below. The old
+# -1.8 here was tuned for the hunting rifle and was visibly wrong on other
+# optics (screenshots 20260810134759/...134809: the disc sat above and behind
+# the scope), so it now lives in [Scopes.HuntingScope] where it belongs.
 widgetOffsetX = 0.0
-widgetOffsetY = -1.8
+widgetOffsetY = 0.0
 widgetOffsetZ = 0.0
 
 # ---------------------------------------------------------------------------
@@ -204,6 +214,18 @@ widgetOffsetZ = 0.0
 # THIS MUST BE THE LAST SECTION IN THE FILE — every key below a TOML section
 # header belongs to that section, so anything added after it would silently
 # stop being a TrueScopesVR setting.
+# Short form  -- aperture only:
+#     HuntingScope = 1.267
+# Long form   -- aperture and/or position:
+#     [Scopes.HuntingScope]
+#     aperture = 1.267
+#     offsetY  = -1.8
+# An entry may set position ONLY; the built-in radius still applies. That is the
+# common case for a scope whose size is fine but which sits off the lens.
 [Scopes]
-# HuntingScope = 1.267
-# PlasmaScope = 4.564
+
+# VR-confirmed on the hunting rifle (user: "pretty damn close"). The aperture is
+# the built-in 1.267 -- the one measured clear aperture in the whole table, since
+# this is the only shipped scope with a distinct glass shape.
+[Scopes.HuntingScope]
+offsetY = -1.8

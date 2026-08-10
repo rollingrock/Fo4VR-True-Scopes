@@ -51,6 +51,13 @@ namespace TrueScopes::ScopeIdent
 		char          matched[kNameLen] = {};  // node name that keyed the table ("" = none)
 		float         aperture = 0.0f;         // resolved ocular radius actually in use
 		bool          fromTable = false;       // false = fell back to widgetApertureRadius
+		// Per-scope widget POSITION. NaN = this scope does not specify the axis, so
+		// the global widgetOffset* setting applies; 0.0 is a real, deliberate zero.
+		// Radius alone cannot fit a lens: a correctly sized disc in the wrong place
+		// still misses it, which is what the 2026-08-10 screenshots showed.
+		float         offsetX = std::numeric_limits<float>::quiet_NaN();
+		float         offsetY = std::numeric_limits<float>::quiet_NaN();
+		float         offsetZ = std::numeric_limits<float>::quiet_NaN();
 		std::uint32_t  nodesVisited = 0;
 		std::uint32_t  nameCount = 0;
 		std::uint32_t  nameOverflow = 0;  // names the buffer could not hold
@@ -72,6 +79,10 @@ namespace TrueScopes::ScopeIdent
 	// widgetApertureRadius setting when the equipped scope is not in the table,
 	// so an unknown or modded scope behaves exactly as it did before v0.2.85.
 	float ApertureRadius();
+
+	// Widget offset for the equipped scope, falling back to the global
+	// widgetOffset* settings for any axis this scope does not specify.
+	void WidgetOffsets(float& a_x, float& a_y, float& a_z);
 
 	// Magnification of the equipped scope (zoomData fovMult). 1.0 when unknown.
 	float FovMult();

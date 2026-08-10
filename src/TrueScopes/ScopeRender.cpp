@@ -1350,9 +1350,9 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
-			const auto ox = static_cast<float>(*Settings::widgetOffsetX);
-			const auto oy = static_cast<float>(*Settings::widgetOffsetY);
-			const auto oz = static_cast<float>(*Settings::widgetOffsetZ);
+			// v0.2.91: per-scope, falling back per axis to the global settings.
+			float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+			ScopeIdent::WidgetOffsets(ox, oy, oz);
 
 			// Only touch the node when something actually changed — NiAVObject::Update walks
 			// the subtree, and the engine itself only does this at equip.

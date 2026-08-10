@@ -389,17 +389,41 @@ namespace Settings
 	// Written on the game thread at scope-in, read on the render thread during a
 	// probe, hence the lock. Contention is nil (both are rare events); correctness
 	// is not, since the map reallocates on reload.
-	inline std::mutex                                     scopeApertureLock;
-	inline std::map<std::string, double, std::less<>>     scopeApertures;
+	// v0.2.91: a scope entry carries POSITION as well as size. VR screenshots on
+	// 2026-08-10 (20260810134759 / ...134809) showed the disc sitting above and
+	// behind a non-hunting-rifle scope, plainly detached from it: widgetOffsetY
+	// = -1.8 was tuned for the hunting rifle and is wrong for every other optic.
+	// Radius alone can never fix that -- a correctly sized disc in the wrong place
+	// still misses the lens.
+	//
+	// NaN means "not specified, use the global setting", which is distinct from a
+	// deliberate 0.0. Offsets legitimately want to be zero, so 0 cannot double as
+	// the absent value the way it can for a radius.
+	struct ScopeEntry
+	{
+		double aperture = 0.0;  // 0 = not specified
+		double offsetX = std::numeric_limits<double>::quiet_NaN();
+		double offsetY = std::numeric_limits<double>::quiet_NaN();
+		double offsetZ = std::numeric_limits<double>::quiet_NaN();
+	};
 
-	// Radius for a node name, or 0.0 when the user has not overridden it. 0 means
-	// "no opinion" rather than "zero radius": a real 0 would collapse the widget,
-	// so it is rejected at load rather than being allowed to mean something.
-	[[nodiscard]] inline double ScopeApertureOverride(std::string_view a_node)
+	inline std::mutex                                        scopeApertureLock;
+	inline std::map<std::string, ScopeEntry, std::less<>>    scopeEntries;
+
+	// The entry for a node name, or an all-unspecified one. Never throws, never
+	// blocks for long: both writer (scope-in) and reader (a probe) are rare.
+	[[nodiscard]] inline ScopeEntry ScopeEntryFor(std::string_view a_node)
 	{
 		const std::scoped_lock lock(scopeApertureLock);
-		const auto             it = scopeApertures.find(a_node);
-		return it == scopeApertures.end() ? 0.0 : it->second;
+		const auto             it = scopeEntries.find(a_node);
+		return it == scopeEntries.end() ? ScopeEntry{} : it->second;
+	}
+
+	// Kept as its own accessor because the aperture is what decides whether a scope
+	// counts as "known", and 0 is the unambiguous "no opinion" for it.
+	[[nodiscard]] inline double ScopeApertureOverride(std::string_view a_node)
+	{
+		return ScopeEntryFor(a_node).aperture;
 	}
 
 	inline void load()
@@ -468,31 +492,68 @@ namespace Settings
 #undef LOAD
 
 		// [Scopes] -- every key is a node name, so it cannot be a LOAD() list.
+		// Two accepted forms, because the common case deserves the short one:
+		//     HuntingScope = 1.267                              (aperture only)
+		//     [Scopes.HuntingScope]                             (full entry)
+		//     aperture = 1.267
+		//     offsetY  = -1.8
 		{
-			std::map<std::string, double, std::less<>> fresh;
+			std::map<std::string, ScopeEntry, std::less<>> fresh;
 			if (const auto* scopes = config["Scopes"].as_table()) {
 				for (const auto& [key, value] : *scopes) {
-					double radius = 0.0;
-					if (const auto* f = value.as_floating_point()) {
-						radius = f->get();
-					} else if (const auto* i = value.as_integer()) {
-						radius = static_cast<double>(i->get());
+					const std::string name{ key.str() };
+					ScopeEntry        e;
+
+					const auto readNumber = [](const toml::node& a_n, double& a_out) {
+						if (const auto* f = a_n.as_floating_point()) {
+							a_out = f->get();
+							return true;
+						}
+						if (const auto* i = a_n.as_integer()) {
+							a_out = static_cast<double>(i->get());
+							return true;
+						}
+						return false;
+					};
+
+					if (const auto* sub = value.as_table()) {
+						if (const auto* n = sub->get("aperture")) {
+							readNumber(*n, e.aperture);
+						}
+						if (const auto* n = sub->get("offsetX")) {
+							readNumber(*n, e.offsetX);
+						}
+						if (const auto* n = sub->get("offsetY")) {
+							readNumber(*n, e.offsetY);
+						}
+						if (const auto* n = sub->get("offsetZ")) {
+							readNumber(*n, e.offsetZ);
+						}
+					} else {
+						readNumber(value, e.aperture);
 					}
+
 					// A zero or absurd radius makes the lens vanish or swallow the
 					// view, which reads as a broken render rather than a bad setting.
 					// Say which entry is wrong instead of silently fitting to it.
-					if (radius > 0.01 && radius < 64.0) {
-						fresh.emplace(std::string(key.str()), radius);
+					// An entry with offsets and no aperture is legitimate: it means
+					// "the built-in radius is fine, the position is not".
+					const bool haveOffset = !std::isnan(e.offsetX) || !std::isnan(e.offsetY) || !std::isnan(e.offsetZ);
+					if (e.aperture != 0.0 && !(e.aperture > 0.01 && e.aperture < 64.0)) {
+						logger::warn(FMT_STRING("[Scopes] {}: aperture {} ignored (expected 0.01 to 64)"), name, e.aperture);
+						e.aperture = 0.0;
+					}
+					if (e.aperture > 0.0 || haveOffset) {
+						fresh.emplace(name, e);
 					} else {
-						logger::warn(FMT_STRING("[Scopes] {} = {} ignored (expected a radius between 0.01 and 64)"),
-							std::string(key.str()), radius);
+						logger::warn(FMT_STRING("[Scopes] {}: nothing usable in this entry"), name);
 					}
 				}
 			}
 			const std::scoped_lock lock(scopeApertureLock);
-			scopeApertures = std::move(fresh);
-			if (!scopeApertures.empty()) {
-				logger::info(FMT_STRING("[Scopes]: {} aperture override(s) loaded"), scopeApertures.size());
+			scopeEntries = std::move(fresh);
+			if (!scopeEntries.empty()) {
+				logger::info(FMT_STRING("[Scopes]: {} per-scope entr(ies) loaded"), scopeEntries.size());
 			}
 		}
 
