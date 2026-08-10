@@ -110,6 +110,20 @@ namespace TrueScopes::ScopeRender
 	};
 	Diagnostics GetDiagnostics();
 
+	// v0.2.90 derived FOV. `derived` is computed every render whether or not it is
+	// used, so it can be compared against a hand-tuned scopeFovDegrees before
+	// anyone trusts it. `used` is what SetCameraFOV actually got.
+	//   theta_render = 2*atan( (R / d) / M )
+	//   R = lens disc world radius, d = eye-to-lens distance, M = zoomData fovMult
+	struct FovInfo
+	{
+		float used;
+		float derived;
+		float discRadius;
+		float eyeDistance;
+	};
+	FovInfo GetFovInfo();
+
 	// --- v0.2.73 stage stopwatch ---------------------------------------------
 	// Mean milliseconds per stage of our own render since the last reset, measured
 	// on BOTH timelines: GPU via D3D11 timestamp queries, CPU via QPC across the

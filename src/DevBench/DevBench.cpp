@@ -1152,6 +1152,13 @@ namespace DevBench
 			out += ",\"weaponNode\":" + Quote(Hex(i.weaponNode));
 			out += ",\"fovMult\":" + std::to_string(i.fovMult);
 			out += ",\"zoomFovAt90\":" + std::to_string(i.zoomFovAt90);
+			{
+				const auto f = TrueScopes::ScopeRender::GetFovInfo();
+				out += ",\"fovUsed\":" + std::to_string(f.used);
+				out += ",\"fovDerived\":" + std::to_string(f.derived);
+				out += ",\"lensRadiusWorld\":" + std::to_string(f.discRadius);
+				out += ",\"eyeToLens\":" + std::to_string(f.eyeDistance);
+			}
 			out += ",\"aperture\":" + std::to_string(i.aperture);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");

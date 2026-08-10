@@ -70,9 +70,24 @@ namespace Settings
 	// 2 = real mono world render from the scope camera (falls back to 1 on init failure
 	// or a render fault).
 	MAKE_SETTING(iSetting, "TrueScopesVR", lensMode, std::int64_t(2));
-	// Scope render field of view in degrees (phase 2a fixed value; weapon zoomData wiring
-	// comes later).
-	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 15.0);
+	// Scope render field of view in degrees.
+	//
+	// 0 = DERIVE IT (v0.2.90, recommended). The render FOV is fixed by the scope's
+	// real magnification M and the lens geometry:
+	//        theta_render = 2*atan( (R / d) / M )
+	// with R the lens disc's world radius, d the eye-to-lens distance, and M the
+	// weapon's own zoomData fovMult (6.0 for the hunting rifle's long scope). That
+	// makes a 4x scope genuinely 4x, per weapon, with nothing to hand-tune. It is
+	// recomputed each render on purpose: a real scope keeps its magnification as
+	// you move your head back and merely narrows what you can see, which is what
+	// recomputing d reproduces.
+	//
+	// Any positive value overrides the derivation. 2.4 was the hand-tuned hunting
+	// rifle value and is kept as the default until the derived one is confirmed in
+	// VR against it -- the derived figure is logged every heartbeat either way, so
+	// the comparison costs nothing and replacing a known-good calibration with an
+	// unverified formula costs a session.
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 2.4);
 	// Frustum near/far planes for the scope camera. SetCameraFOV takes them as
 	// (FAR, NEAR) — the code passes them in that order (v0.2.36 depth-inversion fix;
 	// the swapped order reversed the projection → farthest-wins depth). near==far

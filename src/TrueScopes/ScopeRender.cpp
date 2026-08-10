@@ -1190,6 +1190,97 @@ namespace TrueScopes::ScopeRender
 			Fn<NiAVObjectUpdate_t>(0x1c22fb0)(a_sp, upd);
 		}
 
+		// --- derived scope FOV (v0.2.90) -----------------------------------------
+		// Stop hand-tuning scopeFovDegrees. What the player should perceive is the
+		// scope's real magnification M, and that fixes the render FOV completely:
+		//
+		//   the lens disc has world radius  R = 7.852 * ScopeParent.worldScale
+		//   the eye sits distance           d  from the disc centre
+		//   so the disc subtends            tan(theta_disc / 2) = R / d
+		//   and a point rendered at angle b lands where the eye sees it at
+		//   tan-1( tan(b) * (R/d) / tan(theta_render/2) ), i.e.
+		//                                   M = tan(theta_disc/2) / tan(theta_render/2)
+		//   therefore                       theta_render = 2*atan( (R/d) / M )
+		//
+		// M comes from the weapon's zoomData fovMult (6.0 on the hunting rifle's
+		// long scope, read live), so this generalises to every optic for free.
+		//
+		// Computing d per render is not an approximation of a fixed value, it is
+		// more correct than one: a real scope's magnification does not change as
+		// you move your head back, but its visible field narrows. Recomputing does
+		// exactly that. It also costs nothing -- SetCameraFOV already runs every render.
+		//
+		// Layout, all read out of the VR binary rather than assumed:
+		//   NiAVObject world transform +0x70, world translate +0xa0, world scale +0xac
+		//     (NiAVObject::UpdateWorldData 0x141c23740 copies local 0x30..0x6c into
+		//      exactly those slots when a node has no parent)
+		//   PlayerCamera singleton  [0x145930608]   (RIP-decoded at 0x1412c55f6)
+		//   camera root = PlayerCamera+0x20         (TESCamera::GetCameraRoot 0x14081ee70
+		//      is nothing but a refcounted read of that field)
+		constexpr std::uintptr_t kPlayerCameraPtr = 0x5930608;
+		constexpr std::uintptr_t kCameraRootInCamera = 0x20;
+		constexpr std::uintptr_t kWorldTranslate = 0xa0;
+		constexpr std::uintptr_t kWorldScale = 0xac;
+
+		float g_derivedFovDeg = 0.0f;  // last derived value, reported whether used or not
+		float g_lastFovDeg = 0.0f;     // the FOV actually handed to SetCameraFOV
+		float g_derivedEyeDist = 0.0f;
+		float g_derivedDiscR = 0.0f;
+
+		// Returns 0 when the geometry is not available or not sane, so the caller
+		// keeps the configured value rather than pointing the camera at a guess.
+		float DeriveScopeFovDegrees(std::uintptr_t a_player)
+		{
+			g_derivedFovDeg = 0.0f;
+			g_derivedEyeDist = 0.0f;
+			g_derivedDiscR = 0.0f;
+
+			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
+			if (!sp) {
+				return 0.0f;
+			}
+			const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraPtr);
+			if (!playerCam) {
+				return 0.0f;
+			}
+			const auto camRoot = *reinterpret_cast<std::uintptr_t*>(playerCam + kCameraRootInCamera);
+			if (!camRoot) {
+				return 0.0f;
+			}
+
+			const auto* disc = reinterpret_cast<const float*>(sp + kWorldTranslate);
+			const auto  discScale = *reinterpret_cast<const float*>(sp + kWorldScale);
+			const auto* eye = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
+
+			const float dx = eye[0] - disc[0];
+			const float dy = eye[1] - disc[1];
+			const float dz = eye[2] - disc[2];
+			const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+			const float R = kVanillaRenderCircleRadius * discScale;
+
+			// Bounds are deliberately wide: they exist to catch a stale or garbage
+			// transform (a node the engine has not updated reads as the origin, which
+			// would make d enormous or zero), not to second-guess a real measurement.
+			if (!std::isfinite(d) || !std::isfinite(R) || d < 1.0f || d > 200.0f || R <= 0.001f) {
+				return 0.0f;
+			}
+
+			const float m = ScopeIdent::FovMult();
+			if (!(m > 0.01f)) {
+				return 0.0f;
+			}
+
+			const float fovDeg = 2.0f * std::atan((R / d) / m) * (180.0f / 3.14159265358979f);
+			if (!std::isfinite(fovDeg) || fovDeg < 0.05f || fovDeg > 170.0f) {
+				return 0.0f;
+			}
+
+			g_derivedFovDeg = fovDeg;
+			g_derivedEyeDist = d;
+			g_derivedDiscR = R;
+			return fovDeg;
+		}
+
 		void ApplyWidgetFit(std::uintptr_t a_player)
 		{
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
@@ -1327,6 +1418,19 @@ namespace TrueScopes::ScopeRender
 			// in a per-frame path. Must precede ApplyWidgetFit, which consumes the
 			// aperture it resolves.
 			ScopeIdent::RunIfRequested(player);
+
+			// v0.2.90: derive the FOV from the scope's real magnification and the
+			// lens geometry. ALWAYS computed so it can be compared against the
+			// hand-tuned value in the log, but only USED when scopeFovDegrees is 0 —
+			// a new derivation that quietly replaces a VR-confirmed calibration is
+			// how you lose a known-good state without noticing.
+			if (const float derived = DeriveScopeFovDegrees(player); derived > 0.0f && a_fovDeg <= 0.0f) {
+				a_fovDeg = derived;
+			}
+			if (a_fovDeg <= 0.0f) {
+				return;  // asked to derive, could not; a zero FOV renders nothing useful
+			}
+			g_lastFovDeg = a_fovDeg;
 
 			// Fit the vanilla widget to the real scope's lens. Cheap: it compares against
 			// the last applied values and only touches the node (and runs
@@ -2812,7 +2916,7 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunDrew={} (drew={} gated={}) sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{})"),
+				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunDrew={} (drew={} gated={}) sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{}) fov={:.3f} derived={:.3f} (M={:.2f} R={:.3f} d={:.2f})"),
 				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
 				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
 				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
@@ -2824,7 +2928,8 @@ namespace TrueScopes::ScopeRender
 				g_diagCullFix, g_diagFrustumAliased,
 				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
 				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
-				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5]);
+				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5],
+				g_lastFovDeg, g_derivedFovDeg, ScopeIdent::FovMult(), g_derivedDiscR, g_derivedEyeDist);
 
 			// v0.2.75: the sun's own inputs. A basis of zeros (or garbage) here IS the
 			// answer to "why does the sun pass add nothing" — see the note at the
@@ -2996,6 +3101,11 @@ namespace TrueScopes::ScopeRender
 	std::uint64_t LastDumpIndex()
 	{
 		return g_lastDumpIndex.load();
+	}
+
+	FovInfo GetFovInfo()
+	{
+		return { g_lastFovDeg, g_derivedFovDeg, g_derivedDiscR, g_derivedEyeDist };
 	}
 
 	Diagnostics GetDiagnostics()

@@ -21,6 +21,9 @@ lensMode = 2
 
 # Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
 # driven by the weapon's zoom data later.
+# 0 = derive from the weapon's own magnification (see Settings.h); any positive
+# value overrides it. 2.4 is the hand-tuned hunting rifle value, kept until the
+# derived figure is confirmed in VR against it.
 scopeFovDegrees = 2.4
 
 # Scope camera frustum near/far planes. near must be < far (near==far is a NaN
