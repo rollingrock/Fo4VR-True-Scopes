@@ -454,7 +454,8 @@ namespace DevBench
 				"{\"path\":\"/read\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64|ptr|bytes|cstr&count=N\"},"
 				"{\"path\":\"/poke\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V - write one scalar, SEH-guarded; echoes before/after so you have an undo\"},"
 				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"},"
-				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the aperture in use and where it came from\"}"
+				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the aperture in use and where it came from\"},"
+				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
 		}
 
@@ -958,6 +959,153 @@ namespace DevBench
 			return out;
 		}
 
+		// ------------------------------------------------- OMOD enumeration
+		// Every weapon mod in the CURRENT load order, so we can see which scopes a
+		// user actually has -- including modded ones the built-in aperture table has
+		// never heard of. No equipping, no console, no interaction.
+		//
+		// The form arrays are read exactly as TESDataHandler::GetFormOfTypeAtIndex
+		// (0x14011a470) does: data pointer at handler+0x68+type*0x18, u32 count at
+		// handler+0x78+type*0x18. The singleton pointer is 0x145930b50, RIP-decoded
+		// from "MOV RCX, qword ptr [...]" ahead of the GetSizeOfFormList call at
+		// 0x14047fb94 -- not from a Ghidra data label, which this binary gets wrong
+		// for high .data (see Addresses.h).
+		constexpr std::uintptr_t kDataHandlerPtr = 0x5930b50;
+		constexpr std::uint8_t   kFormTypeOMOD = 0x90;  // ENUM_FORM_ID::kOMOD
+		constexpr std::uintptr_t kFormIDOffset = 0x14;
+
+		// A form's strings are found by SCANNING its head for pointers that resolve
+		// to printable C strings, rather than by reading TESFullName+0x28 and
+		// TESModel+0x50 at their CommonLibF4 (flatrim) offsets. Those offsets are
+		// exactly the kind of thing that shifts between flatrim and VR, and a wrong
+		// one here reads adjacent memory as a string -- which looks like data rather
+		// than like a bug. Scanning with a validating predicate is correct whatever
+		// the layout is, and reporting every hit means the real layout is visible in
+		// the output instead of assumed.
+		bool ReadCStringAt(std::uintptr_t a_ptr, char* a_out, std::size_t a_cap)
+		{
+			if (a_ptr < 0x10000 || (a_ptr & 1)) {
+				return false;
+			}
+			char buf[192] = {};
+			if (!SafeReadBytes(reinterpret_cast<const void*>(a_ptr), buf, sizeof(buf) - 1)) {
+				return false;
+			}
+			std::size_t n = 0;
+			while (n < sizeof(buf) - 1 && buf[n]) {
+				const auto c = static_cast<unsigned char>(buf[n]);
+				if (c < 0x20 || c > 0x7e) {
+					return false;  // not text
+				}
+				++n;
+			}
+			if (n < 3 || n >= sizeof(buf) - 1) {
+				return false;  // empty, or no terminator in range
+			}
+			// Not std::min: windows.h defines a min macro here and NOMINMAX is not set.
+			const std::size_t copy = (n < a_cap - 1) ? n : a_cap - 1;
+			std::memcpy(a_out, buf, copy);
+			a_out[copy] = '\0';
+			return true;
+		}
+
+		std::string HandleOmods(const Request& a_req)
+		{
+			std::string filter = a_req.GetOr("filter", "");
+			for (auto& c : filter) {
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			}
+			std::int64_t limit = 400;
+			{
+				const std::string l = a_req.GetOr("limit", "400");
+				std::from_chars(l.data(), l.data() + l.size(), limit);
+			}
+			limit = std::clamp<std::int64_t>(limit, 1, 4000);
+
+			const auto     base = REL::Module::get().base();
+			std::uintptr_t handler = 0;
+			if (!SafeReadBytes(reinterpret_cast<const void*>(base + kDataHandlerPtr), &handler, sizeof(handler)) || !handler) {
+				return "{\"ok\":false,\"error\":\"TESDataHandler singleton is null - is a save loaded?\"}";
+			}
+
+			std::uintptr_t data = 0;
+			std::uint32_t  count = 0;
+			const auto     slot = static_cast<std::uintptr_t>(kFormTypeOMOD) * 0x18;
+			if (!SafeReadBytes(reinterpret_cast<const void*>(handler + 0x68 + slot), &data, sizeof(data)) ||
+				!SafeReadBytes(reinterpret_cast<const void*>(handler + 0x78 + slot), &count, sizeof(count))) {
+				return "{\"ok\":false,\"error\":\"could not read the OMOD form array\"}";
+			}
+			if (count > 200000) {
+				return "{\"ok\":false,\"error\":\"OMOD count looks wrong (" + std::to_string(count) + ") - layout mismatch, refusing to walk it\"}";
+			}
+
+			std::string out = "{\"ok\":true,\"total\":" + std::to_string(count);
+			out += ",\"filter\":" + Quote(filter) + ",\"rows\":[";
+
+			std::int64_t returned = 0;
+			bool         first = true;
+			for (std::uint32_t i = 0; i < count && returned < limit; ++i) {
+				std::uintptr_t form = 0;
+				if (!SafeReadBytes(reinterpret_cast<const void*>(data + i * 8ull), &form, sizeof(form)) || !form) {
+					continue;
+				}
+				std::uint32_t formID = 0;
+				SafeReadBytes(reinterpret_cast<const void*>(form + kFormIDOffset), &formID, sizeof(formID));
+
+				// Collect every printable string the form points at, with the slot
+				// offset it came from -- the offsets ARE the layout finding.
+				std::vector<std::pair<std::uintptr_t, std::string>> strings;
+				for (std::uintptr_t off = 0; off <= 0xC0; off += 8) {
+					std::uintptr_t slotPtr = 0;
+					if (!SafeReadBytes(reinterpret_cast<const void*>(form + off), &slotPtr, sizeof(slotPtr))) {
+						continue;
+					}
+					char text[160] = {};
+					if (ReadCStringAt(slotPtr, text, sizeof(text))) {
+						strings.emplace_back(off, text);
+					}
+				}
+				if (strings.empty()) {
+					continue;
+				}
+
+				if (!filter.empty()) {
+					bool hit = false;
+					for (const auto& [off, text] : strings) {
+						std::string lower = text;
+						for (auto& c : lower) {
+							c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+						}
+						if (lower.find(filter) != std::string::npos) {
+							hit = true;
+							break;
+						}
+					}
+					if (!hit) {
+						continue;
+					}
+				}
+
+				if (!first) {
+					out += ",";
+				}
+				first = false;
+				++returned;
+				out += "{\"formID\":" + Quote(Hex(formID)) + ",\"strings\":{";
+				bool f2 = true;
+				for (const auto& [off, text] : strings) {
+					if (!f2) {
+						out += ",";
+					}
+					f2 = false;
+					out += Quote(Hex(off)) + ":" + Quote(text);
+				}
+				out += "}}";
+			}
+			out += "],\"returned\":" + std::to_string(returned) + "}";
+			return out;
+		}
+
 		// Which scope is equipped, and everything the per-scope fit derives from it.
 		// The node NAMES are the point: when the aperture falls back, they are what a
 		// user needs to add a [Scopes] entry, and reading them here beats grepping a
@@ -1032,6 +1180,7 @@ namespace DevBench
 			if (a_req.path == "/poke")                          return HandlePoke(a_req);
 			if (a_req.path == "/log")                           return HandleLog(a_req);
 			if (a_req.path == "/scope")                         return HandleScope(a_req);
+			if (a_req.path == "/omods")                         return HandleOmods(a_req);
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}
 
