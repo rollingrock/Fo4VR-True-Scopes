@@ -974,36 +974,54 @@ namespace DevBench
 		constexpr std::uint8_t   kFormTypeOMOD = 0x90;  // ENUM_FORM_ID::kOMOD
 		constexpr std::uintptr_t kFormIDOffset = 0x14;
 
-		// A form's strings are found by SCANNING its head for pointers that resolve
-		// to printable C strings, rather than by reading TESFullName+0x28 and
-		// TESModel+0x50 at their CommonLibF4 (flatrim) offsets. Those offsets are
-		// exactly the kind of thing that shifts between flatrim and VR, and a wrong
-		// one here reads adjacent memory as a string -- which looks like data rather
-		// than like a bug. Scanning with a validating predicate is correct whatever
-		// the layout is, and reporting every hit means the real layout is visible in
-		// the output instead of assumed.
-		bool ReadCStringAt(std::uintptr_t a_ptr, char* a_out, std::size_t a_cap)
+		// A form's strings are found by SCANNING its head for BSFixedString fields,
+		// rather than by reading TESFullName+0x28 and TESModel+0x50 at their
+		// CommonLibF4 (flatrim) offsets. Those are exactly the kind of thing that
+		// shifts between flatrim and VR, and a wrong one reads adjacent memory as a
+		// string -- which looks like data rather than like a bug. Reporting the slot
+		// offset with every hit means the real layout shows up in the output.
+		//
+		// A BSFixedString field holds a BSStringPool::Entry*, NOT a char*. Measured
+		// live 2026-08-10 against an OMOD's model field:
+		//     entry+0x00  next/pool pointer
+		//     entry+0x10  u32 length          (read 43)
+		//     entry+0x18  the characters      ("Weapons\ReconScope\...nif", 43 long)
+		// The first cut of this scan treated every pointer slot as a char*, which
+		// found one "string" per form -- the texture-ID block at +0x58 rendering as
+		// "w@B}dds" -- and no model paths at all.
+		constexpr std::uintptr_t kStringPoolLength = 0x10;
+		constexpr std::uintptr_t kStringPoolChars = 0x18;
+
+		// Validate, do not trust: the declared length must agree with where the
+		// terminator actually sits, and every character must be printable. A field
+		// that fails simply is not reported.
+		bool ReadFixedStringAt(std::uintptr_t a_field, char* a_out, std::size_t a_cap)
 		{
-			if (a_ptr < 0x10000 || (a_ptr & 1)) {
+			std::uintptr_t entry = 0;
+			if (!SafeReadBytes(reinterpret_cast<const void*>(a_field), &entry, sizeof(entry)) || entry < 0x10000) {
 				return false;
 			}
-			char buf[192] = {};
-			if (!SafeReadBytes(reinterpret_cast<const void*>(a_ptr), buf, sizeof(buf) - 1)) {
+			std::uint32_t len = 0;
+			if (!SafeReadBytes(reinterpret_cast<const void*>(entry + kStringPoolLength), &len, sizeof(len))) {
 				return false;
 			}
-			std::size_t n = 0;
-			while (n < sizeof(buf) - 1 && buf[n]) {
-				const auto c = static_cast<unsigned char>(buf[n]);
+			if (len == 0 || len > 400) {
+				return false;
+			}
+			char buf[416] = {};
+			if (!SafeReadBytes(reinterpret_cast<const void*>(entry + kStringPoolChars), buf, len + 1)) {
+				return false;
+			}
+			if (buf[len] != '\0') {
+				return false;
+			}
+			for (std::uint32_t k = 0; k < len; ++k) {
+				const auto c = static_cast<unsigned char>(buf[k]);
 				if (c < 0x20 || c > 0x7e) {
-					return false;  // not text
+					return false;
 				}
-				++n;
 			}
-			if (n < 3 || n >= sizeof(buf) - 1) {
-				return false;  // empty, or no terminator in range
-			}
-			// Not std::min: windows.h defines a min macro here and NOMINMAX is not set.
-			const std::size_t copy = (n < a_cap - 1) ? n : a_cap - 1;
+			const std::size_t copy = (len < a_cap - 1) ? len : a_cap - 1;
 			std::memcpy(a_out, buf, copy);
 			a_out[copy] = '\0';
 			return true;
@@ -1056,12 +1074,8 @@ namespace DevBench
 				// offset it came from -- the offsets ARE the layout finding.
 				std::vector<std::pair<std::uintptr_t, std::string>> strings;
 				for (std::uintptr_t off = 0; off <= 0xC0; off += 8) {
-					std::uintptr_t slotPtr = 0;
-					if (!SafeReadBytes(reinterpret_cast<const void*>(form + off), &slotPtr, sizeof(slotPtr))) {
-						continue;
-					}
-					char text[160] = {};
-					if (ReadCStringAt(slotPtr, text, sizeof(text))) {
+					char text[416] = {};
+					if (ReadFixedStringAt(form + off, text, sizeof(text))) {
 						strings.emplace_back(off, text);
 					}
 				}

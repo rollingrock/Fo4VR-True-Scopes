@@ -94,9 +94,48 @@ namespace TrueScopes::ScopeIdent
 			a_dst[i] = '\0';
 		}
 
-		[[nodiscard]] const char* NodeName(std::uintptr_t a_node)
+		// A BSFixedString field holds a BSStringPool::Entry*, NOT a char*. Measured
+		// live 2026-08-10 against an OMOD's model field:
+		//     entry+0x00  next/pool pointer
+		//     entry+0x10  u32 length          (read 43)
+		//     entry+0x18  the characters      ("Weapons\ReconScope\...nif", 43 long)
+		// v0.2.85 read the field as a char* and so returned the entry header as
+		// text -- garbage for every node name. Validate rather than trust: the
+		// declared length must agree with where the terminator actually sits, and
+		// every character must be printable. A field that fails is reported as no
+		// name, which is a visible miss; a field that "succeeds" wrongly is a
+		// plausible-looking lie, and this project has been bitten by those.
+		constexpr std::uintptr_t kStringPoolLength = 0x10;
+		constexpr std::uintptr_t kStringPoolChars = 0x18;
+
+		[[nodiscard]] bool ReadFixedString(std::uintptr_t a_field, char (&a_out)[kNameLen])
 		{
-			return *reinterpret_cast<const char* const*>(a_node + kNameInNiObjectNET);
+			a_out[0] = '\0';
+			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_field);
+			if (entry < 0x10000) {
+				return false;
+			}
+			const auto len = *reinterpret_cast<std::uint32_t*>(entry + kStringPoolLength);
+			if (len == 0 || len > 512) {
+				return false;
+			}
+			const auto* chars = reinterpret_cast<const char*>(entry + kStringPoolChars);
+			if (chars[len] != '\0') {
+				return false;  // the length field and the terminator disagree
+			}
+			for (std::uint32_t i = 0; i < len; ++i) {
+				const auto c = static_cast<unsigned char>(chars[i]);
+				if (c < 0x20 || c > 0x7e) {
+					return false;
+				}
+			}
+			CopyName(a_out, chars);
+			return true;
+		}
+
+		[[nodiscard]] bool NodeName(std::uintptr_t a_node, char (&a_out)[kNameLen])
+		{
+			return ReadFixedString(a_node + kNameInNiObjectNET, a_out);
 		}
 
 		[[nodiscard]] bool IsNode(std::uintptr_t a_obj)
@@ -119,11 +158,8 @@ namespace TrueScopes::ScopeIdent
 			}
 			++a_out.nodesVisited;
 
-			if (const auto* name = NodeName(a_node); name && *name) {
-				if (a_out.nameCount < kMaxNames) {
-					CopyName(a_out.names[a_out.nameCount], name);
-					++a_out.nameCount;
-				}
+			if (a_out.nameCount < kMaxNames && NodeName(a_node, a_out.names[a_out.nameCount])) {
+				++a_out.nameCount;
 			}
 
 			if (!IsNode(a_node)) {
@@ -185,7 +221,7 @@ namespace TrueScopes::ScopeIdent
 			if (!node) {
 				return;
 			}
-			CopyName(a_out.weaponNode, NodeName(node));
+			NodeName(node, a_out.weaponNode);
 			Walk(node, a_out, 0);
 		}
 
