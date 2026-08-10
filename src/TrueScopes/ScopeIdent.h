@@ -28,7 +28,12 @@
 
 namespace TrueScopes::ScopeIdent
 {
-	inline constexpr std::size_t kMaxNames = 40;
+	// v0.2.88: was 40, which was not a safe margin -- it was less than one
+	// weapon. The hunting rifle's 3D walked to 50 nodes, so the first live probe
+	// stored the receiver, bolt, magazine and trigger and threw the scope away,
+	// then reported "no table match" as if the walk had failed. A truncated name
+	// list is now also counted and warned about, so the same silence cannot recur.
+	inline constexpr std::size_t kMaxNames = 192;
 	inline constexpr std::size_t kNameLen = 64;
 
 	struct Info
@@ -38,13 +43,16 @@ namespace TrueScopes::ScopeIdent
 		std::uint32_t weaponFormID = 0;
 		float         fovMult = 1.0f;      // scope magnification (1.0 = none/unknown)
 		float         zoomFovAt90 = 90.0f;  // engine's own zoom FOV for a 90 deg base
-		char          weaponNode[kNameLen] = {};
+		char          weaponNodeName[kNameLen] = {};
 		char          matched[kNameLen] = {};  // node name that keyed the table ("" = none)
 		float         aperture = 0.0f;         // resolved ocular radius actually in use
 		bool          fromTable = false;       // false = fell back to widgetApertureRadius
-		std::uint32_t nodesVisited = 0;
-		std::uint32_t nameCount = 0;
-		char          names[kMaxNames][kNameLen] = {};
+		std::uint32_t  nodesVisited = 0;
+		std::uint32_t  nameCount = 0;
+		std::uint32_t  nameOverflow = 0;  // names the buffer could not hold
+		std::uint32_t  clipped = 0;       // subtrees refused by the depth/node caps
+		std::uintptr_t weaponNode = 0;    // so a /read can walk the tree by hand
+		char           names[kMaxNames][kNameLen] = {};
 	};
 
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself

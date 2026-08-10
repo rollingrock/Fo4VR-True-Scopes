@@ -77,6 +77,12 @@ namespace TrueScopes::ScopeIdent
 			{ "PlasmaScope", 4.564f },
 		};
 
+		// Walk bounds. Generous relative to a weapon (the hunting rifle is 50 nodes,
+		// 6 deep) but still bounded, so a corrupt child count or a cyclic graph costs
+		// a fixed number of reads instead of hanging the render thread.
+		constexpr int          kMaxDepth = 16;
+		constexpr std::uint32_t kMaxNodes = 2048;
+
 		std::atomic_bool g_request{ true };  // probe once as soon as a render happens
 		std::mutex       g_lock;
 		Info             g_info;
@@ -153,13 +159,24 @@ namespace TrueScopes::ScopeIdent
 		// number of reads instead of hanging the render thread.
 		void Walk(std::uintptr_t a_node, Info& a_out, int a_depth)
 		{
-			if (!a_node || a_depth > 8 || a_out.nodesVisited > 512) {
+			if (!a_node) {
+				return;
+			}
+			// Both caps count what they refuse. A cap that silently prunes turns
+			// "the scope is not in this weapon's 3D" and "we stopped looking" into
+			// the same output, which is how v0.2.85's name cap wasted a bench cycle.
+			if (a_depth > kMaxDepth || a_out.nodesVisited >= kMaxNodes) {
+				++a_out.clipped;
 				return;
 			}
 			++a_out.nodesVisited;
 
-			if (a_out.nameCount < kMaxNames && NodeName(a_node, a_out.names[a_out.nameCount])) {
-				++a_out.nameCount;
+			if (a_out.nameCount < kMaxNames) {
+				if (NodeName(a_node, a_out.names[a_out.nameCount])) {
+					++a_out.nameCount;
+				}
+			} else {
+				++a_out.nameOverflow;
 			}
 
 			if (!IsNode(a_node)) {
@@ -221,7 +238,8 @@ namespace TrueScopes::ScopeIdent
 			if (!node) {
 				return;
 			}
-			NodeName(node, a_out.weaponNode);
+			a_out.weaponNode = node;
+			NodeName(node, a_out.weaponNodeName);
 			Walk(node, a_out, 0);
 		}
 
@@ -272,10 +290,25 @@ namespace TrueScopes::ScopeIdent
 		{
 			logger::info(
 				FMT_STRING("SCOPE IDENT: weapon={:08X} node={} fovMult={:.3f} (zoom FOV at 90 deg = {:.2f}) "
-				           "aperture={:.3f} ({}) nodes={} names={}"),
-				a_i.weaponFormID, a_i.weaponNode[0] ? a_i.weaponNode : "(none)", a_i.fovMult, a_i.zoomFovAt90,
+				           "aperture={:.3f} ({}) nodes={} names={}+{} dropped"),
+				a_i.weaponFormID, a_i.weaponNodeName[0] ? a_i.weaponNodeName : "(none)", a_i.fovMult, a_i.zoomFovAt90,
 				a_i.aperture, a_i.fromTable ? a_i.matched : "fallback: widgetApertureRadius",
-				a_i.nodesVisited, a_i.nameCount);
+				a_i.nodesVisited, a_i.nameCount, a_i.nameOverflow);
+
+			// A miss with a truncated name list is not evidence of anything -- the
+			// scope may simply be in the part that was dropped. Say so, loudly,
+			// rather than letting it read as "this scope is unknown". v0.2.85's cap
+			// of 40 did exactly that on the very first live probe.
+			if (a_i.nameOverflow) {
+				logger::warn(FMT_STRING("SCOPE IDENT: name list TRUNCATED - {} node name(s) dropped. "
+				                        "Raise kMaxNames; any 'no table entry' below is unreliable."),
+					a_i.nameOverflow);
+			}
+			if (a_i.clipped) {
+				logger::warn(FMT_STRING("SCOPE IDENT: walk CLIPPED - {} subtree(s) refused by the depth/node "
+				                        "caps. Part of the weapon was never looked at."),
+					a_i.clipped);
+			}
 
 			// When nothing matched, the names ARE the finding: they are what a user
 			// (or the next session) needs in order to add a [Scopes] entry. Print

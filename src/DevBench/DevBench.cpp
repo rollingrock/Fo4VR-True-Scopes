@@ -1148,13 +1148,16 @@ namespace DevBench
 			out += ",\"probed\":" + std::string(i.probed ? "true" : "false");
 			out += ",\"faulted\":" + std::string(i.faulted ? "true" : "false");
 			out += ",\"weaponFormID\":" + Quote(Hex(i.weaponFormID));
-			out += ",\"weaponNode\":" + Quote(i.weaponNode);
+			out += ",\"weaponNodeName\":" + Quote(i.weaponNodeName);
+			out += ",\"weaponNode\":" + Quote(Hex(i.weaponNode));
 			out += ",\"fovMult\":" + std::to_string(i.fovMult);
 			out += ",\"zoomFovAt90\":" + std::to_string(i.zoomFovAt90);
 			out += ",\"aperture\":" + std::to_string(i.aperture);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");
 			out += ",\"nodesVisited\":" + std::to_string(i.nodesVisited);
+			out += ",\"nameOverflow\":" + std::to_string(i.nameOverflow);
+			out += ",\"clipped\":" + std::to_string(i.clipped);
 			out += ",\"names\":[";
 			for (std::uint32_t n = 0; n < i.nameCount; ++n) {
 				if (n) {
