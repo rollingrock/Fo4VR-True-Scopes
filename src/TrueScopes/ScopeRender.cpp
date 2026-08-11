@@ -1356,6 +1356,10 @@ namespace TrueScopes::ScopeRender
 			// on, so the gap between it and the exact census answer on a scope we
 			// DO have measured is the only honest estimate of its error.
 			char  method[16] = "none";
+			// True when the target came from the census face, which is pure weapon
+			// geometry and does not involve the eye. Such a target can be recomputed
+			// every frame without jitter -- and MUST be, see ApplyWidgetFit.
+			bool  eyeIndependent = false;
 			bool  haveBoth = false;
 			float agreement = 0.0f;  // |exact - heuristic|, world units
 			// --- closed loop state (v0.2.94) ---
@@ -1523,6 +1527,7 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			p.boundRadius = radius;
+			p.eyeIndependent = haveExact;
 			p.parentResidual = parentResidual;
 			for (std::size_t k = 0; k < 3; ++k) {
 				p.discWorld[k] = curWorld[k];
@@ -1723,8 +1728,31 @@ namespace TrueScopes::ScopeRender
 			// jitter at 6x magnification, and a full NiAVObject::Update every frame
 			// to produce it. Recompute on equip (the engine re-baselining
 			// ScopeParent), on demand, or until it first succeeds.
-			if (!g_place.valid || rebaselined || g_placeDirty.exchange(false)) {
+			// RECOMPUTE EVERY FRAME when the target is eye-independent (v0.2.100).
+			//
+			// ScopeParent hangs off PrimaryUIAttachNode, NOT off the weapon, so the
+			// local offset that puts the disc on the lens depends on the RELATIVE
+			// pose of the weapon and that UI node. That relationship is not fixed:
+			// it changes through the scope-raise animation and as the player's hands
+			// move relative to their head. Computing the offset once at equip and
+			// holding it therefore bakes in whatever transitional pose happened to
+			// exist at that instant -- which is exactly what the user hit, and why
+			// forcing a fresh probe made the disc snap back onto the lens.
+			//
+			// Latched at equip: (-0.11, -0.76, -1.15).  Recomputed live: (-0.00,
+			// -0.86, -0.42) -- stable to two decimals across five forced latches,
+			// and identical to the value confirmed by eye on 2026-08-11.
+			//
+			// A census target is pure weapon geometry with no eye term, so
+			// recomputing it per frame is stable, not jittery. The bound HEURISTIC
+			// does use the eye, so that one stays latched -- recomputing it per
+			// frame would creep the disc with head motion, which is the concern that
+			// (correctly) motivated latching in the first place. It just should
+			// never have been applied to the census path.
+			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
+			if (relatch || g_place.eyeIndependent) {
 				ComputeAutoPlacement(a_player);
+				if (relatch)
 				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} via {} offset=({:.2f},{:.2f},{:.2f}) "
 				                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
 					g_place.valid ? "candidate" : "declined", g_place.method,
@@ -1736,7 +1764,7 @@ namespace TrueScopes::ScopeRender
 				// with its local translate — i.e. the layout is not what this code
 				// believes. The closed loop survives that; the number is here so it
 				// is diagnosed rather than inferred from a misplaced disc.
-				if (g_place.valid && g_place.parentResidual >= 0.0f) {
+				if (relatch && g_place.valid && g_place.parentResidual >= 0.0f) {
 					logger::info(FMT_STRING("WIDGET AUTO-PLACE: parent-transform residual {:.3f} "
 					                        "(0 = ScopeParent.world matches parent o local; large = the "
 					                        "assumed +0x28 parent / matrix layout is wrong)"),
@@ -1745,7 +1773,7 @@ namespace TrueScopes::ScopeRender
 				// The gap between the two independent targets is the only honest
 				// estimate of the heuristic's error, and the heuristic is what every
 				// modded scope falls back on. Worth a line whenever both exist.
-				if (g_place.haveBoth) {
+				if (relatch && g_place.haveBoth) {
 					logger::info(FMT_STRING("WIDGET AUTO-PLACE: census and bound-heuristic targets differ "
 					                        "by {:.2f} units"),
 						g_place.agreement);
