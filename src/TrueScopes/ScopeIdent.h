@@ -51,8 +51,27 @@ namespace TrueScopes::ScopeIdent
 	// Layout is CommonLibF4's NiAVObject, spot-checked against this binary: world
 	// transform +0x70, its translate +0xa0 and scale +0xac (both already used by
 	// the FOV derivation since v0.2.90), worldBound +0xb0 as {centre, radius}.
-	// Translate at +0x30 WITHIN the transform means NiMatrix3 is 3 rows of 4
-	// floats, not 3 of 3 -- read a rotation with stride 4 or you get a shear.
+	// Translate at +0x30 WITHIN the transform means NiMatrix3 is 3 groups of 4
+	// floats, not 3 of 3 -- read with stride 4 or you get a shear.
+	//
+	// AND IT IS STORED TRANSPOSED. This is the part that cost three bugs, so it
+	// is spelled out. NiTransform::operator* (0x1401a8d60) computes
+	//
+	//     world[j] = SUM_i v[i] * m[i*4 + j] * scale + T[j]
+	//
+	// so m[i*4+j] carries SOURCE axis i into DESTINATION axis j -- element
+	// (row j, col i) in standard notation. CommonLibF4 says the same thing if
+	// read carefully: NiMatrix3 is `NiPoint4 entry[3]` and the constructor names
+	// them (x0,y0,z0,w0), (x1,y1,z1,w1)..., i.e. entry[i] is the IMAGE OF BASIS
+	// VECTOR i -- a column, not a row.
+	//
+	//     to world:  world[j] = T[j] + s * SUM_i m[i*4 + j] * v[i]
+	//     to local:  local[i] =        SUM_j m[i*4 + j] * (world[j] - T[j]) / s
+	//
+	// Read it the other way round and you apply the INVERSE rotation, which
+	// PRESERVES LENGTH -- so every magnitude check still passes and only a
+	// direction-preserving comparison catches it. ReadGeom below transposes on
+	// read so that rot[] is the real rotation and callers use the textbook form.
 	struct ShapeGeom
 	{
 		char  name[kNameLen] = {};
@@ -109,6 +128,7 @@ namespace TrueScopes::ScopeIdent
 		bool  haveFace = false;
 		char  faceShape[kNameLen] = {};  // the runtime shape to transform it by
 		float face[3] = {};              // in that shape's own space
+		float faceFromCentre = 0.0f;     // |face - bound centre|, for the live check
 	};
 
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
@@ -146,6 +166,11 @@ namespace TrueScopes::ScopeIdent
 		float       aperture;  // ocular radius
 		const char* shape;     // the ONE shape the census measured
 		float       face[3];   // ocular face centre, in that shape's own space
+		// |face - the shape's bounding-sphere centre|, from the mesh. Checked
+		// against the LIVE bound radius: a point on a shape cannot lie outside
+		// that shape's own bounding sphere, so a row failing this does not
+		// describe the mesh currently in the scene.
+		float faceFromCentre;
 	};
 	std::span<const TableEntry> Table();
 

@@ -1434,10 +1434,14 @@ namespace TrueScopes::ScopeRender
 				PlaceDecline("parent scale is degenerate");
 				return;
 			}
+			// TRANSPOSED ON READ (v0.2.96) — the engine stores this column-major, so
+			// the true mapping is world = T + s * (M_stored^T * v). See the proof in
+			// ScopeIdent::ReadGeom. With R read this way both the forward use below
+			// and the R^T inverse further down are the textbook forms.
 			float R[3][3];
 			for (std::size_t r = 0; r < 3; ++r) {
 				for (std::size_t c = 0; c < 3; ++c) {
-					R[r][c] = pm[r * kMatrixRowStride + c];
+					R[r][c] = pm[c * kMatrixRowStride + r];
 					if (!std::isfinite(R[r][c])) {
 						PlaceDecline("parent rotation is not finite");
 						return;
@@ -1656,11 +1660,13 @@ namespace TrueScopes::ScopeRender
 			if (!std::isfinite(ps) || ps < 1.0e-4f) {
 				return;
 			}
+			// R^T * err, where the true rotation R is the TRANSPOSE of what is
+			// stored (v0.2.96) — so R^T is the stored matrix read plainly.
 			const float e[3] = { ex, ey, ez };
 			for (std::size_t c = 0; c < 3; ++c) {
 				float d = 0.0f;
 				for (std::size_t r = 0; r < 3; ++r) {
-					d += pm[r * kMatrixRowStride + c] * e[r];  // R^T * err
+					d += pm[c * kMatrixRowStride + r] * e[r];
 				}
 				const float step = d / ps;
 				if (!std::isfinite(step)) {
