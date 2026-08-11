@@ -250,14 +250,21 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetX, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetY, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetZ, 0.0);
-	// v0.2.92: place the disc on the optic's ocular face automatically, instead of
-	// one hand-tuned offset per scope, by aiming at the rear of the scope's world
-	// bounding sphere along the eye axis. OFF by default and deliberately so: the
-	// candidate is computed and reported every equip either way (log line
-	// "WIDGET AUTO-PLACE", DevBench /scope "placement"), so it can be compared
-	// against the hunting rifle's VR-confirmed offset before it is trusted on a
-	// scope nobody has looked through. Overrides widgetOffset*/[Scopes] when on.
-	MAKE_SETTING(bSetting, "TrueScopesVR", widgetAutoPlace, false);
+	// Put the disc on the optic's ocular face automatically instead of relying on
+	// a hand-tuned offset per scope. ON by default since v0.2.98: VR-confirmed on
+	// two very different optics (the hunting rifle's tube and the recon scope's
+	// flat screen), converging in 2 steps to a residual under 0.01 units on both.
+	//
+	// It aims at the census-measured face where the scope has a row, and falls
+	// back to the rear of the optic's world bounding sphere along the eye axis
+	// where it does not — the two differ by ~1-2 units on scopes we can compare,
+	// so an unmeasured or modded optic lands close but not exactly.
+	//
+	// Turning it OFF returns to widgetOffset* / [Scopes] offsets, which is the
+	// escape hatch if some optic ends up placed badly. The candidate is computed
+	// and reported either way (log line "WIDGET AUTO-PLACE", DevBench /scope
+	// "placement"), so it can always be compared against a hand-tuned value.
+	MAKE_SETTING(bSetting, "TrueScopesVR", widgetAutoPlace, true);
 	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
 	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
 	// Costs two GPU sync stalls per render — enable only while hunting.
