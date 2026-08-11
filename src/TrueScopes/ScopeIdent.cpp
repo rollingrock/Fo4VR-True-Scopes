@@ -473,10 +473,47 @@ namespace TrueScopes::ScopeIdent
 			// weapon would let a key like "Scope" hit an unrelated node and fit the
 			// lens to it with complete confidence -- a wrong answer that looks like
 			// a right one, which is the failure mode this project keeps meeting.
-			// A TOML entry wins outright, and it may specify position, radius or
-			// both -- an entry with only offsets means "the built-in radius is
-			// fine, where you put it is not", which is exactly the defect the
-			// 2026-08-10 screenshots showed.
+			//
+			// ORDER MATTERS, and v0.2.96 got it wrong. The TOML loop used to run
+			// FIRST and RETURN as soon as it found an aperture, which skipped the
+			// built-in table -- and the table is what resolves the census FACE. So
+			// setting a per-scope aperture silently downgraded placement to the
+			// bounding-sphere heuristic, moving the widget off the lens. Found in VR
+			// on the recon scope: `method` flipped from "census" to "bound" the
+			// moment an override was added, and nothing said so.
+			//
+			// A user correcting the SIZE must never lose the POSITION. So resolve
+			// the built-in row first (aperture + face), then let the TOML override
+			// aperture and/or offsets on top of it.
+			for (std::uint32_t i = 0; i < a_out.scopeNameCount && !a_out.fromTable; ++i) {
+				for (const auto& e : kTable) {
+					if (std::strcmp(e.node, a_out.scopeNames[i]) != 0) {
+						continue;
+					}
+					CopyName(a_out.matched, e.node);
+					a_out.aperture = e.aperture;
+					a_out.fromTable = true;
+					// The face is only usable if the exact shape it was measured on
+					// is actually in the scene -- see the LaserScope note on kTable.
+					for (std::uint32_t s = 0; s < a_out.shapeCount; ++s) {
+						if (std::strcmp(a_out.shapes[s].name, e.shape) == 0) {
+							CopyName(a_out.faceShape, e.shape);
+							a_out.face[0] = e.face[0];
+							a_out.face[1] = e.face[1];
+							a_out.face[2] = e.face[2];
+							a_out.faceFromCentre = e.faceFromCentre;
+							a_out.haveFace = true;
+							break;
+						}
+					}
+					break;
+				}
+			}
+
+			// TOML overrides, applied ON TOP. An entry may carry a radius, a
+			// position, or both -- offsets alone mean "the built-in radius is fine,
+			// where you put it is not", and an aperture alone means the reverse.
+			// Neither disturbs the census face resolved above.
 			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
 				const auto e = Settings::ScopeEntryFor(a_out.scopeNames[i]);
 				const bool haveOffset = !std::isnan(e.offsetX) || !std::isnan(e.offsetY) || !std::isnan(e.offsetZ);
@@ -490,32 +527,8 @@ namespace TrueScopes::ScopeIdent
 				if (e.aperture > 0.0) {
 					a_out.aperture = static_cast<float>(e.aperture);
 					a_out.fromTable = true;
-					return;
 				}
-				break;  // offsets taken; fall through so the built-in radius still applies
-			}
-			for (std::uint32_t i = 0; i < a_out.scopeNameCount; ++i) {
-				for (const auto& e : kTable) {
-					if (std::strcmp(e.node, a_out.scopeNames[i]) == 0) {
-						CopyName(a_out.matched, e.node);
-						a_out.aperture = e.aperture;
-						a_out.fromTable = true;
-						// The face is only usable if the exact shape it was
-						// measured on is actually in the scene — see the
-						// LaserScope note on kTable.
-						for (std::uint32_t s = 0; s < a_out.shapeCount; ++s) {
-							if (std::strcmp(a_out.shapes[s].name, e.shape) == 0) {
-								CopyName(a_out.faceShape, e.shape);
-								a_out.face[0] = e.face[0];
-								a_out.face[1] = e.face[1];
-								a_out.face[2] = e.face[2];
-								a_out.haveFace = true;
-								break;
-							}
-						}
-						return;
-					}
-				}
+				break;
 			}
 		}
 
@@ -527,6 +540,17 @@ namespace TrueScopes::ScopeIdent
 				a_i.weaponFormID, a_i.weaponNodeName[0] ? a_i.weaponNodeName : "(none)", a_i.fovMult, a_i.zoomFovAt90,
 				a_i.aperture, a_i.fromTable ? a_i.matched : "fallback: widgetApertureRadius",
 				a_i.nodesVisited, a_i.nameCount, a_i.nameOverflow);
+
+			// Whether the exact census face resolved decides whether placement is a
+			// measurement or a heuristic, and the difference is visible in VR. It
+			// used to be inferable only from the auto-place line's "via" field; say
+			// it here too, next to the scope it belongs to.
+			if (a_i.fromTable && !a_i.haveFace) {
+				logger::warn(FMT_STRING("SCOPE IDENT: '{}' has no usable census face (measured shape '{}' "
+				                        "not in this weapon's 3D) — placement falls back to the bound "
+				                        "heuristic, which is much rougher."),
+					a_i.matched, a_i.faceShape[0] ? a_i.faceShape : "(none)");
+			}
 
 			if (a_i.haveGeom) {
 				logger::info(FMT_STRING("SCOPE IDENT geom: P-Scope at ({:.2f},{:.2f},{:.2f}) bound r={:.2f}; "
