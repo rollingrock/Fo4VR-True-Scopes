@@ -250,6 +250,14 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetX, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetY, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetZ, 0.0);
+	// v0.2.92: place the disc on the optic's ocular face automatically, instead of
+	// one hand-tuned offset per scope, by aiming at the rear of the scope's world
+	// bounding sphere along the eye axis. OFF by default and deliberately so: the
+	// candidate is computed and reported every equip either way (log line
+	// "WIDGET AUTO-PLACE", DevBench /scope "placement"), so it can be compared
+	// against the hunting rifle's VR-confirmed offset before it is trusted on a
+	// scope nobody has looked through. Overrides widgetOffset*/[Scopes] when on.
+	MAKE_SETTING(bSetting, "TrueScopesVR", widgetAutoPlace, false);
 	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
 	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
 	// Costs two GPU sync stalls per render — enable only while hunting.
@@ -473,6 +481,7 @@ namespace Settings
 		LOAD(widgetOffsetX);
 		LOAD(widgetOffsetY);
 		LOAD(widgetOffsetZ);
+		LOAD(widgetAutoPlace);
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);

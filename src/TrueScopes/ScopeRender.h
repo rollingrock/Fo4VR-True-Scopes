@@ -124,6 +124,30 @@ namespace TrueScopes::ScopeRender
 	};
 	FovInfo GetFovInfo();
 
+	// --- v0.2.92 automatic widget placement ----------------------------------
+	// The candidate offset that would put the lens disc on the optic's ocular
+	// face, derived from the scope's world bounding sphere and the eye position.
+	// ALWAYS computed, applied only when `widgetAutoPlace` is on — so it can be
+	// checked against a hand-tuned value that is known to be right, before it is
+	// trusted on a scope nobody has ever looked through.
+	struct PlacementReport
+	{
+		bool  valid;
+		bool  applied;       // widgetAutoPlace is on AND the candidate is valid
+		float offset[3];     // candidate local offset from the engine baseline
+		float target[3];     // world point it aims at
+		float baseWorld[3];  // where the untouched baseline puts the disc
+		float boundCenter[3];
+		float boundRadius;
+		float miss;  // |target - baseWorld|: how far off the baseline is today
+		char  reason[72];
+	};
+	PlacementReport GetPlacement();
+
+	// Recompute the latched placement on the next render (a probe found a
+	// different scope, or a setting feeding it changed).
+	void InvalidatePlacement();
+
 	// --- v0.2.73 stage stopwatch ---------------------------------------------
 	// Mean milliseconds per stage of our own render since the last reset, measured
 	// on BOTH timelines: GPU via D3D11 timestamp queries, CPU via QPC across the

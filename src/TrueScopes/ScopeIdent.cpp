@@ -28,6 +28,13 @@ namespace TrueScopes::ScopeIdent
 		constexpr std::uintptr_t kNiNodeGetObjectByName = 0x1c18500;
 		constexpr std::uintptr_t kGetObjectByNameVFunc = 0x188;
 
+		// NiAVObject spatial layout (see the ShapeGeom comment in the header).
+		constexpr std::uintptr_t kWorldTransform = 0x70;
+		constexpr std::uintptr_t kWorldTranslate = 0xa0;
+		constexpr std::uintptr_t kWorldScale = 0xac;
+		constexpr std::uintptr_t kWorldBound = 0xb0;  // {NiPoint3 centre, float radius}
+		constexpr std::size_t    kMatrixRowStride = 4;
+
 		using GetCurrentWeapon_t = void (*)(std::uintptr_t, void*, std::uint32_t);
 		using GetIronSightFOV_t = float (*)(std::uintptr_t, std::uintptr_t);
 		using GetZoomFOV_t = float (*)(std::uintptr_t, float, std::uintptr_t);
@@ -190,6 +197,71 @@ namespace TrueScopes::ScopeIdent
 			}
 		}
 
+		// --- geometry capture (v0.2.92) -----------------------------------------
+
+		void ReadGeom(std::uintptr_t a_node, const char* a_name, ShapeGeom& a_out)
+		{
+			CopyName(a_out.name, a_name);
+			const auto* w = reinterpret_cast<const float*>(a_node + kWorldTranslate);
+			a_out.world[0] = w[0];
+			a_out.world[1] = w[1];
+			a_out.world[2] = w[2];
+			a_out.scale = *reinterpret_cast<const float*>(a_node + kWorldScale);
+			const auto* m = reinterpret_cast<const float*>(a_node + kWorldTransform);
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					a_out.rot[r * 3 + c] = m[r * kMatrixRowStride + c];
+				}
+			}
+			const auto* b = reinterpret_cast<const float*>(a_node + kWorldBound);
+			a_out.boundCenter[0] = b[0];
+			a_out.boundCenter[1] = b[1];
+			a_out.boundCenter[2] = b[2];
+			a_out.boundRadius = b[3];
+		}
+
+		// A bound is only usable if it is finite and has real extent. An unbuilt or
+		// never-updated bound reads as zero radius, and a zero-radius sphere at the
+		// origin would drag the union to (0,0,0) — placement would then aim the disc
+		// at the world origin with total confidence. Refuse instead.
+		[[nodiscard]] bool BoundUsable(const ShapeGeom& a_g)
+		{
+			if (!std::isfinite(a_g.boundRadius) || a_g.boundRadius <= 0.001f || a_g.boundRadius > 1.0e5f) {
+				return false;
+			}
+			for (const float v : a_g.boundCenter) {
+				if (!std::isfinite(v)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		// Standard merge of two bounding spheres, in place.
+		void MergeBound(float (&a_c)[3], float& a_r, const float (&a_c2)[3], float a_r2)
+		{
+			const float dx = a_c2[0] - a_c[0];
+			const float dy = a_c2[1] - a_c[1];
+			const float dz = a_c2[2] - a_c[2];
+			const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (d + a_r2 <= a_r) {
+				return;  // already contained
+			}
+			if (d + a_r <= a_r2) {
+				a_c[0] = a_c2[0];
+				a_c[1] = a_c2[1];
+				a_c[2] = a_c2[2];
+				a_r = a_r2;
+				return;
+			}
+			const float nr = (d + a_r + a_r2) * 0.5f;
+			const float t = (d > 1.0e-6f) ? (nr - a_r) / d : 0.0f;
+			a_c[0] += dx * t;
+			a_c[1] += dy * t;
+			a_c[2] += dz * t;
+			a_r = nr;
+		}
+
 		void Walk(std::uintptr_t a_node, Info& a_out, int a_depth, bool a_inScope)
 		{
 			if (!a_node) {
@@ -218,6 +290,33 @@ namespace TrueScopes::ScopeIdent
 			// Everything below the attach point is the scope, including the point
 			// itself (harmless: "P-Scope" is not a table key).
 			const bool inScope = a_inScope || (named && IsScopeAttachPoint(name));
+
+			// v0.2.92: record where it is, not just what it is called.
+			if (named && IsScopeAttachPoint(name)) {
+				a_out.pScopeNode = a_node;
+				ReadGeom(a_node, name, a_out.pScope);
+				a_out.haveGeom = true;
+			} else if (a_inScope) {
+				// Descendants only: the attach point itself is a transform, not
+				// glass, and folding its bound into the union would inflate it.
+				ShapeGeom g{};
+				ReadGeom(a_node, named ? name : "(unnamed)", g);
+				if (a_out.shapeCount < kMaxShapeGeom) {
+					a_out.shapes[a_out.shapeCount++] = g;
+				}
+				if (BoundUsable(g)) {
+					if (a_out.boundsSeen == 0) {
+						a_out.unionCenter[0] = g.boundCenter[0];
+						a_out.unionCenter[1] = g.boundCenter[1];
+						a_out.unionCenter[2] = g.boundCenter[2];
+						a_out.unionRadius = g.boundRadius;
+					} else {
+						MergeBound(a_out.unionCenter, a_out.unionRadius, g.boundCenter, g.boundRadius);
+					}
+					++a_out.boundsSeen;
+				}
+			}
+
 			if (inScope && named && a_out.scopeNameCount < kMaxScopeNames) {
 				char key[kNameLen] = {};
 				CopyName(key, name);
@@ -365,6 +464,14 @@ namespace TrueScopes::ScopeIdent
 				a_i.aperture, a_i.fromTable ? a_i.matched : "fallback: widgetApertureRadius",
 				a_i.nodesVisited, a_i.nameCount, a_i.nameOverflow);
 
+			if (a_i.haveGeom) {
+				logger::info(FMT_STRING("SCOPE IDENT geom: P-Scope at ({:.2f},{:.2f},{:.2f}) bound r={:.2f}; "
+				                        "{} shape(s), {} with bounds, union c=({:.2f},{:.2f},{:.2f}) r={:.2f}"),
+					a_i.pScope.world[0], a_i.pScope.world[1], a_i.pScope.world[2], a_i.pScope.boundRadius,
+					a_i.shapeCount, a_i.boundsSeen,
+					a_i.unionCenter[0], a_i.unionCenter[1], a_i.unionCenter[2], a_i.unionRadius);
+			}
+
 			// A miss with a truncated name list is not evidence of anything -- the
 			// scope may simply be in the part that was dropped. Say so, loudly,
 			// rather than letting it read as "this scope is unknown". v0.2.85's cap
@@ -477,6 +584,19 @@ namespace TrueScopes::ScopeIdent
 	{
 		const std::scoped_lock lock(g_lock);
 		return (g_info.probed && g_info.fovMult > 0.0f) ? g_info.fovMult : 1.0f;
+	}
+
+	bool ScopeBound(float (&a_center)[3], float& a_radius)
+	{
+		const std::scoped_lock lock(g_lock);
+		if (!g_info.probed || !g_info.haveGeom || g_info.boundsSeen == 0 || g_info.unionRadius <= 0.001f) {
+			return false;
+		}
+		a_center[0] = g_info.unionCenter[0];
+		a_center[1] = g_info.unionCenter[1];
+		a_center[2] = g_info.unionCenter[2];
+		a_radius = g_info.unionRadius;
+		return true;
 	}
 
 	Info Get()

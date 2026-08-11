@@ -1281,6 +1281,182 @@ namespace TrueScopes::ScopeRender
 			return fovDeg;
 		}
 
+		// --- automatic widget placement (v0.2.92) --------------------------------
+		//
+		// One hand-tuned offset per scope does not scale, and the 2026-08-10
+		// screenshots showed what a missing one looks like: the disc floating above
+		// and behind the optic. So derive the placement instead.
+		//
+		// The target is the OCULAR FACE — the rear end of the scope, the end the
+		// player looks into. Two facts make that computable without mesh data:
+		//
+		//   * the walk gives a world-space bounding sphere for the P-Scope subtree,
+		//     centre C and radius r;
+		//   * when the scope is raised the eye is very nearly ON the tube axis, so
+		//     the direction from C toward the eye E IS the tube axis, to within the
+		//     small angle the player's head is off-centre.
+		//
+		// so   target = C + normalize(E - C) * r.
+		//
+		// This is a HEURISTIC and is written down as one. A bounding sphere over a
+		// long tube has radius ~= half its length, so the target lands near the rear
+		// face; the error is the sphere's overshoot past a flat face (about
+		// tube_radius^2 / length, well under a unit for a real scope) PLUS whatever
+		// mounts and rails inflate the sphere by. The second term is the one to
+		// distrust, and it is exactly why this is computed but not applied by
+		// default: `widgetAutoPlace` is off, the candidate is reported every probe,
+		// and it can be checked against the hunting rifle's VR-confirmed -1.8 before
+		// anyone trusts it on a scope nobody has tuned.
+		//
+		// ScopeParent's translate is in its PARENT's space, so the world-space target
+		// has to come back through that transform: v = R^T * (W - T) / s.
+		constexpr std::uintptr_t kParentInNiAVObject = 0x28;
+		constexpr std::uintptr_t kWorldTransform = 0x70;
+		constexpr std::size_t    kMatrixRowStride = 4;  // NiMatrix3 is 3 rows of 4
+
+		struct PlacementInfo
+		{
+			bool  valid = false;
+			float offset[3] = {};       // candidate local offset, relative to the baseline
+			float target[3] = {};       // the world point it aims at
+			float baseWorld[3] = {};    // where the untouched engine baseline puts the disc
+			float boundCenter[3] = {};  // the optic's world bounding sphere
+			float boundRadius = 0.0f;
+			float miss = 0.0f;  // |target - baseWorld|: how far off today's placement is
+			char  reason[72] = "not computed";
+		};
+		PlacementInfo    g_place;
+		std::atomic_bool g_placeDirty{ false };
+
+		void PlaceDecline(const char* a_why)
+		{
+			g_place = PlacementInfo{};
+			std::snprintf(g_place.reason, sizeof(g_place.reason), "%s", a_why);
+		}
+
+		// Always runs; never writes anything. The caller decides whether to use it.
+		void ComputeAutoPlacement(std::uintptr_t a_player)
+		{
+			if (!g_widget.captured) {
+				PlaceDecline("no ScopeParent baseline yet");
+				return;
+			}
+			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
+			if (!sp) {
+				PlaceDecline("no ScopeParent");
+				return;
+			}
+			const auto parent = *reinterpret_cast<std::uintptr_t*>(sp + kParentInNiAVObject);
+			if (!parent) {
+				PlaceDecline("ScopeParent has no parent to convert through");
+				return;
+			}
+
+			float center[3] = {};
+			float radius = 0.0f;
+			if (!ScopeIdent::ScopeBound(center, radius)) {
+				PlaceDecline("no optic bound (unknown scope, or no shape carried one)");
+				return;
+			}
+
+			const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraPtr);
+			if (!playerCam) {
+				PlaceDecline("no PlayerCamera");
+				return;
+			}
+			const auto camRoot = *reinterpret_cast<std::uintptr_t*>(playerCam + kCameraRootInCamera);
+			if (!camRoot) {
+				PlaceDecline("no camera root");
+				return;
+			}
+			const auto* eye = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
+
+			// Parent transform: world = T + s * (R * v).
+			const auto* pm = reinterpret_cast<const float*>(parent + kWorldTransform);
+			const auto* pt = reinterpret_cast<const float*>(parent + kWorldTranslate);
+			const float ps = *reinterpret_cast<const float*>(parent + kWorldScale);
+			if (!std::isfinite(ps) || ps < 1.0e-4f) {
+				PlaceDecline("parent scale is degenerate");
+				return;
+			}
+			float R[3][3];
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					R[r][c] = pm[r * kMatrixRowStride + c];
+					if (!std::isfinite(R[r][c])) {
+						PlaceDecline("parent rotation is not finite");
+						return;
+					}
+				}
+			}
+
+			// Where the engine's own baseline puts the disc, in world space. Computed
+			// through the parent rather than read off ScopeParent's world transform,
+			// which may still hold OUR last write until the next update pass.
+			const float L[3] = { g_widget.baseTx, g_widget.baseTy, g_widget.baseTz };
+			float       baseWorld[3];
+			for (std::size_t r = 0; r < 3; ++r) {
+				baseWorld[r] = pt[r] + ps * (R[r][0] * L[0] + R[r][1] * L[1] + R[r][2] * L[2]);
+			}
+
+			// target = C + normalize(E - C) * r
+			const float ax = eye[0] - center[0];
+			const float ay = eye[1] - center[1];
+			const float az = eye[2] - center[2];
+			const float alen = std::sqrt(ax * ax + ay * ay + az * az);
+			if (!std::isfinite(alen) || alen < 1.0f) {
+				PlaceDecline("eye is at the optic centre; no axis");
+				return;
+			}
+			const float target[3] = {
+				center[0] + ax / alen * radius,
+				center[1] + ay / alen * radius,
+				center[2] + az / alen * radius,
+			};
+
+			// Back into the parent's space, then express as a delta from the baseline
+			// so it drops straight into the existing offset path.
+			float u[3];
+			for (std::size_t r = 0; r < 3; ++r) {
+				u[r] = (target[r] - pt[r]) / ps;
+			}
+			float local[3];
+			for (std::size_t c = 0; c < 3; ++c) {
+				local[c] = R[0][c] * u[0] + R[1][c] * u[1] + R[2][c] * u[2];
+			}
+
+			PlacementInfo p;
+			for (std::size_t k = 0; k < 3; ++k) {
+				p.offset[k] = local[k] - L[k];
+				p.target[k] = target[k];
+				p.baseWorld[k] = baseWorld[k];
+				p.boundCenter[k] = center[k];
+				if (!std::isfinite(p.offset[k])) {
+					PlaceDecline("computed offset is not finite");
+					return;
+				}
+			}
+			p.boundRadius = radius;
+			const float mx = target[0] - baseWorld[0];
+			const float my = target[1] - baseWorld[1];
+			const float mz = target[2] - baseWorld[2];
+			p.miss = std::sqrt(mx * mx + my * my + mz * mz);
+
+			// A scope is centimetres from the mount. An offset the size of a room
+			// means a transform this code misread, and applying it would shove the
+			// disc somewhere it can never be seen — which reads as "the render broke".
+			const float mag = std::sqrt(p.offset[0] * p.offset[0] + p.offset[1] * p.offset[1] +
+			                            p.offset[2] * p.offset[2]);
+			if (mag > 40.0f) {
+				PlaceDecline("offset implausibly large; refusing");
+				return;
+			}
+
+			p.valid = true;
+			std::snprintf(p.reason, sizeof(p.reason), "ok");
+			g_place = p;
+		}
+
 		void ApplyWidgetFit(std::uintptr_t a_player)
 		{
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
@@ -1298,6 +1474,7 @@ namespace TrueScopes::ScopeRender
 			// engine having rewritten it at equip, and only then is the value pristine.
 			// Doing this on an event (v0.2.68 used scope-in) re-captured our own output and
 			// compounded the offset every cycle; see the note above.
+			const bool rebaselined = !stillOurs;
 			if (!stillOurs) {
 				g_widget.baseTx = t[0];
 				g_widget.baseTy = t[1];
@@ -1353,6 +1530,27 @@ namespace TrueScopes::ScopeRender
 			// v0.2.91: per-scope, falling back per axis to the global settings.
 			float ox = 0.0f, oy = 0.0f, oz = 0.0f;
 			ScopeIdent::WidgetOffsets(ox, oy, oz);
+
+			// v0.2.92: the automatic placement is LATCHED, not tracked. The ocular
+			// face is fixed on the weapon; only the axis ESTIMATE uses the eye, so
+			// recomputing per frame would make the disc creep with head motion — a
+			// jitter at 6x magnification, and a full NiAVObject::Update every frame
+			// to produce it. Recompute on equip (the engine re-baselining
+			// ScopeParent), on demand, or until it first succeeds.
+			if (!g_place.valid || rebaselined || g_placeDirty.exchange(false)) {
+				ComputeAutoPlacement(a_player);
+				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} offset=({:.2f},{:.2f},{:.2f}) "
+				                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
+					g_place.valid ? "candidate" : "declined",
+					g_place.offset[0], g_place.offset[1], g_place.offset[2], g_place.miss,
+					g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
+					g_place.boundRadius, g_place.reason);
+			}
+			if (*Settings::widgetAutoPlace && g_place.valid) {
+				ox = g_place.offset[0];
+				oy = g_place.offset[1];
+				oz = g_place.offset[2];
+			}
 
 			// Only touch the node when something actually changed — NiAVObject::Update walks
 			// the subtree, and the engine itself only does this at equip.
@@ -3106,6 +3304,28 @@ namespace TrueScopes::ScopeRender
 	FovInfo GetFovInfo()
 	{
 		return { g_lastFovDeg, g_derivedFovDeg, g_derivedDiscR, g_derivedEyeDist };
+	}
+
+	PlacementReport GetPlacement()
+	{
+		PlacementReport r{};
+		r.valid = g_place.valid;
+		r.applied = r.valid && *Settings::widgetAutoPlace;
+		for (std::size_t k = 0; k < 3; ++k) {
+			r.offset[k] = g_place.offset[k];
+			r.target[k] = g_place.target[k];
+			r.baseWorld[k] = g_place.baseWorld[k];
+			r.boundCenter[k] = g_place.boundCenter[k];
+		}
+		r.boundRadius = g_place.boundRadius;
+		r.miss = g_place.miss;
+		std::snprintf(r.reason, sizeof(r.reason), "%s", g_place.reason);
+		return r;
+	}
+
+	void InvalidatePlacement()
+	{
+		g_placeDirty.store(true);
 	}
 
 	Diagnostics GetDiagnostics()

@@ -55,6 +55,12 @@ namespace DevBench
 
 		std::string Quote(std::string_view a_in) { return "\"" + JsonEscape(a_in) + "\""; }
 
+		std::string Vec3(const float (&a_v)[3])
+		{
+			return "[" + std::to_string(a_v[0]) + "," + std::to_string(a_v[1]) + "," +
+			       std::to_string(a_v[2]) + "]";
+		}
+
 		std::string Hex(std::uint64_t a_v)
 		{
 			char buf[32];
@@ -730,6 +736,12 @@ namespace DevBench
 						}
 						if (!found) g_overrides.emplace_back(e.name, *val);
 					}
+					// The automatic placement is latched per equip, so a widget setting
+					// changed live would otherwise not take effect until the weapon
+					// was re-equipped — which reads as "the setting does nothing".
+					if (std::string_view{ e.name }.starts_with("widget")) {
+						TrueScopes::ScopeRender::InvalidatePlacement();
+					}
 					logger::info(FMT_STRING("devbench: {} {} -> {}"), e.name, before, after);
 					return "{\"ok\":true,\"key\":" + Quote(e.name) + ",\"before\":" + before + ",\"after\":" + after + "}";
 				}
@@ -1131,6 +1143,10 @@ namespace DevBench
 				// Wait briefly rather than returning last cycle's answer to a caller
 				// who explicitly asked for a fresh one.
 				const auto before = TrueScopes::ScopeIdent::Get();
+				// The placement is derived from what the probe measures, so a fresh
+				// probe must produce a fresh candidate rather than reporting the one
+				// latched from the previously equipped optic.
+				TrueScopes::ScopeRender::InvalidatePlacement();
 				TrueScopes::ScopeIdent::Request();
 				const auto deadline = ::GetTickCount64() + 3000;
 				while (::GetTickCount64() < deadline) {
@@ -1159,6 +1175,47 @@ namespace DevBench
 				out += ",\"lensRadiusWorld\":" + std::to_string(f.discRadius);
 				out += ",\"eyeToLens\":" + std::to_string(f.eyeDistance);
 			}
+			{
+				// v0.2.92: the automatic-placement candidate, reported whether or not
+				// it is applied — the whole point is to check it against a hand-tuned
+				// offset that is already known to be right.
+				const auto p = TrueScopes::ScopeRender::GetPlacement();
+				out += ",\"placement\":{\"valid\":" + std::string(p.valid ? "true" : "false");
+				out += ",\"applied\":" + std::string(p.applied ? "true" : "false");
+				out += ",\"reason\":" + Quote(p.reason);
+				out += ",\"offset\":" + Vec3(p.offset);
+				out += ",\"target\":" + Vec3(p.target);
+				out += ",\"baseWorld\":" + Vec3(p.baseWorld);
+				out += ",\"boundCenter\":" + Vec3(p.boundCenter);
+				out += ",\"boundRadius\":" + std::to_string(p.boundRadius);
+				out += ",\"miss\":" + std::to_string(p.miss) + "}";
+			}
+			out += ",\"geom\":{\"have\":" + std::string(i.haveGeom ? "true" : "false");
+			out += ",\"pScopeNode\":" + Quote(Hex(i.pScopeNode));
+			out += ",\"pScopeWorld\":" + Vec3(i.pScope.world);
+			out += ",\"pScopeRot\":[";
+			for (std::size_t n = 0; n < 9; ++n) {
+				if (n) {
+					out += ",";
+				}
+				out += std::to_string(i.pScope.rot[n]);
+			}
+			out += "],\"unionCenter\":" + Vec3(i.unionCenter);
+			out += ",\"unionRadius\":" + std::to_string(i.unionRadius);
+			out += ",\"boundsSeen\":" + std::to_string(i.boundsSeen);
+			out += ",\"shapes\":[";
+			for (std::uint32_t n = 0; n < i.shapeCount; ++n) {
+				if (n) {
+					out += ",";
+				}
+				const auto& s = i.shapes[n];
+				out += "{\"name\":" + Quote(s.name);
+				out += ",\"world\":" + Vec3(s.world);
+				out += ",\"scale\":" + std::to_string(s.scale);
+				out += ",\"boundCenter\":" + Vec3(s.boundCenter);
+				out += ",\"boundRadius\":" + std::to_string(s.boundRadius) + "}";
+			}
+			out += "]}";
 			out += ",\"aperture\":" + std::to_string(i.aperture);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");

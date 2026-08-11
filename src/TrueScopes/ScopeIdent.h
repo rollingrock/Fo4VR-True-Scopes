@@ -39,6 +39,29 @@ namespace TrueScopes::ScopeIdent
 	// so this is generous.
 	inline constexpr std::size_t kMaxScopeNames = 16;
 	inline constexpr std::size_t kNameLen = 64;
+	// Shapes under P-Scope whose placement we record. A scope is a handful.
+	inline constexpr std::size_t kMaxShapeGeom = 12;
+
+	// WHERE a piece of the scope is, in world space (v0.2.92).
+	//
+	// Radius alone cannot fit a lens -- a correctly sized disc in the wrong place
+	// still misses it, which is what the 2026-08-10 screenshots showed. Placing it
+	// automatically needs the scope's actual position, so the walk now records it.
+	//
+	// Layout is CommonLibF4's NiAVObject, spot-checked against this binary: world
+	// transform +0x70, its translate +0xa0 and scale +0xac (both already used by
+	// the FOV derivation since v0.2.90), worldBound +0xb0 as {centre, radius}.
+	// Translate at +0x30 WITHIN the transform means NiMatrix3 is 3 rows of 4
+	// floats, not 3 of 3 -- read a rotation with stride 4 or you get a shear.
+	struct ShapeGeom
+	{
+		char  name[kNameLen] = {};
+		float world[3] = {};        // world translate
+		float rot[9] = {};          // world rotation, row-major, de-strided
+		float scale = 0.0f;
+		float boundCenter[3] = {};  // worldBound
+		float boundRadius = 0.0f;
+	};
 
 	struct Info
 	{
@@ -66,6 +89,21 @@ namespace TrueScopes::ScopeIdent
 		char           names[kMaxNames][kNameLen] = {};
 		std::uint32_t  scopeNameCount = 0;
 		char           scopeNames[kMaxScopeNames][kNameLen] = {};
+
+		// --- geometry of the equipped optic (v0.2.92) ------------------------
+		// Two independent measures of where the scope is, deliberately BOTH
+		// recorded rather than picking one: the attach point's own worldBound
+		// (which the engine maintains as a subtree union, IF it maintains it for
+		// a connect point at all) and a union computed here from the descendant
+		// shapes. If they disagree, that is a finding, not a coin toss.
+		bool           haveGeom = false;
+		std::uintptr_t pScopeNode = 0;
+		ShapeGeom      pScope{};             // the attach point itself
+		float          unionCenter[3] = {};  // union of descendant shape bounds
+		float          unionRadius = 0.0f;
+		std::uint32_t  boundsSeen = 0;       // shapes that contributed a bound
+		std::uint32_t  shapeCount = 0;
+		ShapeGeom      shapes[kMaxShapeGeom] = {};
 	};
 
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
@@ -86,6 +124,11 @@ namespace TrueScopes::ScopeIdent
 
 	// Magnification of the equipped scope (zoomData fovMult). 1.0 when unknown.
 	float FovMult();
+
+	// Where the equipped optic is, as a world-space sphere. False when the walk
+	// found no P-Scope subtree or no shape carried a usable bound — in which case
+	// automatic placement must decline rather than aim at the origin.
+	[[nodiscard]] bool ScopeBound(float (&a_center)[3], float& a_radius);
 
 	Info Get();
 
