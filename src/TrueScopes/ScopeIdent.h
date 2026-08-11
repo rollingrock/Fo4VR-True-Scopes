@@ -104,6 +104,11 @@ namespace TrueScopes::ScopeIdent
 		std::uint32_t  boundsSeen = 0;       // shapes that contributed a bound
 		std::uint32_t  shapeCount = 0;
 		ShapeGeom      shapes[kMaxShapeGeom] = {};
+
+		// Census-measured ocular face for this optic, if it has a row.
+		bool  haveFace = false;
+		char  faceShape[kNameLen] = {};  // the runtime shape to transform it by
+		float face[3] = {};              // in that shape's own space
 	};
 
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
@@ -132,12 +137,22 @@ namespace TrueScopes::ScopeIdent
 
 	Info Get();
 
-	// Built-in table, exposed so DevBench can list it. Radii are measured from
-	// the shipped meshes by tools/scope-census.py in the investigation repo.
+	// Built-in table, exposed so DevBench can list it. Measured from the shipped
+	// meshes by tools/scope-census.py in the investigation repo (`--cpp` prints
+	// exactly these rows).
 	struct TableEntry
 	{
-		const char* node;
-		float       aperture;
+		const char* node;      // runtime key: the root name with ":N" stripped
+		float       aperture;  // ocular radius
+		const char* shape;     // the ONE shape the census measured
+		float       face[3];   // ocular face centre, in that shape's own space
 	};
 	std::span<const TableEntry> Table();
+
+	// World-space centre of the equipped optic's ocular face, taken from the
+	// census and pushed through the live shape's world transform. This is the
+	// exact answer where we have one; false means no census row for this scope,
+	// or its measured shape is not in the scene — in which case the caller must
+	// fall back to a heuristic rather than aim at nothing.
+	[[nodiscard]] bool OcularFaceWorld(float (&a_world)[3]);
 }

@@ -141,6 +141,9 @@ namespace TrueScopes::ScopeRender
 		float boundRadius;
 		float miss;  // |target - baseWorld|: how far off the baseline is today
 		char  reason[72];
+		char  method[16];  // "census" (exact) or "bound" (heuristic fallback)
+		bool  haveBoth;
+		float agreement;  // |census - heuristic|, the heuristic's measured error
 	};
 	PlacementReport GetPlacement();
 

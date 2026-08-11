@@ -1183,6 +1183,9 @@ namespace DevBench
 				out += ",\"placement\":{\"valid\":" + std::string(p.valid ? "true" : "false");
 				out += ",\"applied\":" + std::string(p.applied ? "true" : "false");
 				out += ",\"reason\":" + Quote(p.reason);
+				out += ",\"method\":" + Quote(p.method);
+				out += ",\"haveBoth\":" + std::string(p.haveBoth ? "true" : "false");
+				out += ",\"agreement\":" + std::to_string(p.agreement);
 				out += ",\"offset\":" + Vec3(p.offset);
 				out += ",\"target\":" + Vec3(p.target);
 				out += ",\"baseWorld\":" + Vec3(p.baseWorld);
@@ -1203,6 +1206,9 @@ namespace DevBench
 			out += "],\"unionCenter\":" + Vec3(i.unionCenter);
 			out += ",\"unionRadius\":" + std::to_string(i.unionRadius);
 			out += ",\"boundsSeen\":" + std::to_string(i.boundsSeen);
+			out += ",\"haveFace\":" + std::string(i.haveFace ? "true" : "false");
+			out += ",\"faceShape\":" + Quote(i.faceShape);
+			out += ",\"face\":" + Vec3(i.face);
 			out += ",\"shapes\":[";
 			for (std::uint32_t n = 0; n < i.shapeCount; ++n) {
 				if (n) {
@@ -1243,7 +1249,8 @@ namespace DevBench
 					out += ",";
 				}
 				first = false;
-				out += Quote(e.node) + ":" + std::to_string(e.aperture);
+				out += Quote(e.node) + ":{\"aperture\":" + std::to_string(e.aperture) +
+				       ",\"shape\":" + Quote(e.shape) + ",\"face\":" + Vec3(e.face) + "}";
 			}
 			out += "}}";
 			return out;

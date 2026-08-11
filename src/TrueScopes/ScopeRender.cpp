@@ -1324,6 +1324,13 @@ namespace TrueScopes::ScopeRender
 			float boundRadius = 0.0f;
 			float miss = 0.0f;  // |target - baseWorld|: how far off today's placement is
 			char  reason[72] = "not computed";
+			// Which of the two targets was taken, and how far apart they were.
+			// The heuristic is what an unmeasured (modded) scope must fall back
+			// on, so the gap between it and the exact census answer on a scope we
+			// DO have measured is the only honest estimate of its error.
+			char  method[16] = "none";
+			bool  haveBoth = false;
+			float agreement = 0.0f;  // |exact - heuristic|, world units
 		};
 		PlacementInfo    g_place;
 		std::atomic_bool g_placeDirty{ false };
@@ -1352,12 +1359,9 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
-			float center[3] = {};
-			float radius = 0.0f;
-			if (!ScopeIdent::ScopeBound(center, radius)) {
-				PlaceDecline("no optic bound (unknown scope, or no shape carried one)");
-				return;
-			}
+			float      center[3] = {};
+			float      radius = 0.0f;
+			const bool haveBound = ScopeIdent::ScopeBound(center, radius);
 
 			const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraPtr);
 			if (!playerCam) {
@@ -1399,20 +1403,35 @@ namespace TrueScopes::ScopeRender
 				baseWorld[r] = pt[r] + ps * (R[r][0] * L[0] + R[r][1] * L[1] + R[r][2] * L[2]);
 			}
 
-			// target = C + normalize(E - C) * r
+			// Candidate 1, the HEURISTIC: target = C + normalize(E - C) * r.
+			float      heuristic[3] = {};
+			bool       haveHeuristic = false;
 			const float ax = eye[0] - center[0];
 			const float ay = eye[1] - center[1];
 			const float az = eye[2] - center[2];
 			const float alen = std::sqrt(ax * ax + ay * ay + az * az);
-			if (!std::isfinite(alen) || alen < 1.0f) {
-				PlaceDecline("eye is at the optic centre; no axis");
+			if (haveBound && std::isfinite(alen) && alen >= 1.0f) {
+				heuristic[0] = center[0] + ax / alen * radius;
+				heuristic[1] = center[1] + ay / alen * radius;
+				heuristic[2] = center[2] + az / alen * radius;
+				haveHeuristic = true;
+			}
+
+			// Candidate 2, the EXACT answer: the census-measured face centre pushed
+			// through the live shape's world transform. Preferred when available —
+			// it is a real measurement of the glass rather than an inference from a
+			// sphere that mounts and rails inflate.
+			float      exact[3] = {};
+			const bool haveExact = ScopeIdent::OcularFaceWorld(exact);
+
+			if (!haveExact && !haveHeuristic) {
+				PlaceDecline(haveBound ? "eye is at the optic centre; no axis"
+				                       : "no census row and no usable optic bound");
 				return;
 			}
-			const float target[3] = {
-				center[0] + ax / alen * radius,
-				center[1] + ay / alen * radius,
-				center[2] + az / alen * radius,
-			};
+
+			const float* chosen = haveExact ? exact : heuristic;
+			const float  target[3] = { chosen[0], chosen[1], chosen[2] };
 
 			// Back into the parent's space, then express as a delta from the baseline
 			// so it drops straight into the existing offset path.
@@ -1437,6 +1456,14 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			p.boundRadius = radius;
+			std::snprintf(p.method, sizeof(p.method), "%s", haveExact ? "census" : "bound");
+			p.haveBoth = haveExact && haveHeuristic;
+			if (p.haveBoth) {
+				const float gx = exact[0] - heuristic[0];
+				const float gy = exact[1] - heuristic[1];
+				const float gz = exact[2] - heuristic[2];
+				p.agreement = std::sqrt(gx * gx + gy * gy + gz * gz);
+			}
 			const float mx = target[0] - baseWorld[0];
 			const float my = target[1] - baseWorld[1];
 			const float mz = target[2] - baseWorld[2];
@@ -1539,12 +1566,20 @@ namespace TrueScopes::ScopeRender
 			// ScopeParent), on demand, or until it first succeeds.
 			if (!g_place.valid || rebaselined || g_placeDirty.exchange(false)) {
 				ComputeAutoPlacement(a_player);
-				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} offset=({:.2f},{:.2f},{:.2f}) "
+				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} via {} offset=({:.2f},{:.2f},{:.2f}) "
 				                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
-					g_place.valid ? "candidate" : "declined",
+					g_place.valid ? "candidate" : "declined", g_place.method,
 					g_place.offset[0], g_place.offset[1], g_place.offset[2], g_place.miss,
 					g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
 					g_place.boundRadius, g_place.reason);
+				// The gap between the two independent targets is the only honest
+				// estimate of the heuristic's error, and the heuristic is what every
+				// modded scope falls back on. Worth a line whenever both exist.
+				if (g_place.haveBoth) {
+					logger::info(FMT_STRING("WIDGET AUTO-PLACE: census and bound-heuristic targets differ "
+					                        "by {:.2f} units"),
+						g_place.agreement);
+				}
 			}
 			if (*Settings::widgetAutoPlace && g_place.valid) {
 				ox = g_place.offset[0];
@@ -3319,7 +3354,10 @@ namespace TrueScopes::ScopeRender
 		}
 		r.boundRadius = g_place.boundRadius;
 		r.miss = g_place.miss;
+		r.haveBoth = g_place.haveBoth;
+		r.agreement = g_place.agreement;
 		std::snprintf(r.reason, sizeof(r.reason), "%s", g_place.reason);
+		std::snprintf(r.method, sizeof(r.method), "%s", g_place.method);
 		return r;
 	}
 
