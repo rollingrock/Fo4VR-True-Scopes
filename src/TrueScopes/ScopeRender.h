@@ -144,6 +144,16 @@ namespace TrueScopes::ScopeRender
 		char  method[16];  // "census" (exact) or "bound" (heuristic fallback)
 		bool  haveBoth;
 		float agreement;  // |census - heuristic|, the heuristic's measured error
+		// Closed-loop state (v0.2.94). The loop steers by observing where the disc
+		// actually lands, so it converges even if the assumed parent transform is
+		// wrong — `parentResidual` says whether it was.
+		bool  converged;
+		bool  diverged;
+		int   steps;
+		float residual;        // |target - actual disc position| right now
+		float bestResidual;
+		float discWorld[3];    // where the disc actually is, same frame as target
+		float parentResidual;  // 0 = assumed parent transform checks out
 	};
 	PlacementReport GetPlacement();
 

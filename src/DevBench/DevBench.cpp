@@ -1186,6 +1186,13 @@ namespace DevBench
 				out += ",\"method\":" + Quote(p.method);
 				out += ",\"haveBoth\":" + std::string(p.haveBoth ? "true" : "false");
 				out += ",\"agreement\":" + std::to_string(p.agreement);
+				out += ",\"converged\":" + std::string(p.converged ? "true" : "false");
+				out += ",\"diverged\":" + std::string(p.diverged ? "true" : "false");
+				out += ",\"steps\":" + std::to_string(p.steps);
+				out += ",\"residual\":" + std::to_string(p.residual);
+				out += ",\"bestResidual\":" + std::to_string(p.bestResidual);
+				out += ",\"parentResidual\":" + std::to_string(p.parentResidual);
+				out += ",\"discWorld\":" + Vec3(p.discWorld);
 				out += ",\"offset\":" + Vec3(p.offset);
 				out += ",\"target\":" + Vec3(p.target);
 				out += ",\"baseWorld\":" + Vec3(p.baseWorld);

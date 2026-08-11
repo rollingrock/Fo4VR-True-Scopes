@@ -1310,9 +1310,42 @@ namespace TrueScopes::ScopeRender
 		//
 		// ScopeParent's translate is in its PARENT's space, so the world-space target
 		// has to come back through that transform: v = R^T * (W - T) / s.
+		//
+		// v0.2.94 — WHY THIS IS NOW CLOSED-LOOP.
+		//
+		// v0.2.92/93 computed one offset through that chain and applied it. The
+		// 2026-08-11 bench refuted the result (predicted |offset| ~1.8 on the
+		// hunting rifle, got 3.07) and, worse, the chain could not be checked from
+		// outside the process: reads taken over separate DevBench round trips
+		// sample DIFFERENT FRAMES, and a rifle held in VR moves units between them,
+		// so every "verification" of it was measuring hand tremor as much as
+		// geometry. An open-loop transform that cannot be validated is exactly the
+		// shape of defect this project keeps shipping.
+		//
+		// So stop asserting the transform and MEASURE it. Aim at the target, then
+		// each frame read where the disc actually landed and correct by the
+		// residual:
+		//
+		//     err   = target - ScopeParent.world
+		//     local += R^T * err / s          (best estimate of the mapping)
+		//
+		// The estimate only has to be roughly right for this to converge — it is a
+		// contraction as long as the assumed mapping is within ~90 degrees of the
+		// real one. A transposed matrix, a wrong parent offset, an intermediate
+		// node or a non-unit scale all get absorbed instead of silently mis-aiming
+		// the disc. Divergence is detected and backed out rather than left running.
+		//
+		// Everything the loop reads is sampled inside ONE render, so it is immune
+		// to the cross-frame sampling error that invalidated the manual check.
 		constexpr std::uintptr_t kParentInNiAVObject = 0x28;
 		constexpr std::uintptr_t kWorldTransform = 0x70;
 		constexpr std::size_t    kMatrixRowStride = 4;  // NiMatrix3 is 3 rows of 4
+
+		// Converged when the disc centre is this close to the ocular face. The lens
+		// is ~1.3 units in radius, so a twentieth of a unit is far below anything
+		// visible; the cap stops a wobbling servo from updating the node forever.
+		constexpr float kPlaceTolerance = 0.05f;
+		constexpr int   kPlaceMaxSteps = 12;
 
 		struct PlacementInfo
 		{
@@ -1331,6 +1364,19 @@ namespace TrueScopes::ScopeRender
 			char  method[16] = "none";
 			bool  haveBoth = false;
 			float agreement = 0.0f;  // |exact - heuristic|, world units
+			// --- closed loop state (v0.2.94) ---
+			bool  converged = false;
+			bool  diverged = false;
+			int   steps = 0;
+			float residual = 0.0f;      // |target - where the disc actually is|
+			float bestResidual = 1.0e9f;
+			float bestOffset[3] = {};   // the best offset seen, restored on divergence
+			float discWorld[3] = {};    // where the disc actually is, THIS frame
+			// Single-frame consistency check on the assumed parent transform:
+			// |parent.world(ScopeParent.local) - ScopeParent.world|. Large means the
+			// layout assumption is wrong -- which the loop survives, but it is worth
+			// knowing rather than inferring.
+			float parentResidual = -1.0f;
 		};
 		PlacementInfo    g_place;
 		std::atomic_bool g_placeDirty{ false };
@@ -1342,7 +1388,12 @@ namespace TrueScopes::ScopeRender
 		}
 
 		// Always runs; never writes anything. The caller decides whether to use it.
-		void ComputeAutoPlacement(std::uintptr_t a_player)
+		//
+		// a_keepLoopState is set when the closed loop calls this to refresh the
+		// target for a new frame: the geometry must be re-read (the weapon moves)
+		// but the loop's accumulated offset, step count and best-so-far must NOT be
+		// reset, or the servo restarts from scratch every frame and never converges.
+		void ComputeAutoPlacement(std::uintptr_t a_player, bool a_keepLoopState = false)
 		{
 			if (!g_widget.captured) {
 				PlaceDecline("no ScopeParent baseline yet");
@@ -1394,14 +1445,31 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 
-			// Where the engine's own baseline puts the disc, in world space. Computed
-			// through the parent rather than read off ScopeParent's world transform,
-			// which may still hold OUR last write until the next update pass.
+			// Where the engine's own baseline puts the disc, in world space, per the
+			// ASSUMED transform.
 			const float L[3] = { g_widget.baseTx, g_widget.baseTy, g_widget.baseTz };
 			float       baseWorld[3];
 			for (std::size_t r = 0; r < 3; ++r) {
 				baseWorld[r] = pt[r] + ps * (R[r][0] * L[0] + R[r][1] * L[1] + R[r][2] * L[2]);
 			}
+
+			// Single-frame check on that assumption: push ScopeParent's CURRENT local
+			// translate through the parent and compare against its actual world
+			// translate. Both are read in this render, so unlike an external probe
+			// this cannot be confounded by the weapon moving between samples. A large
+			// residual does not stop anything — the closed loop absorbs it — but it
+			// says plainly that the layout is not what the code believes.
+			const auto* curLocal = reinterpret_cast<const float*>(sp + 0x60);
+			const auto* curWorld = reinterpret_cast<const float*>(sp + kWorldTranslate);
+			float       predicted[3];
+			for (std::size_t r = 0; r < 3; ++r) {
+				predicted[r] = pt[r] + ps * (R[r][0] * curLocal[0] + R[r][1] * curLocal[1] +
+				                                R[r][2] * curLocal[2]);
+			}
+			const float prx = predicted[0] - curWorld[0];
+			const float pry = predicted[1] - curWorld[1];
+			const float prz = predicted[2] - curWorld[2];
+			const float parentResidual = std::sqrt(prx * prx + pry * pry + prz * prz);
 
 			// Candidate 1, the HEURISTIC: target = C + normalize(E - C) * r.
 			float      heuristic[3] = {};
@@ -1456,6 +1524,11 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			p.boundRadius = radius;
+			p.parentResidual = parentResidual;
+			for (std::size_t k = 0; k < 3; ++k) {
+				p.discWorld[k] = curWorld[k];
+				p.bestOffset[k] = p.offset[k];
+			}
 			std::snprintf(p.method, sizeof(p.method), "%s", haveExact ? "census" : "bound");
 			p.haveBoth = haveExact && haveHeuristic;
 			if (p.haveBoth) {
@@ -1481,7 +1554,120 @@ namespace TrueScopes::ScopeRender
 
 			p.valid = true;
 			std::snprintf(p.reason, sizeof(p.reason), "ok");
+			if (a_keepLoopState && g_place.valid) {
+				// Carry the loop forward: its offset IS the accumulated correction,
+				// and re-deriving it open-loop here would discard everything the
+				// closed loop has learned.
+				for (std::size_t k = 0; k < 3; ++k) {
+					p.offset[k] = g_place.offset[k];
+					p.bestOffset[k] = g_place.bestOffset[k];
+				}
+				p.steps = g_place.steps;
+				p.converged = g_place.converged;
+				p.diverged = g_place.diverged;
+				p.residual = g_place.residual;
+				p.bestResidual = g_place.bestResidual;
+			}
 			g_place = p;
+		}
+
+		// One closed-loop correction. Runs only while auto-placement is applied,
+		// because it steers by observing the effect of what was applied last frame.
+		//
+		// Re-aims the TARGET each step too: the census face is attached to the
+		// weapon, so it moves with the gun, and steering at a stale target would
+		// chase the weapon's motion instead of converging on it.
+		void StepAutoPlacement(std::uintptr_t a_player, std::uintptr_t a_sp)
+		{
+			if (!g_place.valid || g_place.converged || g_place.diverged) {
+				return;
+			}
+
+			// Refresh target/geometry for this frame (also refreshes discWorld).
+			ComputeAutoPlacement(a_player, /*a_keepLoopState=*/true);
+			if (!g_place.valid) {
+				return;
+			}
+
+			const auto* world = reinterpret_cast<const float*>(a_sp + kWorldTranslate);
+			const float ex = g_place.target[0] - world[0];
+			const float ey = g_place.target[1] - world[1];
+			const float ez = g_place.target[2] - world[2];
+			const float err = std::sqrt(ex * ex + ey * ey + ez * ez);
+			g_place.residual = err;
+
+			if (!std::isfinite(err)) {
+				g_place.diverged = true;
+				std::snprintf(g_place.reason, sizeof(g_place.reason), "residual went non-finite");
+				return;
+			}
+			if (err <= kPlaceTolerance) {
+				g_place.converged = true;
+				logger::info(FMT_STRING("WIDGET AUTO-PLACE: converged in {} step(s), residual {:.3f}, "
+				                        "offset=({:.2f},{:.2f},{:.2f})"),
+					g_place.steps, err, g_place.offset[0], g_place.offset[1], g_place.offset[2]);
+				return;
+			}
+
+			// Keep the best result seen. If the loop is going to be stopped -- by the
+			// step cap or by divergence -- it should stop at its best point, not at
+			// whatever the last flailing iteration happened to produce.
+			if (err < g_place.bestResidual) {
+				g_place.bestResidual = err;
+				for (std::size_t k = 0; k < 3; ++k) {
+					g_place.bestOffset[k] = g_place.offset[k];
+				}
+			} else if (err > g_place.bestResidual * 2.0f && g_place.steps >= 2) {
+				g_place.diverged = true;
+				for (std::size_t k = 0; k < 3; ++k) {
+					g_place.offset[k] = g_place.bestOffset[k];
+				}
+				std::snprintf(g_place.reason, sizeof(g_place.reason), "diverged; kept best (residual %.2f)",
+					g_place.bestResidual);
+				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: DIVERGED at step {} (residual {:.2f} vs best "
+				                        "{:.2f}) — the assumed parent transform is wrong enough that the "
+				                        "correction points the wrong way. Reverted to best offset."),
+					g_place.steps, err, g_place.bestResidual);
+				return;
+			}
+
+			if (++g_place.steps > kPlaceMaxSteps) {
+				g_place.converged = true;  // stop stepping; not a success
+				for (std::size_t k = 0; k < 3; ++k) {
+					g_place.offset[k] = g_place.bestOffset[k];
+				}
+				std::snprintf(g_place.reason, sizeof(g_place.reason), "step cap; best residual %.2f",
+					g_place.bestResidual);
+				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: hit the {}-step cap with residual {:.2f} — "
+				                        "placement is as close as this loop gets."),
+					kPlaceMaxSteps, g_place.bestResidual);
+				return;
+			}
+
+			// Correct by the residual, mapped into local space with the best estimate
+			// of the parent transform. Being approximate is fine -- this is a
+			// contraction, not a solve.
+			const auto parent = *reinterpret_cast<std::uintptr_t*>(a_sp + kParentInNiAVObject);
+			if (!parent) {
+				return;
+			}
+			const auto* pm = reinterpret_cast<const float*>(parent + kWorldTransform);
+			const float ps = *reinterpret_cast<const float*>(parent + kWorldScale);
+			if (!std::isfinite(ps) || ps < 1.0e-4f) {
+				return;
+			}
+			const float e[3] = { ex, ey, ez };
+			for (std::size_t c = 0; c < 3; ++c) {
+				float d = 0.0f;
+				for (std::size_t r = 0; r < 3; ++r) {
+					d += pm[r * kMatrixRowStride + c] * e[r];  // R^T * err
+				}
+				const float step = d / ps;
+				if (!std::isfinite(step)) {
+					return;
+				}
+				g_place.offset[c] += step;
+			}
 		}
 
 		void ApplyWidgetFit(std::uintptr_t a_player)
@@ -1572,6 +1758,17 @@ namespace TrueScopes::ScopeRender
 					g_place.offset[0], g_place.offset[1], g_place.offset[2], g_place.miss,
 					g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
 					g_place.boundRadius, g_place.reason);
+				// Single-frame test of the assumed parent transform. Anything much
+				// above zero means ScopeParent.world is NOT parent.world composed
+				// with its local translate — i.e. the layout is not what this code
+				// believes. The closed loop survives that; the number is here so it
+				// is diagnosed rather than inferred from a misplaced disc.
+				if (g_place.valid && g_place.parentResidual >= 0.0f) {
+					logger::info(FMT_STRING("WIDGET AUTO-PLACE: parent-transform residual {:.3f} "
+					                        "(0 = ScopeParent.world matches parent o local; large = the "
+					                        "assumed +0x28 parent / matrix layout is wrong)"),
+						g_place.parentResidual);
+				}
 				// The gap between the two independent targets is the only honest
 				// estimate of the heuristic's error, and the heuristic is what every
 				// modded scope falls back on. Worth a line whenever both exist.
@@ -1582,6 +1779,10 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			if (*Settings::widgetAutoPlace && g_place.valid) {
+				// Closed loop: steer by what the last write actually did. Stops on
+				// its own once the disc is on the face (or gives up and keeps its
+				// best attempt), after which the early-out below makes this free.
+				StepAutoPlacement(a_player, sp);
 				ox = g_place.offset[0];
 				oy = g_place.offset[1];
 				oz = g_place.offset[2];
@@ -3356,6 +3557,15 @@ namespace TrueScopes::ScopeRender
 		r.miss = g_place.miss;
 		r.haveBoth = g_place.haveBoth;
 		r.agreement = g_place.agreement;
+		r.converged = g_place.converged;
+		r.diverged = g_place.diverged;
+		r.steps = g_place.steps;
+		r.residual = g_place.residual;
+		r.bestResidual = g_place.bestResidual;
+		r.parentResidual = g_place.parentResidual;
+		for (std::size_t k = 0; k < 3; ++k) {
+			r.discWorld[k] = g_place.discWorld[k];
+		}
 		std::snprintf(r.reason, sizeof(r.reason), "%s", g_place.reason);
 		std::snprintf(r.method, sizeof(r.method), "%s", g_place.method);
 		return r;
