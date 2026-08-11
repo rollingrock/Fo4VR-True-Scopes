@@ -244,6 +244,7 @@ namespace TrueScopes::ScopeIdent
 
 		void ReadGeom(std::uintptr_t a_node, const char* a_name, ShapeGeom& a_out)
 		{
+			a_out.node = a_node;
 			CopyName(a_out.name, a_name);
 			const auto* w = reinterpret_cast<const float*>(a_node + kWorldTranslate);
 			a_out.world[0] = w[0];
@@ -717,8 +718,43 @@ namespace TrueScopes::ScopeIdent
 			if (std::strcmp(g.name, g_info.faceShape) != 0) {
 				continue;
 			}
+
+			// RE-READ THE SHAPE'S TRANSFORM LIVE (v0.2.99). The snapshot in
+			// ShapeGeom was taken when the probe ran, which is a DIFFERENT FRAME
+			// from the one the caller is placing in -- and the weapon moves. Mixing
+			// the two put a persistent 0.3-0.5 unit error into the placement, which
+			// the closed loop then chased and turned into a runaway.
+			//
+			// The name is re-checked against the live node before trusting it: a
+			// weapon or mod swap can free this 3D, and a stale pointer that still
+			// reads as memory would silently place the disc using another object's
+			// transform. Name mismatch (or an unreadable name) means the snapshot
+			// is what we have, and the caller is told the face is unavailable
+			// rather than handed a plausible wrong answer.
+			float       world[3] = { g.world[0], g.world[1], g.world[2] };
+			float       rot[9];
+			float       scale = g.scale;
+			std::memcpy(rot, g.rot, sizeof(rot));
+			if (g.node) {
+				char live[kNameLen] = {};
+				if (!NodeName(g.node, live) || std::strcmp(live, g.name) != 0) {
+					return false;
+				}
+				const auto* w = reinterpret_cast<const float*>(g.node + kWorldTranslate);
+				const auto* m = reinterpret_cast<const float*>(g.node + kWorldTransform);
+				scale = *reinterpret_cast<const float*>(g.node + kWorldScale);
+				for (std::size_t k = 0; k < 3; ++k) {
+					world[k] = w[k];
+				}
+				for (std::size_t r = 0; r < 3; ++r) {
+					for (std::size_t c = 0; c < 3; ++c) {
+						rot[r * 3 + c] = m[c * kMatrixRowStride + r];  // transposed on read
+					}
+				}
+			}
+
 			// world = T + scale * (R * v), R row-major (already de-strided).
-			if (!std::isfinite(g.scale) || g.scale < 1.0e-4f) {
+			if (!std::isfinite(scale) || scale < 1.0e-4f) {
 				return false;
 			}
 
@@ -751,9 +787,9 @@ namespace TrueScopes::ScopeIdent
 				return false;
 			}
 			for (std::size_t r = 0; r < 3; ++r) {
-				a_world[r] = g.world[r] + g.scale * (g.rot[r * 3 + 0] * g_info.face[0] +
-				                                        g.rot[r * 3 + 1] * g_info.face[1] +
-				                                        g.rot[r * 3 + 2] * g_info.face[2]);
+				a_world[r] = world[r] + scale * (rot[r * 3 + 0] * g_info.face[0] +
+				                                    rot[r * 3 + 1] * g_info.face[1] +
+				                                    rot[r * 3 + 2] * g_info.face[2]);
 				if (!std::isfinite(a_world[r])) {
 					return false;
 				}

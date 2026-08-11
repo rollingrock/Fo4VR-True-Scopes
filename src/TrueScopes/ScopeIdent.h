@@ -74,6 +74,10 @@ namespace TrueScopes::ScopeIdent
 	// read so that rot[] is the real rotation and callers use the textbook form.
 	struct ShapeGeom
 	{
+		// The live node. Placement re-reads its CURRENT world transform rather
+		// than using the snapshot below, so the target is same-frame with
+		// everything else the placement maths touches (see OcularFaceWorld).
+		std::uintptr_t node = 0;
 		char  name[kNameLen] = {};
 		float world[3] = {};        // world translate
 		float rot[9] = {};          // world rotation, row-major, de-strided
