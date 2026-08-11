@@ -286,6 +286,7 @@ namespace DevBench
 				{ "widgetOffsetX", Kind::Float, &widgetOffsetX },
 				{ "widgetOffsetY", Kind::Float, &widgetOffsetY },
 				{ "widgetOffsetZ", Kind::Float, &widgetOffsetZ },
+				{ "widgetAutoPlace", Kind::Bool, &widgetAutoPlace },
 				{ "retryAfterFault", Kind::Bool, &retryAfterFault },
 				{ "diagLensReadback", Kind::Bool, &diagLensReadback },
 				{ "diagPauseTint", Kind::Bool, &diagPauseTint },
