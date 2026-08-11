@@ -191,6 +191,7 @@ widgetScaleOverride = 0.0
 widgetOffsetX = 0.0
 widgetOffsetY = 0.0
 widgetOffsetZ = 0.0
+widgetAutoPlace = true
 
 # ---------------------------------------------------------------------------
 # PER-SCOPE APERTURE OVERRIDES
@@ -229,3 +230,4 @@ widgetOffsetZ = 0.0
 # this is the only shipped scope with a distinct glass shape.
 [Scopes.HuntingScope]
 offsetY = -1.8
+
