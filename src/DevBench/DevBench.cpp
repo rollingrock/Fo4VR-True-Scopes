@@ -461,7 +461,7 @@ namespace DevBench
 				"{\"path\":\"/read\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64|ptr|bytes|cstr&count=N\"},"
 				"{\"path\":\"/poke\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V - write one scalar, SEH-guarded; echoes before/after so you have an undo\"},"
 				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"},"
-				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the aperture in use and where it came from\"},"
+				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the ATTACHED OMOD model paths, the aperture in use and whether it resolved by path or by node name\"},"
 				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
 		}
@@ -1233,6 +1233,30 @@ namespace DevBench
 			out += ",\"aperture\":" + std::to_string(i.aperture);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");
+			// HOW it resolved, not just to what. "node" on a modded load order is
+			// the case where the answer can be confidently wrong, so it has to be
+			// visible without reading the log.
+			out += ",\"matchedBy\":" + Quote(i.matchedBy);
+			out += ",\"overrideKey\":" + Quote(i.overrideKey);
+			// The attached OMODs. When nothing matches, these paths ARE the answer:
+			// they are what a user pastes into [Scopes] to teach the plugin an optic
+			// it has never seen.
+			out += ",\"mods\":{\"have\":" + std::string(i.haveMods ? "true" : "false");
+			out += ",\"error\":" + Quote(i.modsError);
+			out += ",\"stacksSeen\":" + std::to_string(i.stacksSeen);
+			out += ",\"stackPick\":" + Quote(i.stackPick);
+			out += ",\"overflow\":" + std::to_string(i.modOverflow);
+			out += ",\"rows\":[";
+			for (std::uint32_t n = 0; n < i.modCount; ++n) {
+				if (n) {
+					out += ",";
+				}
+				out += "{\"formID\":" + Quote(Hex(i.mods[n].formID));
+				out += ",\"attachPoint\":" + std::to_string(i.mods[n].attachPoint);
+				out += ",\"path\":" + Quote(i.mods[n].path);
+				out += ",\"key\":" + Quote(i.mods[n].key) + "}";
+			}
+			out += "]}";
 			out += ",\"nodesVisited\":" + std::to_string(i.nodesVisited);
 			out += ",\"nameOverflow\":" + std::to_string(i.nameOverflow);
 			out += ",\"clipped\":" + std::to_string(i.clipped);
@@ -1250,6 +1274,11 @@ namespace DevBench
 				}
 				out += Quote(i.names[n]);
 			}
+			// Keyed by model PATH, not by node name. Three rows share the node name
+			// "LaserScope", so a name-keyed JSON object dropped two of them in every
+			// parser that read this — the object form was itself asserting a
+			// uniqueness the data does not have. Paths are unique by construction
+			// (the census fails loudly if they ever are not).
 			out += "],\"table\":{";
 			bool first = true;
 			for (const auto& e : TrueScopes::ScopeIdent::Table()) {
@@ -1257,7 +1286,8 @@ namespace DevBench
 					out += ",";
 				}
 				first = false;
-				out += Quote(e.node) + ":{\"aperture\":" + std::to_string(e.aperture) +
+				out += Quote(e.path) + ":{\"node\":" + Quote(e.node) +
+				       ",\"aperture\":" + std::to_string(e.aperture) +
 				       ",\"shape\":" + Quote(e.shape) + ",\"face\":" + Vec3(e.face) + "}";
 			}
 			out += "}}";

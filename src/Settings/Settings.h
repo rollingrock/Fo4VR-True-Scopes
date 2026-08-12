@@ -422,23 +422,96 @@ namespace Settings
 		double offsetZ = std::numeric_limits<double>::quiet_NaN();
 	};
 
-	inline std::mutex                                        scopeApertureLock;
-	inline std::map<std::string, ScopeEntry, std::less<>>    scopeEntries;
-
-	// The entry for a node name, or an all-unspecified one. Never throws, never
-	// blocks for long: both writer (scope-in) and reader (a probe) are rare.
-	[[nodiscard]] inline ScopeEntry ScopeEntryFor(std::string_view a_node)
+	// v0.2.101: a [Scopes] key may now be a MODEL PATH as well as a node name,
+	// because a node name cannot address a modded optic that copied a vanilla
+	// mesh's root name without also addressing the vanilla one. Paths mean the
+	// key has to survive being written by a human, so it is normalized on BOTH
+	// sides -- once when the TOML is loaded, once when a lookup is made:
+	//
+	//   lower-cased          the path in the ESM is whatever the author typed
+	//   backslash -> slash   so "Weapons/HuntingRifle/X.nif" needs no \\ escaping
+	//                        in TOML, which is the form people get wrong
+	//   leading "meshes/"    dropped; model paths are relative to Meshes already,
+	//                        but it is the obvious thing to paste from a file
+	//                        browser
+	//   trailing "_1.nif"    folded to ".nif" -- the OMOD names the world mesh
+	//                        and the engine loads the "_1" first-person twin
+	//                        (FUN_14130c910), so both name one optic
+	//
+	// THESE RULES MUST MATCH mesh_key() in tools/scope-census.py, which produces
+	// the built-in table's keys. A divergence would not throw; it would simply
+	// never match, and a table that never matches looks exactly like a table
+	// whose numbers happen to equal the fallback -- the trap that hid the
+	// v0.2.85 lookup being dead for four versions.
+	// ONE implementation, in a buffer form, because the caller that matters most
+	// runs inside the probe's SEH guard: allocating there would leak a std::string
+	// on the fault path that disables probing. The std::string overload below is
+	// a wrapper, so the two can never drift apart.
+	inline void NormalizeScopeKeyInto(std::string_view a_key, char* a_out, std::size_t a_cap)
 	{
+		if (!a_out || a_cap == 0) {
+			return;
+		}
+		std::size_t                n = 0;
+		constexpr std::string_view meshes = "meshes\\";
+		constexpr std::string_view meshesFwd = "meshes/";
+		std::size_t                start = 0;
+		if (a_key.size() >= meshes.size()) {
+			const auto head = a_key.substr(0, meshes.size());
+			bool       isMeshes = true;
+			for (std::size_t i = 0; i < meshes.size(); ++i) {
+				const auto c = static_cast<char>(std::tolower(static_cast<unsigned char>(head[i])));
+				if (c != meshes[i] && c != meshesFwd[i]) {
+					isMeshes = false;
+					break;
+				}
+			}
+			if (isMeshes) {
+				start = meshes.size();
+			}
+		}
+		for (std::size_t i = start; i < a_key.size() && n + 1 < a_cap; ++i) {
+			const char c = a_key[i];
+			a_out[n++] = (c == '\\') ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+		a_out[n] = '\0';
+
+		constexpr std::string_view fp = "_1.nif";
+		if (n >= fp.size() && std::string_view{ a_out, n }.ends_with(fp)) {
+			n -= fp.size();
+			// ".nif" is shorter than "_1.nif", so this always fits.
+			std::memcpy(a_out + n, ".nif", 5);
+		}
+	}
+
+	[[nodiscard]] inline std::string NormalizeScopeKey(std::string_view a_key)
+	{
+		char buf[512] = {};
+		NormalizeScopeKeyInto(a_key, buf, sizeof(buf));
+		return buf;
+	}
+
+	inline std::mutex                                     scopeApertureLock;
+	// Keyed by NormalizeScopeKey(...) of whatever the TOML said, so lookups are
+	// case- and separator-insensitive for paths and, harmlessly, for node names.
+	inline std::map<std::string, ScopeEntry, std::less<>> scopeEntries;
+
+	// The entry for a node name or model path, or an all-unspecified one. Never
+	// throws, never blocks for long: both writer (scope-in) and reader (a probe)
+	// are rare.
+	[[nodiscard]] inline ScopeEntry ScopeEntryFor(std::string_view a_key)
+	{
+		const auto             norm = NormalizeScopeKey(a_key);
 		const std::scoped_lock lock(scopeApertureLock);
-		const auto             it = scopeEntries.find(a_node);
+		const auto             it = scopeEntries.find(norm);
 		return it == scopeEntries.end() ? ScopeEntry{} : it->second;
 	}
 
 	// Kept as its own accessor because the aperture is what decides whether a scope
 	// counts as "known", and 0 is the unambiguous "no opinion" for it.
-	[[nodiscard]] inline double ScopeApertureOverride(std::string_view a_node)
+	[[nodiscard]] inline double ScopeApertureOverride(std::string_view a_key)
 	{
-		return ScopeEntryFor(a_node).aperture;
+		return ScopeEntryFor(a_key).aperture;
 	}
 
 	inline void load()
@@ -507,12 +580,21 @@ namespace Settings
 
 #undef LOAD
 
-		// [Scopes] -- every key is a node name, so it cannot be a LOAD() list.
-		// Two accepted forms, because the common case deserves the short one:
+		// [Scopes] -- every key is a node name or a model path, so it cannot be a
+		// LOAD() list. Two accepted forms, because the common case deserves the
+		// short one:
 		//     HuntingScope = 1.267                              (aperture only)
 		//     [Scopes.HuntingScope]                             (full entry)
 		//     aperture = 1.267
 		//     offsetY  = -1.8
+		//
+		// v0.2.101: prefer the MODEL PATH for anything modded, because a node
+		// name may be shared with a vanilla optic and an entry keyed on it would
+		// silently retune that one too:
+		//     [Scopes."weapons/thermalscope/scopetherm1.nif"]
+		//     aperture = 0.9
+		// Keys are normalized (NormalizeScopeKey), so case, backslash-vs-slash, a
+		// leading "Meshes\" and a "_1" first-person suffix are all accepted.
 		{
 			std::map<std::string, ScopeEntry, std::less<>> fresh;
 			if (const auto* scopes = config["Scopes"].as_table()) {
@@ -560,7 +642,14 @@ namespace Settings
 						e.aperture = 0.0;
 					}
 					if (e.aperture > 0.0 || haveOffset) {
-						fresh.emplace(name, e);
+						// Stored normalized so a lookup can normalize too and the
+						// two always meet, whatever the user typed.
+						const auto norm = NormalizeScopeKey(name);
+						if (const auto [it, ok] = fresh.emplace(norm, e); !ok) {
+							logger::warn(FMT_STRING("[Scopes] {}: duplicate of an earlier entry once "
+							                        "normalized to '{}' — the first one wins"),
+								name, norm);
+						}
 					} else {
 						logger::warn(FMT_STRING("[Scopes] {}: nothing usable in this entry"), name);
 					}

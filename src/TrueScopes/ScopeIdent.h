@@ -25,6 +25,54 @@
 // 0x140efab3e ("MOV R8D, dword ptr [0x1459444c8]") rather than taken from a
 // Ghidra DAT_ label -- the decompiler prints 0x1458e2998 there, which is wrong,
 // the same high-.data mislabelling documented in the investigation repo.
+//
+// -------------------------------------------------------------------------
+// v0.2.101: THE NODE NAME IS NOT A SAFE KEY ONCE MODS ARE INSTALLED.
+//
+// Node names are distinct across the 26 SHIPPED optics (one collision), which
+// is what made them look usable. They are not distinct across a modded load
+// order, because modders copy a vanilla mesh and keep its root node name.
+// Censused against the user's own mods (SESSION_2026-08-10_PER_SCOPE_FIT.md §5):
+//
+//     ScopeTherm1_1.nif   (a thermal scope) -> root "HuntingScope"  -> 1.267
+//     SCARScopeLarge.nif                    -> root "44MagScope"    -> 1.290
+//     Scope_3_1.nif                         -> root "PlasmaScope"   -> 4.564
+//     HarpoonGunScope_1.nif                 -> root "Scope"         -> 3.058
+//
+// So a name-keyed table hands a modded optic the vanilla numbers with complete
+// confidence -- and a [Scopes] override could not correct it without also
+// breaking the vanilla scope it collides with.
+//
+// The fix is to key on the MODEL PATH, which is unique per mesh. Two shipped
+// scopes are both called Scope_1.nif (Plasma and the Institute laser), so it
+// has to be the whole relative path, not the file name.
+//
+// Reaching it at runtime is this chain, all of it read out of the VR binary
+// (QueueFiles 0x140eda410 does exactly these four steps in order):
+//
+//   TESObjectREFR::GetInventoryItem  0x1403e6270  (player, weapon) -> BGSInventoryItem*
+//   BGSInventoryItem::GetExtraDataAt 0x1401aeeb0  (item, stackIdx) -> ExtraDataList*
+//   ExtraDataList::GetExtraData      0x1400442f0  (list, 0x35)     -> BGSObjectInstanceExtra*
+//   BGSObjectInstanceExtra::GetModFromID 0x14003d650 (u32)         -> BGSMod::Attachment::Mod*
+//
+// then the mod's TESModel is at +0x48 and its path BSFixedString at +0x50.
+// That offset has an independent cross-check: DevBench's OMOD string scan has
+// always reported the texture-ID block at +0x58, and TESModel::textures sits at
+// TESModel+0x10 -- 0x48 + 0x10 = 0x58, from two unrelated observations.
+//
+// WHICH STACK: a base weapon can be in the inventory several times with
+// different mods, so the stack is chosen by IDENTITY -- the one whose
+// ExtraDataList::GetInstanceData (0x14008b040) pointer-equals the InstanceData
+// that Actor::GetCurrentWeapon just handed back. Not by "stack 0", which would
+// silently describe a spare rifle in the player's pack.
+//
+// WHY THE PATH NEEDS NORMALIZING: the OMOD carries the WORLD model path and the
+// engine substitutes "_1.nif" for ".nif" to get the first-person mesh -- proven
+// at FUN_14130c910, which literally does BSstristr(buf, ".nif") then
+// strcat_s(buf, "_1.nif"). The census measures the _1 mesh, the runtime hands
+// us the other name for the same optic, so both are folded to one key. See
+// NormalizeModelPath, whose rules must stay identical to mesh_key() in
+// tools/scope-census.py.
 
 namespace TrueScopes::ScopeIdent
 {
@@ -41,6 +89,27 @@ namespace TrueScopes::ScopeIdent
 	inline constexpr std::size_t kNameLen = 64;
 	// Shapes under P-Scope whose placement we record. A scope is a handful.
 	inline constexpr std::size_t kMaxShapeGeom = 12;
+	// Model paths. Vanilla scope paths run to ~44 characters; mods nest deeper.
+	inline constexpr std::size_t kPathLen = 128;
+	// Attached object mods on one weapon: receiver, barrel, stock, grip, magazine,
+	// muzzle, sight, paint... Ten is a fully-built weapon; 24 is slack.
+	inline constexpr std::size_t kMaxMods = 24;
+
+	// One attached OMOD. Recorded for ALL of them, not just the one that
+	// resolves, because when nothing resolves the list IS the finding: it is
+	// what a user pastes into [Scopes] to teach the plugin their modded optic.
+	struct ModInfo
+	{
+		std::uint32_t formID = 0;
+		// BGSTypedKeywordValue<kAttachPoint> at Mod+0xC0 -- the slot the mod
+		// occupies (scope, muzzle, ...) as a keyword INDEX, not a pointer.
+		// Logged but not yet acted on: identifying the scope slot by value would
+		// let us name a modded optic we have no census row for, and that wants
+		// its own derivation rather than a guessed constant.
+		std::uint16_t attachPoint = 0;
+		char          path[kPathLen] = {};  // as authored, for humans
+		char          key[kPathLen] = {};   // normalized, for lookups
+	};
 
 	// WHERE a piece of the scope is, in world space (v0.2.92).
 	//
@@ -94,9 +163,21 @@ namespace TrueScopes::ScopeIdent
 		float         fovMult = 1.0f;      // scope magnification (1.0 = none/unknown)
 		float         zoomFovAt90 = 90.0f;  // engine's own zoom FOV for a 90 deg base
 		char          weaponNodeName[kNameLen] = {};
-		char          matched[kNameLen] = {};  // node name that keyed the table ("" = none)
-		float         aperture = 0.0f;         // resolved ocular radius actually in use
-		bool          fromTable = false;       // false = fell back to widgetApertureRadius
+		// The key that resolved the table -- a model path or a node name, so it
+		// is sized for the longer one. matchedBy says WHICH, because "the disc is
+		// wrong" and "the disc is right for the wrong scope" look identical
+		// otherwise, and the second is the whole failure mode this version fixes.
+		char          matched[kPathLen] = {};
+		char          matchedBy[16] = {};  // "path" | "node" | "" (nothing matched)
+		// The [Scopes] key that overrode the built-in row, "" if none. Kept
+		// SEPARATE from `matched` rather than overwriting it, which is what
+		// v0.2.85-100 did: a user who adds an entry needs to see that it took
+		// effect, and the next reader needs to see which census row is still
+		// supplying the face underneath it. Conflating the two hid exactly that
+		// (the v0.2.96 defect below).
+		char          overrideKey[kPathLen] = {};
+		float         aperture = 0.0f;   // resolved ocular radius actually in use
+		bool          fromTable = false;  // false = fell back to widgetApertureRadius
 		// Per-scope widget POSITION. NaN = this scope does not specify the axis, so
 		// the global widgetOffset* setting applies; 0.0 is a real, deliberate zero.
 		// Radius alone cannot fit a lens: a correctly sized disc in the wrong place
@@ -112,6 +193,25 @@ namespace TrueScopes::ScopeIdent
 		char           names[kMaxNames][kNameLen] = {};
 		std::uint32_t  scopeNameCount = 0;
 		char           scopeNames[kMaxScopeNames][kNameLen] = {};
+
+		// --- attached object mods (v0.2.101) --------------------------------
+		// modsError is not decoration. Every step of the OMOD chain can decline
+		// for an ordinary reason (a weapon with no mods has no extra data at
+		// all), and without a stated reason "no mods" and "the layout moved"
+		// produce the same empty list -- which is how a silently broken lookup
+		// spent five versions looking like a working one (§2 of the session doc).
+		bool          haveMods = false;
+		std::uint32_t modCount = 0;
+		std::uint32_t modOverflow = 0;
+		std::uint32_t stacksSeen = 0;
+		// Which rule chose the inventory stack: "instance" (its instance data IS
+		// the equipped one — the answer we want) or "sole" (nothing matched but
+		// there was only one stack, so it cannot be the wrong one). Recorded
+		// because "sole" everywhere would mean the identity comparison never
+		// works, and that is invisible from a correct-looking result.
+		char          stackPick[16] = {};
+		char          modsError[96] = {};
+		ModInfo       mods[kMaxMods] = {};
 
 		// --- geometry of the equipped optic (v0.2.92) ------------------------
 		// Two independent measures of where the scope is, deliberately BOTH
@@ -166,7 +266,14 @@ namespace TrueScopes::ScopeIdent
 	// exactly these rows).
 	struct TableEntry
 	{
-		const char* node;      // runtime key: the root name with ":N" stripped
+		// PRIMARY key: the normalized Meshes-relative model path of the mesh
+		// this row was measured from. Unique per mesh, which the node name is
+		// not once mods are installed -- see the header note.
+		const char* path;
+		// FALLBACK key: the root node name with ":N" stripped. Still needed,
+		// because the OMOD list is not always readable (a scope welded into a
+		// weapon's base mesh rather than attached as a mod has no OMOD at all).
+		const char* node;
 		float       aperture;  // ocular radius
 		const char* shape;     // the ONE shape the census measured
 		float       face[3];   // ocular face centre, in that shape's own space

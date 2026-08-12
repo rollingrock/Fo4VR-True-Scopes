@@ -196,15 +196,31 @@ widgetAutoPlace = true
 # ---------------------------------------------------------------------------
 # PER-SCOPE APERTURE OVERRIDES
 #
-# Key = a node name from the equipped weapon's 3D (normally the scope mesh's
-# root node), value = the ocular lens radius in mesh units. Anything here wins
+# Key = the scope's MODEL PATH (preferred) or a node name from the equipped
+# weapon's 3D; value = the ocular lens radius in mesh units. Anything here wins
 # over the plugin's built-in table.
+#
+# ** PREFER THE MODEL PATH FOR ANY MODDED SCOPE. ** Mod authors copy a vanilla
+# scope mesh and keep its root node name, so several different optics can share
+# one name -- a thermal scope that reports as "HuntingScope", a SCAR scope as
+# "44MagScope". A node-name entry would retune the vanilla scope too, and you
+# would have no way to tell them apart. The model path is unique per mesh.
+#
+# Paths are matched loosely so you can paste one from anywhere: case is ignored,
+# / and \ are the same, a leading "Meshes\" is ignored, and a "_1" first-person
+# suffix is folded away (the game loads HuntingRifleScope_1.nif for the mesh the
+# game data calls HuntingRifleScope.nif -- both work).
 #
 # TO ADD A SCOPE: equip it, raise it, then look in TrueScopesVR.log for
 #     SCOPE IDENT: no table entry. Add one under [Scopes] ... keyed by one of: ...
-# Pick the name that looks like the scope and give it a radius. Larger = bigger
-# disc in the lens. Start near the radius of the hole you actually look through
-# and nudge until the picture fills the tube without spilling past it.
+# and copy the quoted path it prints. Give it a radius: larger = bigger disc in
+# the lens. Start near the radius of the hole you actually look through and
+# nudge until the picture fills the tube without spilling past it.
+#
+# Also worth watching for in the log:
+#     SCOPE IDENT: matched by NODE NAME while the mod list WAS readable
+# That means the optic is almost certainly modded and is currently borrowing
+# some vanilla scope's numbers -- exactly the case an entry here should fix.
 #
 # The built-in table covers the 26 vanilla scopes. One caveat worth knowing:
 # only the hunting rifle ships a distinct glass shape, so its 1.267 is a real
@@ -215,10 +231,11 @@ widgetAutoPlace = true
 # THIS MUST BE THE LAST SECTION IN THE FILE — every key below a TOML section
 # header belongs to that section, so anything added after it would silently
 # stop being a TrueScopesVR setting.
-# Short form  -- aperture only:
+# Short form  -- aperture only (quote a path; a bare node name needs no quotes):
+#     "weapons/thermalscope/scopetherm1.nif" = 0.9
 #     HuntingScope = 1.267
 # Long form   -- aperture and/or position:
-#     [Scopes.HuntingScope]
+#     [Scopes."weapons/huntingrifle/huntingriflescope.nif"]
 #     aperture = 1.267
 #     offsetY  = -1.8
 # An entry may set position ONLY; the built-in radius still applies. That is the
@@ -228,6 +245,16 @@ widgetAutoPlace = true
 # VR-confirmed on the hunting rifle (user: "pretty damn close"). The aperture is
 # the built-in 1.267 -- the one measured clear aperture in the whole table, since
 # this is the only shipped scope with a distinct glass shape.
-[Scopes.HuntingScope]
+#
+# Keyed by PATH as of v0.2.101, so it applies to the vanilla hunting rifle scope
+# and to nothing else. Keyed by the node name "HuntingScope" it also applied to
+# every modded optic that copied that mesh's root name.
+#
+# NOTE this offset only takes effect when widgetAutoPlace = false, or when
+# automatic placement declines for this optic. Auto-placement (the default since
+# v0.2.100) computes the position from the scope's own geometry. The entry is
+# kept as the escape hatch and as the reference value auto-placement was
+# checked against.
+[Scopes."weapons/huntingrifle/huntingriflescope.nif"]
 offsetY = -1.8
 
