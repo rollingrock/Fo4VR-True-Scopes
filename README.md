@@ -28,10 +28,9 @@ This plugin:
    shipped meshes, keyed by the attached scope OMOD's **model path** (not its root node
    name, which mods copy).
 
-Full reverse-engineering record — every address, every dead end, and why each fix worked —
-lives in the companion repo
-[fallout4-scope-in-scope-investigation](https://github.com/rollingrock/fallout4-scope-in-scope-investigation).
-Start with `STATUS_AND_KNOWN_ISSUES.md`.
+The full reverse-engineering record — every address, every dead end, and why each fix worked
+— lives in a companion repo, `fallout4-scope-in-scope-investigation`, which is currently
+private. Ask if you want a look at it.
 
 ## Known issues
 
