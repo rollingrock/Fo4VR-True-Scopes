@@ -31,11 +31,24 @@ void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 	if (!a_msg) {
 		return;
 	}
-	// Register our tools into alandtse/devbench at kPostLoad. The interface fetch is a
-	// synchronous dispatch to devbench's listener, which it installs at ITS load — so
-	// kPostLoad is late enough regardless of plugin order, and earlier than kGameLoaded
-	// so the tool exists before anyone can ask for it. A no-op if devbench is absent.
-	if (a_msg->type == F4SE::MessagingInterface::kPostLoad) {
+	// Register our tools into alandtse/devbench at kPostPostLoad, NOT kPostLoad.
+	//
+	// The v0.2.102 attempt used kPostLoad on the reasoning that devbench installs its
+	// listener at ITS load, so any later message would do. Both halves of that were
+	// wrong, and F4SEVR 0.6.20's PluginManager says why:
+	//
+	//   * Its RegisterListener(sender = nullptr) is a SNAPSHOT — it appends itself to
+	//     the listener slots that exist AT THAT MOMENT, and Dispatch only ever walks the
+	//     SENDER's own slot. devbench loads 3rd, we load 8th, our slot did not exist yet,
+	//     so our dispatch found an empty list and returned false ("failed to dispatch to
+	//     devbench"). A broadcast fallback would have hit the same empty list.
+	//   * devbench therefore re-registers at kPostLoad, when the plugin list is complete.
+	//
+	// kPostLoad handlers run in plugin LOAD ORDER, and we load after devbench, so
+	// kPostLoad would work here today — by luck. kPostPostLoad is dispatched immediately
+	// after kPostLoad for exactly this second-phase handshake and does not depend on the
+	// order. A no-op if devbench is absent.
+	if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
 		DevBenchClient::Register();
 	}
 	if (a_msg->type == F4SE::MessagingInterface::kGameLoaded) {
