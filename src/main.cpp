@@ -1,4 +1,5 @@
 #include "DevBench/DevBench.h"
+#include "DevBenchClient/DevBenchClient.h"
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeRender.h"
@@ -27,7 +28,17 @@ void InitializeLog()
 
 void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 {
-	if (a_msg && a_msg->type == F4SE::MessagingInterface::kGameLoaded) {
+	if (!a_msg) {
+		return;
+	}
+	// Register our tools into alandtse/devbench at kPostLoad. The interface fetch is a
+	// synchronous dispatch to devbench's listener, which it installs at ITS load — so
+	// kPostLoad is late enough regardless of plugin order, and earlier than kGameLoaded
+	// so the tool exists before anyone can ask for it. A no-op if devbench is absent.
+	if (a_msg->type == F4SE::MessagingInterface::kPostLoad) {
+		DevBenchClient::Register();
+	}
+	if (a_msg->type == F4SE::MessagingInterface::kGameLoaded) {
 		TrueScopes::Hooks::OnGameLoaded();
 	}
 }

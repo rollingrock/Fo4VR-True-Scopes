@@ -35,4 +35,25 @@ namespace DevBench
 
 	// Port actually bound (0 = not listening).
 	std::uint16_t Port();
+
+	// Run one request and return its JSON body, WITHOUT going through HTTP.
+	//
+	// This exists so the `scope` tool we register into alandtse/devbench over its
+	// cross-plugin C-ABI (see src/DevBenchClient/) answers by running the very same
+	// handlers this server does. The alternative — a second set of report builders —
+	// is two implementations of one answer, and during a migration where both benches
+	// are up at once, two answers that can disagree is the exact failure this project
+	// keeps paying for.
+	//
+	// a_path is a route as the HTTP side spells it ("/scope", "/config/set", ...) and
+	// a_params are what would have been the query string, already decoded. Unknown
+	// routes come back as the same {"ok":false,...} error the listener produces.
+	//
+	// THREADING is unchanged and is the caller's problem, exactly as it is for the
+	// listener thread: handlers take snapshots (mutex-guarded) or request work on the
+	// render thread, and none of them touch the 3D directly. devbench invokes tool
+	// handlers on ITS listener thread, which is the same contract.
+	[[nodiscard]] std::string Invoke(
+		std::string_view a_path,
+		const std::vector<std::pair<std::string, std::string>>& a_params);
 }

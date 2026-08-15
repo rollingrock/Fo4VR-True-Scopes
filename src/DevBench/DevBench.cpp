@@ -1451,4 +1451,25 @@ namespace DevBench
 	}
 
 	std::uint16_t Port() { return g_port; }
+
+	std::string Invoke(std::string_view a_path, const std::vector<std::pair<std::string, std::string>>& a_params)
+	{
+		// Synthesise the same Request the parser would have produced and hand it to
+		// the same Route(). Nothing here interprets a path or a parameter, on purpose:
+		// the moment this function knows what "/scope" means, it can disagree with the
+		// listener about it.
+		Request req;
+		req.method = "GET";
+		req.path.assign(a_path);
+		req.query = a_params;
+		try {
+			return Route(req);
+		} catch (const std::exception& e) {
+			// Matches the listener's behaviour rather than letting an exception cross
+			// the C-ABI boundary, where it would unwind through devbench's frames.
+			return Err(std::string{ "handler threw: " } + e.what());
+		} catch (...) {
+			return Err("handler threw a non-standard exception");
+		}
+	}
 }
