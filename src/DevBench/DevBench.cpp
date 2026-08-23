@@ -12,6 +12,7 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeIdent.h"
+#include "TrueScopes/LensComposite.h"
 #include "TrueScopes/ScopeRender.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -279,6 +280,22 @@ namespace DevBench
 				{ "skyEnabled", Kind::Bool, &skyEnabled },
 				{ "skyRootMask", Kind::Int, &skyRootMask },
 				{ "deliveryUnbindDS", Kind::Bool, &deliveryUnbindDS },
+				{ "lensCompositeEnabled", Kind::Bool, &lensCompositeEnabled },
+				{ "reticleEnabled", Kind::Bool, &reticleEnabled },
+				{ "reticleUseGlassed", Kind::Bool, &reticleUseGlassed },
+				{ "reticleAlpha", Kind::Float, &reticleAlpha },
+				{ "reticleScaleX", Kind::Float, &reticleScaleX },
+				{ "reticleScaleY", Kind::Float, &reticleScaleY },
+				{ "reticleOffsetX", Kind::Float, &reticleOffsetX },
+				{ "reticleOffsetY", Kind::Float, &reticleOffsetY },
+				{ "vignetteInner", Kind::Float, &vignetteInner },
+				{ "vignetteOuter", Kind::Float, &vignetteOuter },
+				{ "vignetteStrength", Kind::Float, &vignetteStrength },
+				{ "vignettePower", Kind::Float, &vignettePower },
+				{ "lensTintR", Kind::Float, &lensTintR },
+				{ "lensTintG", Kind::Float, &lensTintG },
+				{ "lensTintB", Kind::Float, &lensTintB },
+				{ "lensExposure", Kind::Float, &lensExposure },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
 				{ "perScopeAperture", Kind::Bool, &perScopeAperture },
@@ -529,6 +546,16 @@ namespace DevBench
 			out += ",\"skyRoots\":" + std::to_string(d.skyRoots);
 			out += ",\"skyDrawn\":" + std::to_string(d.skyDrawn);
 			out += ",\"lightsClamp\":" + std::to_string(d.lightsClamp);
+			{
+				const auto lc = TrueScopes::LensComposite::GetDiag();
+				out += ",\"lensComposite\":{\"ready\":" + std::string(lc.ready ? "true" : "false");
+				out += ",\"reticleRT\":" + std::to_string(lc.reticleRT);
+				out += ",\"reticlePhys\":" + std::to_string(lc.reticlePhys);
+				out += ",\"runs\":" + std::to_string(lc.runs);
+				out += ",\"skips\":" + std::to_string(lc.skips);
+				out += ",\"quadHidden\":" + std::string(lc.quadHidden ? "true" : "false");
+				out += ",\"renderer\":" + Quote(lc.rendererName) + "}";
+			}
 			out += ",\"camRect\":[";
 			for (int k = 0; k < 6; ++k) {
 				if (k) out += ",";

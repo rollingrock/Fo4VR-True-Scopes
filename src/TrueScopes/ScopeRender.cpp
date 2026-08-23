@@ -8,6 +8,7 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
+#include "TrueScopes/LensComposite.h"
 
 // Phase 2: mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62.
 //
@@ -3027,6 +3028,24 @@ namespace TrueScopes::ScopeRender
 				break;
 			default:
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
+				// v0.2.104 — OWN DELIVERY PASS. Composite the engine's reticle + the
+				// glass look over the tonemapped picture (LensComposite.cpp). Runs
+				// with the delivery's DS unbound and the ISM busy byte forced, same
+				// as the tonemap it follows.
+				if (*Settings::lensCompositeEnabled) {
+					LensComposite::Inputs in{};
+					in.renderer = renderer;
+					in.rtm = rtm;
+					in.ctx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+					if (!in.ctx && g_ctxPtrB) {
+						in.ctx = *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB);
+					}
+					in.scopeParent = *reinterpret_cast<std::uintptr_t*>(player + kScopeParentInPlayer);
+					in.lensLogicalRT = static_cast<std::uint32_t>(Addr::kRT_ScopeLens);
+					LensComposite::Run(in);
+				} else {
+					LensComposite::RestoreReticleQuad();
+				}
 				break;
 			}
 			if (unbindDS) {

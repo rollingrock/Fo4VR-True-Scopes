@@ -219,6 +219,37 @@ namespace Settings
 	// four corners clipped asymmetrically, and a boundary that does not move with
 	// the camera. Live-toggleable for a clean A/B: flip it and re-dump 0x62.
 	MAKE_SETTING(bSetting, "TrueScopesVR", deliveryUnbindDS, true);
+	// --- own delivery pass (v0.2.104) ----------------------------------------
+	// After the engine tonemap writes the picture into 0x62, run our own fullscreen
+	// pixel shader over it: composite the engine's Scaleform reticle (Test B
+	// 2026-08-23 proved the vanilla reticle quad sits UNDER our picture disc) and
+	// apply the glass look. Everything below is live-tunable via DevBench.
+	MAKE_SETTING(bSetting, "TrueScopesVR", lensCompositeEnabled, true);
+	// Composite the reticle from the ScopeMenu renderer's offscreen RT. Hides the
+	// vanilla `render_UI:0` quad while active (restored on scope-off).
+	MAKE_SETTING(bSetting, "TrueScopesVR", reticleEnabled, true);
+	// Interface3D renderer to take the reticle from (the VR scope menu's name).
+	MAKE_SETTING(sSetting, "TrueScopesVR", reticleRendererName, std::string("ScopeMenu"));
+	// true = +0x1d8 (HUD-glass post-effected copy), false = +0x1dc (raw crisp strokes).
+	MAKE_SETTING(bSetting, "TrueScopesVR", reticleUseGlassed, false);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleAlpha, 1.0);
+	// lens-uv -> reticle-uv: ruv = (uv-0.5)*scale + 0.5 + offset. Scale > 1 shrinks
+	// the reticle on the lens; use X != Y to undo any aspect squash of the source RT.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleScaleX, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleScaleY, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleOffsetX, 0.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleOffsetY, 0.0);
+	// Radial vignette in disc units (1.0 = the picture disc's edge): full brightness
+	// inside `inner`, fades to `1-strength` by `outer`; `power` shapes the curve.
+	MAKE_SETTING(fSetting, "TrueScopesVR", vignetteInner, 0.78);
+	MAKE_SETTING(fSetting, "TrueScopesVR", vignetteOuter, 1.02);
+	MAKE_SETTING(fSetting, "TrueScopesVR", vignetteStrength, 0.85);
+	MAKE_SETTING(fSetting, "TrueScopesVR", vignettePower, 1.0);
+	// Colour multiplier + exposure applied to the picture before the reticle.
+	MAKE_SETTING(fSetting, "TrueScopesVR", lensTintR, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", lensTintG, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", lensTintB, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", lensExposure, 1.0);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
@@ -554,6 +585,23 @@ namespace Settings
 		LOAD(skyEnabled);
 		LOAD(skyRootMask);
 		LOAD(deliveryUnbindDS);
+		LOAD(lensCompositeEnabled);
+		LOAD(reticleEnabled);
+		LOAD(reticleRendererName);
+		LOAD(reticleUseGlassed);
+		LOAD(reticleAlpha);
+		LOAD(reticleScaleX);
+		LOAD(reticleScaleY);
+		LOAD(reticleOffsetX);
+		LOAD(reticleOffsetY);
+		LOAD(vignetteInner);
+		LOAD(vignetteOuter);
+		LOAD(vignetteStrength);
+		LOAD(vignettePower);
+		LOAD(lensTintR);
+		LOAD(lensTintG);
+		LOAD(lensTintB);
+		LOAD(lensExposure);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
 		LOAD(perScopeAperture);

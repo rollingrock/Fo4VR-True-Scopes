@@ -5,6 +5,8 @@ set(sources ${sources}
 	src/DevBenchClient/DevBenchAPI.cpp
 	src/DevBenchClient/DevBenchClient.cpp
 	src/TrueScopes/Hooks.cpp
+	src/TrueScopes/LensComposite.cpp
+	src/TrueScopes/LensComposite.h
 	src/TrueScopes/ScopeIdent.cpp
 	src/TrueScopes/ScopeRender.cpp
 )

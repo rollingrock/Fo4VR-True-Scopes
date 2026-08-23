@@ -3,6 +3,7 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
+#include "TrueScopes/LensComposite.h"
 #include "TrueScopes/ScopeRender.h"
 
 namespace TrueScopes::Hooks
@@ -117,6 +118,7 @@ namespace TrueScopes::Hooks
 					const auto holdMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
 					if (static_cast<std::uint64_t>(::GetTickCount64()) - g_gateOffTick.load() >= holdMs) {
 						g_scopeActive.store(false);
+						LensComposite::RestoreReticleQuad();
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
