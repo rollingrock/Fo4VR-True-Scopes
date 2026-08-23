@@ -414,9 +414,15 @@ namespace Settings
 	// one it actually bound. 8930 keeps clear of alandtse/devbench's 8920/8921.
 	MAKE_SETTING(iSetting, "TrueScopesVR", devbenchPort, std::int64_t(8930));
 
-	// Suppress the vanilla scope-in world-blackout imagespace modifier (ScopeMenu's
-	// full-strength zoomData imod). Core to the world+scope experience.
-	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, true);
+	// v0.2.110: DEFAULT OFF, and the name is a historical misnomer. The two patched
+	// call sites trigger the PER-ZOOM imod (zoomData+0x38) - and the ESM says that
+	// field is 0 for every standard scope: only the NightVision zooms (imod
+	// 0x94636 zd_ScopeNightVision) and the Recon zooms (0x2041b6
+	// zd_ScopeTargetingRecon) carry one, and the sites null-check before firing.
+	// So the patch never suppressed any blackout (vanilla's black world was the
+	// render REDIRECT, which we never arm) - it only killed the NV and recon
+	// screen effects. Found 2026-08-23 preparing the all-scopes gate pass.
+	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, false);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, false);
 

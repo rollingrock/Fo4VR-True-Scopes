@@ -86,7 +86,7 @@ forceAlwaysOn = false
 
 # Suppress the vanilla scope-in world blackout (imagespace modifier). Core to seeing
 # world + scope at the same time.
-disableScopeBlackout = true
+disableScopeBlackout = false # v0.2.110: only ever suppressed the NV/recon imods - see Settings.h
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 disableApproachFade = false
