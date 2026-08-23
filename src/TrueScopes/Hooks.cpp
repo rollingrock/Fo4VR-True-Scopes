@@ -122,6 +122,22 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
+				// v0.2.106: run a pending scope-ident probe from the per-frame hook,
+				// not only from RenderImpl. RenderImpl runs only while the scope is
+				// RAISED, so headless (null driver, no scope-in ever) a /scope?probe=1
+				// waited its 3 s and returned last cycle's latched answer — the
+				// "probed:false, weapon 0x0" trap hit on 2026-08-23. This thread IS
+				// the render thread the probe expects, the request flag makes the two
+				// call sites idempotent, and an un-requested frame costs one atomic
+				// read. Makes the whole ident chain testable with no headset AND no
+				// scope raise: additem + equipitem + /scope?probe=1.
+				if (g_installed) {
+					if (const auto player = *reinterpret_cast<std::uintptr_t*>(
+							REL::Module::get().base() + 0x5b043f0)) {
+						ScopeIdent::RunIfRequested(player);
+					}
+				}
+
 				// v0.2.52: sample the lens RT BEFORE we touch it — this reads what
 				// 0x62 held at the end of the previous frame, after every other
 				// writer had its turn. Must run ahead of TintLens/Render, which
