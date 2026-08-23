@@ -308,4 +308,23 @@ namespace TrueScopes::ScopeIdent
 		char  shape[64];    // matched row's measured shape
 	};
 	[[nodiscard]] PathLookup LookupModelPath(const char* a_rawPath) noexcept;
+
+	// v0.2.108 — attach (or detach) an OMOD on the player's EQUIPPED weapon, the
+	// workbench-equivalent path. Exists because FO4VR's console `AttachMod`
+	// attaches to the console-selected REFERENCE (the player for `player.amod`),
+	// never the equipped weapon — flat FO4 fixed that in a later patch, VR never
+	// did. This calls the engine's own papyrus-native backend instead:
+	// GameScript::ModifyInventoryItemMod (0x141488a00) — validate, single-stack
+	// check, ModifyModDataFunctor write, PostModifyInventoryItemMod re-equip.
+	// The VM/stack args are ONLY dereferenced on its error paths, so the same
+	// preconditions it checks are pre-checked here and nulls are safe.
+	// MUST run on the game's main thread (it mutates inventory and re-equips);
+	// DevBench queues it via the F4SE task interface.
+	struct AttachOutcome
+	{
+		bool          ok;
+		char          error[96];
+		std::uint32_t weaponFormID;
+	};
+	[[nodiscard]] AttachOutcome AttachModToEquippedWeapon(std::uint32_t a_modFormID, bool a_attach) noexcept;
 }

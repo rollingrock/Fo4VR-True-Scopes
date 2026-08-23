@@ -1321,6 +1321,61 @@ namespace DevBench
 			return out;
 		}
 
+		// v0.2.108 — /attach?omod=HEX[&detach=1]: attach an OMOD to the equipped
+		// weapon on the game's main thread (F4SE task queue) and wait for the
+		// outcome. The headless gate ladder's missing primitive: FO4VR's console
+		// amod cannot do this (it mods the selected reference, not the weapon).
+		std::string HandleAttach(const Request& a_req)
+		{
+			const auto  raw = a_req.GetOr("omod", "");
+			if (raw.empty()) {
+				return Err("omod parameter required (hex formID)");
+			}
+			std::uint32_t id = 0;
+			{
+				const std::string h(raw);
+				const char*       p = h.c_str();
+				if (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0) {
+					p += 2;
+				}
+				char* end = nullptr;
+				id = static_cast<std::uint32_t>(std::strtoul(p, &end, 16));
+				if (!end || *end != 0 || id == 0) {
+					return Err("omod must be a hex formID");
+				}
+			}
+			const bool attach = a_req.GetOr("detach", "0") == "0";
+			const auto task = F4SE::GetTaskInterface();
+			if (!task) {
+				return Err("no F4SE task interface");
+			}
+			struct Shared
+			{
+				std::atomic_bool                  done{ false };
+				TrueScopes::ScopeIdent::AttachOutcome r{};
+			};
+			auto sh = std::make_shared<Shared>();
+			task->AddTask([sh, id, attach] {
+				sh->r = TrueScopes::ScopeIdent::AttachModToEquippedWeapon(id, attach);
+				sh->done.store(true);
+			});
+			const auto deadline = ::GetTickCount64() + 5000;
+			while (!sh->done.load() && ::GetTickCount64() < deadline) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(15));
+			}
+			if (!sh->done.load()) {
+				return Err("timed out waiting for the main thread (is the game paused or at a menu?)");
+			}
+			std::string out = "{\"ok\":" + std::string(sh->r.ok ? "true" : "false");
+			out += ",\"attach\":" + std::string(attach ? "true" : "false");
+			out += ",\"weaponFormID\":" + Quote(Hex(sh->r.weaponFormID));
+			if (!sh->r.ok) {
+				out += ",\"error\":" + Quote(sh->r.error);
+			}
+			out += "}";
+			return out;
+		}
+
 		std::string HandleScopeLookup(const Request& a_req)
 		{
 			const auto raw = a_req.GetOr("path", "");
@@ -1343,6 +1398,7 @@ namespace DevBench
 		std::string Route(const Request& a_req)
 		{
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
+			if (a_req.path == "/attach")                        return HandleAttach(a_req);
 			if (a_req.path == "/scope/lookup")                  return HandleScopeLookup(a_req);
 			if (a_req.path == "/health")                        return HandleHealth();
 			if (a_req.path == "/state")                         return HandleState();

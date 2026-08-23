@@ -1022,6 +1022,54 @@ namespace TrueScopes::ScopeIdent
 		return r;
 	}
 
+
+	AttachOutcome AttachModToEquippedWeapon(std::uint32_t a_modFormID, bool a_attach) noexcept
+	{
+		AttachOutcome r{};
+		const auto base = REL::Module::get().base();
+		constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;            // g_player (live-verified)
+		constexpr std::uintptr_t kModifyInventoryItemMod = 0x1488a00;  // GameScript::ModifyInventoryItemMod
+		constexpr std::uintptr_t kGetInventoryObjectCount = 0x3e3750;  // TESObjectREFR::GetInventoryObjectCount(ref, form)
+		using ModifyInvMod_t = bool (*)(void*, std::uint32_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, bool);
+		using InvCount_t = std::uint32_t (*)(std::uintptr_t, std::uintptr_t);
+
+		const auto fail = [&r](const char* a_msg) {
+			std::snprintf(r.error, sizeof(r.error), "%s", a_msg);
+			return r;
+		};
+		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
+		if (!player) {
+			return fail("no player");
+		}
+		// The engine validates the OMOD type itself: GetModFromID returns null for
+		// anything that is not a BGSMod::Attachment::Mod.
+		const auto mod = Fn<GetModFromID_t>(kGetModFromID)(a_modFormID);
+		if (!mod) {
+			return fail("formID is not an OMOD (GetModFromID returned null)");
+		}
+		std::uintptr_t inst[2] = { 0, 0 };
+		Fn<GetCurrentWeapon_t>(kGetCurrentWeapon)(player, inst, *reinterpret_cast<std::uint32_t*>(base + kEquipIndexGlobal));
+		ReleaseInstanceData(inst[1]);
+		if (!inst[0]) {
+			return fail("no equipped weapon");
+		}
+		r.weaponFormID = *reinterpret_cast<std::uint32_t*>(inst[0] + kFormIDInTESForm);
+		// The engine's own preconditions, checked HERE so its error paths (which
+		// dereference the null VM we pass) are unreachable.
+		const auto count = Fn<InvCount_t>(kGetInventoryObjectCount)(player, inst[0]);
+		if (count == 0) {
+			return fail("weapon not in inventory");
+		}
+		if (count > 1) {
+			return fail("more than one of this weapon in inventory - engine can only mod singular items");
+		}
+		r.ok = Fn<ModifyInvMod_t>(kModifyInventoryItemMod)(nullptr, 0, player, inst[0], mod, a_attach);
+		if (!r.ok) {
+			std::snprintf(r.error, sizeof(r.error), "engine ModifyInventoryItemMod returned false");
+		}
+		return r;
+	}
+
 	void Request()
 	{
 		g_request.store(true);
