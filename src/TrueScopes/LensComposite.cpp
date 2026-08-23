@@ -11,8 +11,13 @@ namespace TrueScopes::LensComposite
 	{
 		// --- engine ground truth (all live-verified 2026-08-23, see the session doc) ---
 		constexpr std::uintptr_t kD3DContextRVA = 0x6235ab0;      // ID3D11DeviceContext* (immediate)
-		constexpr std::uintptr_t kRendererArrayRVA = 0x5a66b58;   // Interface3D::Renderer* [] (DAT_145a66b58)
-		constexpr std::uintptr_t kRendererCountRVA = 0x5a66b68;   // u32 count (DAT_145a66b68)
+		// Ghidra labels DAT_145a66b58/b68, but that high-.data label is SECTION-SHIFTED
+		// (live read there returned garbage). True addresses RIP-decoded from the live
+		// code bytes of GetByName (base+0xb00270) 2026-08-23: lock 0x5ac8c00,
+		// array ptr 0x5ac8c08, count 0x5ac8c18 — and verified by enumerating 36
+		// renderers with sane names ('ScopeMenu' at index 26, customRT 124/swap 125).
+		constexpr std::uintptr_t kRendererArrayRVA = 0x5ac8c08;   // Interface3D::Renderer* []
+		constexpr std::uintptr_t kRendererCountRVA = 0x5ac8c18;   // u32 count
 		constexpr std::uintptr_t kRendererName = 0x220;           // BSFixedString (pool entry ptr) — GetByName compares it
 		constexpr std::uintptr_t kRendererEnabled = 0x5c;
 		constexpr std::uintptr_t kRendererCustomRT = 0x1d8;       // customRenderTarget (HUD-glassed) — int32 logical
@@ -275,9 +280,17 @@ float4 PSMain(VSOut i) : SV_Target
 				return r;
 			}
 			const auto slot = a_renderer + kPhysRTTable + static_cast<std::uintptr_t>(phys) * kPhysRTStride;
-			r.tex = *reinterpret_cast<ID3D11Texture2D**>(slot);
+			// slot+0 is NOT a texture pointer (0 live; the v0.2.104.0 bug — every
+			// render skipped). Take the RTV (+8) / SRV (+0x10) and derive the texture
+			// from the RTV like DumpLogicalRT does. The ref from GetResource is
+			// released by the caller (Run) after use.
 			r.rtv = *reinterpret_cast<ID3D11RenderTargetView**>(slot + 8);
 			r.srv = *reinterpret_cast<ID3D11ShaderResourceView**>(slot + 0x10);
+			if (r.rtv) {
+				ID3D11Resource* res = nullptr;
+				r.rtv->GetResource(&res);
+				r.tex = static_cast<ID3D11Texture2D*>(res);
+			}
 			r.phys = phys;
 			return r;
 		}
@@ -407,17 +420,23 @@ float4 PSMain(VSOut i) : SV_Target
 			return false;
 		}
 		if (!EnsureScratch(lens.tex)) {
+			lens.tex->Release();
 			++g_diag.skips;
 			return false;
 		}
 
 		// Reticle source (previous frame's Scaleform render — same latency vanilla has).
+		// The reticle lookup only needs the SRV; release the GetResource ref at once.
 		ID3D11ShaderResourceView* reticleSRV = nullptr;
 		const bool                wantReticle = *Settings::reticleEnabled;
 		if (wantReticle) {
 			const auto logical = FindReticleRT();
 			g_diag.reticleRT = logical;
-			const auto rt = LookupRT(a_in.renderer, a_in.rtm, logical);
+			auto rt = LookupRT(a_in.renderer, a_in.rtm, logical);
+			if (rt.tex) {
+				rt.tex->Release();
+				rt.tex = nullptr;
+			}
 			g_diag.reticlePhys = rt.phys;
 			reticleSRV = rt.srv;
 			if (reticleSRV) {
@@ -566,6 +585,7 @@ float4 PSMain(VSOut i) : SV_Target
 		}
 		Fn<void (*)(std::uintptr_t)>(kRendererRebindCBs)(a_in.renderer);
 
+		lens.tex->Release();
 		++g_diag.runs;
 		return true;
 	}
