@@ -291,4 +291,21 @@ namespace TrueScopes::ScopeIdent
 	// or its measured shape is not in the scene — in which case the caller must
 	// fall back to a heuristic rather than aim at nothing.
 	[[nodiscard]] bool OcularFaceWorld(float (&a_world)[3]);
+
+	// v0.2.107 — pure table lookup for one model path, exactly the compiled data
+	// and normalizer the live probe uses (step-1 path pass + [Scopes] override),
+	// with NO game state touched. Exists so a headless sweep can validate the
+	// whole coverage matrix (DevBench /scope/lookup) without needing an OMOD
+	// attached in-game — FO4VR's console AttachMod attaches to the REFERENCE, not
+	// the equipped weapon, so console-driven attach is impossible on this build.
+	struct PathLookup
+	{
+		bool  hit;          // table row or [Scopes] aperture found
+		bool  fromToml;     // an override supplied/changed the aperture
+		float aperture;
+		char  key[160];     // the normalized key that was looked up
+		char  node[64];     // matched row's fallback node name ("" if override-only)
+		char  shape[64];    // matched row's measured shape
+	};
+	[[nodiscard]] PathLookup LookupModelPath(const char* a_rawPath) noexcept;
 }

@@ -1321,9 +1321,29 @@ namespace DevBench
 			return out;
 		}
 
+		std::string HandleScopeLookup(const Request& a_req)
+		{
+			const auto raw = a_req.GetOr("path", "");
+			if (raw.empty()) {
+				return Err("path parameter required");
+			}
+			const auto  r = TrueScopes::ScopeIdent::LookupModelPath(std::string(raw).c_str());
+			std::string out = "{\"ok\":true";
+			out += ",\"hit\":" + std::string(r.hit ? "true" : "false");
+			out += ",\"fromToml\":" + std::string(r.fromToml ? "true" : "false");
+			out += ",\"aperture\":" + std::to_string(r.aperture);
+			out += ",\"key\":" + Quote(r.key);
+			out += ",\"node\":" + Quote(r.node);
+			out += ",\"shape\":" + Quote(r.shape);
+			out += "}";
+			return out;
+		}
+
+
 		std::string Route(const Request& a_req)
 		{
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
+			if (a_req.path == "/scope/lookup")                  return HandleScopeLookup(a_req);
 			if (a_req.path == "/health")                        return HandleHealth();
 			if (a_req.path == "/state")                         return HandleState();
 			if (a_req.path == "/perf/reset") {

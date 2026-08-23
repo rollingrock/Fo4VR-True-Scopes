@@ -994,6 +994,34 @@ namespace TrueScopes::ScopeIdent
 		}
 	}
 
+
+	PathLookup LookupModelPath(const char* a_rawPath) noexcept
+	{
+		PathLookup r{};
+		if (!a_rawPath) {
+			return r;
+		}
+		Settings::NormalizeScopeKeyInto(a_rawPath, r.key, sizeof(r.key));
+		for (const auto& e : kTable) {
+			if (std::strcmp(e.path, r.key) == 0) {
+				r.hit = true;
+				r.aperture = e.aperture;
+				std::snprintf(r.node, sizeof(r.node), "%s", e.node);
+				std::snprintf(r.shape, sizeof(r.shape), "%s", e.shape);
+				break;
+			}
+		}
+		// [Scopes] override on top, same as Resolve() step 3 (aperture only —
+		// offsets are placement data with no meaning in a pure lookup).
+		const auto o = Settings::ScopeEntryFor(r.key);
+		if (o.aperture > 0.0) {
+			r.hit = true;
+			r.fromToml = true;
+			r.aperture = static_cast<float>(o.aperture);
+		}
+		return r;
+	}
+
 	void Request()
 	{
 		g_request.store(true);
