@@ -13,6 +13,7 @@
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -1325,6 +1326,34 @@ namespace DevBench
 		// weapon on the game's main thread (F4SE task queue) and wait for the
 		// outcome. The headless gate ladder's missing primitive: FO4VR's console
 		// amod cannot do this (it mods the selected reference, not the weapon).
+		// v0.2.109 — /verdict[?since=SEQ]: the tester's last controller chord.
+		// A driver script passes the seq it has already consumed; `fresh` says
+		// whether a newer verdict has arrived since.
+		std::string HandleVerdict(const Request& a_req)
+		{
+			const auto ev = TrueScopes::VerdictInput::Latest();
+			std::uint64_t since = 0;
+			{
+				const std::string h(a_req.GetOr("since", "0"));
+				since = std::strtoull(h.c_str(), nullptr, 10);
+			}
+			const char* name = "none";
+			switch (ev.verdict) {
+			case TrueScopes::VerdictInput::Verdict::kYes: name = "yes"; break;
+			case TrueScopes::VerdictInput::Verdict::kNo: name = "no"; break;
+			case TrueScopes::VerdictInput::Verdict::kSkip: name = "skip"; break;
+			default: break;
+			}
+			std::string out = "{\"ok\":true";
+			out += ",\"available\":" + std::string(TrueScopes::VerdictInput::Available() ? "true" : "false");
+			out += ",\"seq\":" + std::to_string(ev.seq);
+			out += ",\"fresh\":" + std::string(ev.seq > since ? "true" : "false");
+			out += ",\"verdict\":" + Quote(name);
+			out += ",\"ageMs\":" + std::to_string(ev.tickMs ? ::GetTickCount64() - ev.tickMs : 0);
+			out += "}";
+			return out;
+		}
+
 		std::string HandleAttach(const Request& a_req)
 		{
 			const auto  raw = a_req.GetOr("omod", "");
@@ -1398,6 +1427,7 @@ namespace DevBench
 		std::string Route(const Request& a_req)
 		{
 			if (a_req.path == "/" || a_req.path == "/index")   return HandleIndex();
+			if (a_req.path == "/verdict")                       return HandleVerdict(a_req);
 			if (a_req.path == "/attach")                        return HandleAttach(a_req);
 			if (a_req.path == "/scope/lookup")                  return HandleScopeLookup(a_req);
 			if (a_req.path == "/health")                        return HandleHealth();

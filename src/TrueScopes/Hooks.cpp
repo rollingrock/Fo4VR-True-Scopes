@@ -4,6 +4,7 @@
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 
 namespace TrueScopes::Hooks
@@ -121,6 +122,10 @@ namespace TrueScopes::Hooks
 						LensComposite::RestoreReticleQuad();
 						logger::info("scope active -> false (held)"sv);
 					}
+				}
+				// v0.2.109: controller verdict chords, polled per frame.
+				if (g_installed) {
+					VerdictInput::Poll();
 				}
 				// v0.2.106: run a pending scope-ident probe from the per-frame hook,
 				// not only from RenderImpl. RenderImpl runs only while the scope is

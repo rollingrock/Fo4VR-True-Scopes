@@ -224,6 +224,9 @@ namespace Settings
 	// pixel shader over it: composite the engine's Scaleform reticle (Test B
 	// 2026-08-23 proved the vanilla reticle quad sits UNDER our picture disc) and
 	// apply the glass look. Everything below is live-tunable via DevBench.
+	// v0.2.109: controller verdict chords (grip+A yes / grip+B no / grip+trigger
+	// skip) for guided test passes; read passively off OpenVR, haptic ack.
+	MAKE_SETTING(bSetting, "TrueScopesVR", verdictInputEnabled, true);
 	MAKE_SETTING(bSetting, "TrueScopesVR", lensCompositeEnabled, true);
 	// Composite the reticle from the ScopeMenu renderer's offscreen RT. Hides the
 	// vanilla `render_UI:0` quad while active (restored on scope-off).
@@ -585,6 +588,7 @@ namespace Settings
 		LOAD(skyEnabled);
 		LOAD(skyRootMask);
 		LOAD(deliveryUnbindDS);
+		LOAD(verdictInputEnabled);
 		LOAD(lensCompositeEnabled);
 		LOAD(reticleEnabled);
 		LOAD(reticleRendererName);
