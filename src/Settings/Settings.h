@@ -227,6 +227,11 @@ namespace Settings
 	// v0.2.109: controller verdict chords (grip+A yes / grip+B no / grip+trigger
 	// skip) for guided test passes; read passively off OpenVR, haptic ack.
 	MAKE_SETTING(bSetting, "TrueScopesVR", verdictInputEnabled, true);
+	// v0.2.111 DEBUG: arm the scope render directly, bypassing the vanilla
+	// raise detection. For HEADLESS lens verification (null driver + /dump/now):
+	// the widget rig never exists, but the render + composite + delivery all run
+	// and 0x61/0x62 dump normally. Not for gameplay.
+	MAKE_SETTING(bSetting, "TrueScopesVR", forceScopeActive, false);
 	MAKE_SETTING(bSetting, "TrueScopesVR", lensCompositeEnabled, true);
 	// Composite the reticle from the ScopeMenu renderer's offscreen RT. Hides the
 	// vanilla `render_UI:0` quad while active (restored on scope-off).
@@ -603,6 +608,7 @@ namespace Settings
 		LOAD(skyRootMask);
 		LOAD(deliveryUnbindDS);
 		LOAD(verdictInputEnabled);
+		LOAD(forceScopeActive);
 		LOAD(lensCompositeEnabled);
 		LOAD(reticleEnabled);
 		LOAD(reticleRendererName);

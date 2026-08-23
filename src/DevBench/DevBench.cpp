@@ -252,6 +252,7 @@ namespace DevBench
 			using namespace Settings;
 			return {
 				{ "fillEnabled", Kind::Bool, &fillEnabled },
+				{ "forceScopeActive", Kind::Bool, &forceScopeActive },
 				{ "fillEveryNFrames", Kind::Int, &fillEveryNFrames },
 				{ "scopeOffHoldMs", Kind::Int, &scopeOffHoldMs },
 				{ "forceAlwaysOn", Kind::Bool, &forceAlwaysOn },

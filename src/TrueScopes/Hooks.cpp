@@ -123,6 +123,13 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
+				// v0.2.111 debug: headless render arming (see Settings.h).
+				if (g_installed && *Settings::forceScopeActive && !g_scopeActive.load()) {
+					g_scopeActive.store(true);
+					Settings::load();
+					ScopeIdent::Request();
+					logger::info("scope active -> true (forceScopeActive)"sv);
+				}
 				// v0.2.109: controller verdict chords, polled per frame.
 				if (g_installed) {
 					VerdictInput::Poll();
