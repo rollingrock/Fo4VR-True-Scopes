@@ -161,6 +161,18 @@ namespace TrueScopes::ScopeIdent
 		{ "weapons/laserweapons/institute/scope.nif", "Scope", 3.058f, "Scope:0", { 0.769f, -13.750f, 4.406f }, 4.782f },  // Scope_1.nif via body
 		{ "weapons/alienblaster/scope01.nif", "Scope01", 4.366f, "Scope01:0", { 0.000f, -5.059f, 2.985f }, 6.633f },  // Scope01_1.nif via body
 		{ "weapons/plasma/scope.nif", "PlasmaScope", 4.564f, "PlasmaScope:1", { 0.000f, -2.012f, 2.309f }, 6.117f },  // Scope_1.nif via body
+		// --- DLC scopes (2026-08-23): measured from the DLCCoast/DLCNukaWorld BA2s
+		// with the same tools/scope-census.py; the /omods sweep found 20 OMODs
+		// pointing at these six paths. GammaRifleScope reuses the hunting rifle's
+		// glass shape verbatim (r95 identical). 44MagScopeWestern ships NO _1
+		// variant - the world model IS the first-person model (key unaffected:
+		// the normalizer only strips a trailing "_1").
+		{ "dlc03/weapons/harpoongun/harpoongunscope.nif", "Scope", 0.756f, "Scope:1", { -0.038f, -14.148f, 0.486f }, 9.695f },  // HarpoonGunScope_1.nif via body
+		{ "dlc03/weapons/levergun/4570scope.nif", "4570Scope", 1.004f, "4570Scope:1", { -0.028f, -5.480f, 1.090f }, 7.684f },  // 4570Scope_1.nif via body
+		{ "dlc04/weapons/raiderguns/scopelong.nif", "ScopeLong", 1.083f, "ScopeLong:0", { 0.005f, -19.609f, 1.828f }, 9.846f },  // ScopeLong_1.nif via body
+		{ "dlc04/weapons/raiderguns/scopeshort.nif", "ScopeShort", 1.083f, "ScopeShort:0", { 0.005f, -19.609f, 1.828f }, 9.436f },  // ScopeShort_1.nif via body
+		{ "dlc03/weapons/gammarifle/gammariflescope.nif", "GammaRifleScope", 1.267f, "HuntingScope:2", { 0.000f, -5.289f, 1.814f }, 7.767f },  // GammaRifleScope_1.nif via glass
+		{ "dlc04/weapons/44western/44magscopewestern.nif", "44MagScopeWestern", 1.290f, "44MagScopeWestern:0", { -0.002f, -8.539f, 2.118f }, 8.657f },  // 44MagScopeWestern.nif via body
 		};
 
 		// Walk bounds. Generous relative to a weapon (the hunting rifle is 50 nodes,
