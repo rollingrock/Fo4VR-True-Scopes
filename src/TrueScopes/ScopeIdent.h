@@ -161,6 +161,14 @@ namespace TrueScopes::ScopeIdent
 		bool          faulted = false;  // the walk faulted; probing is disabled
 		std::uint32_t weaponFormID = 0;
 		float         fovMult = 1.0f;      // scope magnification (1.0 = none/unknown)
+		// v0.2.111 — from the equipped weapon's BGSZoomData::Data: the reticle
+		// overlay index and the imod formID. Overlay 16 = the Recon widget branch;
+		// imod 0x94636 = zd_ScopeNightVision, 0x2041b6 = zd_ScopeTargetingRecon.
+		// These select the lens composite's screen/NV modes now that the fullscreen
+		// imods are suppressed (they were authored for a flat game where the scope
+		// WAS the screen).
+		std::uint32_t zoomOverlay = 0;
+		std::uint32_t zoomImodID = 0;
 		float         zoomFovAt90 = 90.0f;  // engine's own zoom FOV for a 90 deg base
 		char          weaponNodeName[kNameLen] = {};
 		// The key that resolved the table -- a model path or a node name, so it

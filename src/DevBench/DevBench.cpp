@@ -297,6 +297,9 @@ namespace DevBench
 				{ "lensTintG", Kind::Float, &lensTintG },
 				{ "lensTintB", Kind::Float, &lensTintB },
 				{ "lensExposure", Kind::Float, &lensExposure },
+				{ "nvEffectStrength", Kind::Float, &nvEffectStrength },
+				{ "nvGain", Kind::Float, &nvGain },
+				{ "reconEffectStrength", Kind::Float, &reconEffectStrength },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
 				{ "perScopeAperture", Kind::Bool, &perScopeAperture },
@@ -310,7 +313,7 @@ namespace DevBench
 				{ "diagPauseTint", Kind::Bool, &diagPauseTint },
 				{ "diagDumpLensEveryNRenders", Kind::Int, &diagDumpLensEveryNRenders },
 				{ "diagDumpBuffers", Kind::Bool, &diagDumpBuffers },
-				{ "disableScopeBlackout", Kind::Bool, &disableScopeBlackout },
+				{ "suppressScopeImods", Kind::Bool, &suppressScopeImods },
 				{ "disableApproachFade", Kind::Bool, &disableApproachFade },
 			};
 		}
@@ -1196,6 +1199,8 @@ namespace DevBench
 			out += ",\"weaponNodeName\":" + Quote(i.weaponNodeName);
 			out += ",\"weaponNode\":" + Quote(Hex(i.weaponNode));
 			out += ",\"fovMult\":" + std::to_string(i.fovMult);
+			out += ",\"zoomOverlay\":" + std::to_string(i.zoomOverlay);
+			out += ",\"zoomImodID\":" + Quote(Hex(i.zoomImodID));
 			out += ",\"zoomFovAt90\":" + std::to_string(i.zoomFovAt90);
 			{
 				const auto f = TrueScopes::ScopeRender::GetFovInfo();

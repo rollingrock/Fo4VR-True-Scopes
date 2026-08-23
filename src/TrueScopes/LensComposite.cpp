@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 
 #include "Settings/Settings.h"
+#include "TrueScopes/ScopeIdent.h"
 
 namespace TrueScopes::LensComposite
 {
@@ -50,7 +51,8 @@ cbuffer Params : register(b0)
     float4 reticle;   // x scaleX, y scaleY, z offX, w offY  (lens-uv -> reticle-uv)
     float4 vignette;  // x inner radius, y outer radius, z strength, w edge-darken power
     float4 tint;      // rgb multiplier, w exposure
-    float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z/w unused
+    float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
+    float4 nvp;       // x nv gain, yzw unused
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -72,11 +74,36 @@ float4 PSMain(VSOut i) : SV_Target
     float3 c = picture.Sample(smp, i.uv).rgb;
     c *= tint.rgb * tint.w;
 
-    // radial term in "disc units": 1.0 at the picture disc's edge
-    float r = length((i.uv - 0.5) * 2.0);
-    float v = 1.0 - smoothstep(vignette.x, vignette.y, r);
-    v = pow(saturate(v), max(vignette.w, 0.001));
-    c *= lerp(1.0, v, saturate(vignette.z));
+    // --- in-lens recreations of the suppressed fullscreen zoom imods ---------
+    // numbers from the IMAD records themselves (see Settings.h)
+    if (flags.z > 0.0) {           // zd_ScopeNightVision
+        c *= nvp.x;                                       // adaptation gain
+        c = c * 1.1 + 0.4 * float3(0.05, 0.08, 0.05);     // brightness/contrast lift
+        float l = dot(c, float3(0.299, 0.587, 0.114));
+        float3 nv = l * float3(0.31, 0.816, 0.216) * 2.2; // green phosphor
+        c = lerp(c, nv, 0.686 * saturate(flags.z));
+    }
+    if (flags.w > 0.0) {           // zd_ScopeTargetingRecon
+        float l = dot(c, float3(0.299, 0.587, 0.114));
+        float3 flat3 = lerp(l.xxx, c, 0.3);               // desaturate to 0.3
+        flat3 = flat3 * 0.6 + 0.25;                       // flatten contrast
+        flat3 *= float3(1.0, 0.878, 0.835);               // warm screen tint
+        c = lerp(c, flat3, saturate(flags.w));
+    }
+
+    float v;
+    if (flags.y > 0.0) {
+        // screen-type optic: square soft edge instead of the radial vignette
+        float2 e = 1.0 - smoothstep(0.86, 1.02, abs(i.uv - 0.5) * 2.0);
+        v = e.x * e.y;
+        c *= lerp(1.0, v, 0.85);
+    } else {
+        // radial term in "disc units": 1.0 at the picture disc's edge
+        float r = length((i.uv - 0.5) * 2.0);
+        v = 1.0 - smoothstep(vignette.x, vignette.y, r);
+        v = pow(saturate(v), max(vignette.w, 0.001));
+        c *= lerp(1.0, v, saturate(vignette.z));
+    }
 
     if (flags.x > 0.0) {
         float2 ruv = (i.uv - 0.5) * reticle.xy + 0.5 + reticle.zw;
@@ -95,6 +122,7 @@ float4 PSMain(VSOut i) : SV_Target
 			float vignette[4];
 			float tint[4];
 			float flags[4];
+			float nvp[4];
 		};
 
 		using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
@@ -467,6 +495,22 @@ float4 PSMain(VSOut i) : SV_Target
 				p.tint[2] = static_cast<float>(*Settings::lensTintB);
 				p.tint[3] = static_cast<float>(*Settings::lensExposure);
 				p.flags[0] = (wantReticle && reticleSRV) ? static_cast<float>(*Settings::reticleAlpha) : 0.0f;
+				// v0.2.111 — modes from the probed zoom identity (ScopeIdent):
+				// screen look for the recon widget branch (overlay 16) or a
+				// Screen* measured shape; NV / recon color from the zoom's imod.
+				{
+					const auto ident = ScopeIdent::Get();
+					const bool screen = ident.zoomOverlay == 16 ||
+					                    std::strncmp(ident.faceShape, "Screen", 6) == 0;
+					p.flags[1] = screen ? 1.0f : 0.0f;
+					p.flags[2] = (ident.zoomImodID & 0xFFFFFF) == 0x94636
+					                 ? static_cast<float>(*Settings::nvEffectStrength)
+					                 : 0.0f;
+					p.flags[3] = (ident.zoomImodID & 0xFFFFFF) == 0x2041b6
+					                 ? static_cast<float>(*Settings::reconEffectStrength)
+					                 : 0.0f;
+					p.nvp[0] = static_cast<float>(*Settings::nvGain);
+				}
 				std::memcpy(m.pData, &p, sizeof(p));
 				d3d->Unmap(g_cb, 0);
 			}

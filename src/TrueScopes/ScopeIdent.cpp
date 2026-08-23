@@ -634,6 +634,23 @@ namespace TrueScopes::ScopeIdent
 				a_out.weaponFormID = *reinterpret_cast<std::uint32_t*>(inst[0] + kFormIDInTESForm);
 				a_out.fovMult = Fn<GetIronSightFOV_t>(kGetIronSightFOV)(inst[0], inst[1]);
 				a_out.zoomFovAt90 = Fn<GetZoomFOV_t>(kGetZoomFOV)(inst[0], 90.0f, inst[1]);
+				// v0.2.111 — zoomData: instance data first (a scope OMOD's ZOOM
+				// overrides the base), then the weapon form; the same selection
+				// TS_ScopeMenu_ProcessMessage makes (inst+0x90 / weap+0x228).
+				// BGSZoomData::Data at +0x20: {fovMult, overlay +0x24, imod +0x28}.
+				const auto zoomData = inst[1] && *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
+				                          ? *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
+				                          : *reinterpret_cast<std::uintptr_t*>(inst[0] + 0x228);
+				if (zoomData) {
+					// overlay index: the exact read TS_ScopeMenu_ProcessMessage makes.
+					a_out.zoomOverlay = *reinterpret_cast<std::uint32_t*>(zoomData + 0x24);
+					// the RESOLVED imod pointer is +0x38 (the +0x28 slot is the raw
+					// formID from the ESM); +0x38 is what the engine's own Trigger
+					// call site uses, null for every non-NV/non-recon zoom.
+					if (const auto imod = *reinterpret_cast<std::uintptr_t*>(zoomData + 0x38)) {
+						a_out.zoomImodID = *reinterpret_cast<std::uint32_t*>(imod + kFormIDInTESForm);
+					}
+				}
 			}
 			// BEFORE the release: the instance-data POINTER is what identifies the
 			// equipped inventory stack, and the reference we hold is what keeps it

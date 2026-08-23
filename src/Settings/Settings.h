@@ -253,6 +253,15 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", lensTintG, 1.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", lensTintB, 1.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", lensExposure, 1.0);
+	// v0.2.111 in-lens recreations of the suppressed zoom imods. Strengths are
+	// 0..1 master faders over looks derived from the IMAD records themselves:
+	// NV: tint (0.31,0.82,0.22)@0.69 + brightness x1.1+0.4 + gain (zd_ScopeNightVision)
+	// Recon: desaturate to ~0.3, warm tint (1,0.88,0.84)@0.39, contrast x0.2+0.8
+	// (zd_ScopeTargetingRecon). Screen-type scopes also drop the radial vignette
+	// for a square soft edge automatically.
+	MAKE_SETTING(fSetting, "TrueScopesVR", nvEffectStrength, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", nvGain, 1.6);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reconEffectStrength, 1.0);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
@@ -414,15 +423,14 @@ namespace Settings
 	// one it actually bound. 8930 keeps clear of alandtse/devbench's 8920/8921.
 	MAKE_SETTING(iSetting, "TrueScopesVR", devbenchPort, std::int64_t(8930));
 
-	// v0.2.110: DEFAULT OFF, and the name is a historical misnomer. The two patched
-	// call sites trigger the PER-ZOOM imod (zoomData+0x38) - and the ESM says that
-	// field is 0 for every standard scope: only the NightVision zooms (imod
-	// 0x94636 zd_ScopeNightVision) and the Recon zooms (0x2041b6
-	// zd_ScopeTargetingRecon) carry one, and the sites null-check before firing.
-	// So the patch never suppressed any blackout (vanilla's black world was the
-	// render REDIRECT, which we never arm) - it only killed the NV and recon
-	// screen effects. Found 2026-08-23 preparing the all-scopes gate pass.
-	MAKE_SETTING(bSetting, "TrueScopesVR", disableScopeBlackout, false);
+	// v0.2.111: back ON, with the name it earned. The per-zoom imods
+	// (zd_ScopeNightVision 0x94636, zd_ScopeTargetingRecon 0x2041b6 - standard
+	// scopes carry none) are FULLSCREEN imagespace modifiers authored for the flat
+	// game, where scoping owned the whole screen. In VR they tint the world, not
+	// the scope (field-confirmed 2026-08-23 rows 3/4). Suppress them globally and
+	// recreate the looks INSIDE the lens composite (nv*/recon* knobs below), keyed
+	// off the zoom's imod identity. Old TOML key disableScopeBlackout still loads.
+	MAKE_SETTING(bSetting, "TrueScopesVR", suppressScopeImods, true);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, false);
 
@@ -612,6 +620,9 @@ namespace Settings
 		LOAD(lensTintG);
 		LOAD(lensTintB);
 		LOAD(lensExposure);
+		LOAD(nvEffectStrength);
+		LOAD(nvGain);
+		LOAD(reconEffectStrength);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
 		LOAD(perScopeAperture);
@@ -631,7 +642,13 @@ namespace Settings
 		LOAD(sunExecInResolve);
 		LOAD(sunReapplyInvProj);
 		LOAD(sunResolveRebindAccum);
-		LOAD(disableScopeBlackout);
+		LOAD(suppressScopeImods);
+		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
+		if (const auto legacy = config["TrueScopesVR"]["disableScopeBlackout"]; legacy) {
+			if (const auto value = legacy.as<bool>(); value) {
+				*suppressScopeImods = value->get();
+			}
+		}
 		LOAD(disableApproachFade);
 		LOAD(devbenchEnabled);
 		LOAD(devbenchPort);
@@ -721,8 +738,8 @@ namespace Settings
 		}
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} disableScopeBlackout={} disableApproachFade={}"),
-			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *sunEnabled, *disableScopeBlackout, *disableApproachFade);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} suppressScopeImods={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *sunEnabled, *suppressScopeImods, *disableApproachFade);
 
 		if (postLoadHook) {
 			postLoadHook();
