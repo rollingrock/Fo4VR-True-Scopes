@@ -1061,7 +1061,9 @@ namespace TrueScopes::ScopeIdent
 			return fail("weapon not in inventory");
 		}
 		if (count > 1) {
-			return fail("more than one of this weapon in inventory - engine can only mod singular items");
+			std::snprintf(r.error, sizeof(r.error),
+				"GetInventoryObjectCount=%u - engine can only mod singular items", count);
+			return r;
 		}
 		r.ok = Fn<ModifyInvMod_t>(kModifyInventoryItemMod)(nullptr, 0, player, inst[0], mod, a_attach);
 		if (!r.ok) {
