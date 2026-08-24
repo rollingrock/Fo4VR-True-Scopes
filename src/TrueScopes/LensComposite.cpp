@@ -55,6 +55,11 @@ cbuffer Params : register(b0)
     float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w unused
     float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w unused
     float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w unused
+    // v0.2.123 glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
+    float4 pose;      // xy RAW eye lateral offset (disc units, UN-gained); zw smoothed parallax UV shift
+    float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
+    float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
+    float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -75,6 +80,11 @@ float4 PSMain(VSOut i) : SV_Target
 {
     float2 cuv = i.uv - 0.5;
     float  r   = length(cuv) * 2.0;      // disc units: 1.0 at the picture edge
+    // v0.2.123 parallax depth: picture samples shift by pose.zw (CPU-smoothed,
+    // clamped) while every rim-anchored term (cuv/r, vignette, eye-box, rim
+    // shadow, reticle at fraction 0) stays on geometric UV - the image plane
+    // reads DEEPER than the lens plane. (0,0) = bit-exact identity.
+    float2 puv = i.uv + pose.zw;
 
     float3 c;
     // --- chromatic fringe at the rim (optical tubes only; a screen is a display)
@@ -83,11 +93,11 @@ float4 PSMain(VSOut i) : SV_Target
     // stays untouched. fx.z is small (0.002-0.01 in UV terms at the rim).
     if (fx.z > 0.0 && flags.y == 0.0) {
         float2 k = cuv * (fx.z * r * r);
-        c.r = picture.Sample(smp, i.uv - k).r;
-        c.g = picture.Sample(smp, i.uv).g;
-        c.b = picture.Sample(smp, i.uv + k).b;
+        c.r = picture.Sample(smp, puv - k).r;
+        c.g = picture.Sample(smp, puv).g;
+        c.b = picture.Sample(smp, puv + k).b;
     } else {
-        c = picture.Sample(smp, i.uv).rgb;
+        c = picture.Sample(smp, puv).rgb;
     }
 
     // --- edge blur (optical tubes only): field curvature softens the rim.
@@ -95,10 +105,10 @@ float4 PSMain(VSOut i) : SV_Target
     if (fx.x > 0.0 && flags.y == 0.0 && r > fx.y) {
         float  w  = saturate((r - fx.y) / max(1.0 - fx.y, 0.05)) * saturate(fx.x);
         float  br = 0.006 * w;                    // tap ring radius in UV
-        float3 b = picture.Sample(smp, i.uv + float2( br,  br)).rgb
-                 + picture.Sample(smp, i.uv + float2(-br,  br)).rgb
-                 + picture.Sample(smp, i.uv + float2( br, -br)).rgb
-                 + picture.Sample(smp, i.uv + float2(-br, -br)).rgb;
+        float3 b = picture.Sample(smp, puv + float2( br,  br)).rgb
+                 + picture.Sample(smp, puv + float2(-br,  br)).rgb
+                 + picture.Sample(smp, puv + float2( br, -br)).rgb
+                 + picture.Sample(smp, puv + float2(-br, -br)).rgb;
         c = lerp(c, b * 0.25, w);
     }
 
@@ -151,7 +161,7 @@ float4 PSMain(VSOut i) : SV_Target
     }
 
     if (flags.x > 0.0) {
-        float2 ruv = (i.uv - 0.5) * reticle.xy + 0.5 + reticle.zw;
+        float2 ruv = (i.uv + pose.zw * sheen2.z - 0.5) * reticle.xy + 0.5 + reticle.zw;
         if (all(ruv >= 0.0) && all(ruv <= 1.0)) {
             float4 rc = reticleT.Sample(smp, ruv);
             c = lerp(c, rc.rgb, saturate(rc.a * flags.x));
@@ -173,6 +183,48 @@ float4 PSMain(VSOut i) : SV_Target
         float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
         c *= lerp(1.0, vis, saturate(eyebox.z));
     }
+
+    // --- v0.2.123 HOUSING RIM SHADOW (optical tubes only): a hard near-black
+    // annulus that reads as the ocular tube WALL - distinct from the soft
+    // photographic vignette above. Last in the multiply chain: the wall
+    // occludes picture, phosphor, and reticle alike. Two asymmetries make it
+    // 3D: a top bias (real tube interiors are lit from above; note it rides
+    // the disc, so it cants with the weapon) and a parallax shift opposite
+    // the eye (the rim is NEAR geometry against the far image). The combined
+    // center shift is clamped so the band can never slide off one side.
+    if (rim.z > 0.0 && flags.y == 0.0) {
+        float2 ctr = float2(0.0, rim.w) - pose.xy * sheen2.w;
+        float  cl  = 1.0 - rim.x;
+        float  cm  = length(ctr);
+        if (cm > cl && cm > 0.0) { ctr *= cl / cm; }
+        float rr = length(cuv * 2.0 - ctr);
+        c *= 1.0 - saturate(rim.z) * smoothstep(rim.x, max(rim.y, rim.x + 0.001), rr);
+    }
+
+    // --- v0.2.123 GLASS SHEEN: light on the eyepiece surface, in FRONT of
+    // everything - strictly additive, so it never occludes. A broad Gaussian
+    // glint at the mirror point of the eye offset (head right -> glint left),
+    // modulated by a fixed procedural smudge pattern (smudge only CARVES the
+    // glint, never brightens; invisible except where the glint rakes it - the
+    // strongest "physical surface" cue), plus a tiny fresnel rim lift that
+    // grows off-axis. Applies to screen optics too: their front window is
+    // still glass. Faint AR-coating green tint.
+    if (sheen.x > 0.0 || sheen.z > 0.0) {
+        float2 eo  = pose.xy;
+        float2 p2  = cuv * 2.0;
+        float2 hc  = clamp(-eo * sheen2.x, -0.85, 0.85);
+        float  gd  = length(p2 - hc) / max(sheen.y, 0.05);
+        float  gl  = exp(-gd * gd);
+        float  smu = 1.0;
+        if (sheen.w > 0.0) {
+            float2 q = cuv * sheen2.y;
+            float  n = sin(q.x * 5.1 + sin(q.y * 3.7)) * sin(q.y * 4.3 + sin(q.x * 6.1))
+                     + 0.5 * sin(q.x * 11.3 + q.y * 7.7) * sin(q.y * 9.1 - q.x * 3.3);
+            smu = max(0.0, 1.0 - sheen.w * (0.5 - 0.33 * n));
+        }
+        float fr = sheen.z * pow(saturate(r), 3.0) * (0.35 + 0.65 * saturate(length(eo)));
+        c += float3(0.92, 1.0, 0.97) * (sheen.x * gl * smu + fr);
+    }
     return float4(c, 1.0);
 }
 )";
@@ -186,6 +238,12 @@ float4 PSMain(VSOut i) : SV_Target
 			float nvp[4];
 			float eyebox[4];
 			float fx[4];
+			// v0.2.123 glass suite - mirrors the HLSL cbuffer above EXACTLY.
+			// Zero-init = every effect off (the Dim() constraint).
+			float pose[4];
+			float rim[4];
+			float sheen[4];
+			float sheen2[4];
 		};
 
 		// --- eye-box pose (v0.2.113) ------------------------------------------
@@ -201,9 +259,14 @@ float4 PSMain(VSOut i) : SV_Target
 		// rot[r][c] * v[r], rows 0x10 apart.
 		// Returns false (offsets zeroed) when any pointer is missing or the
 		// numbers are not sane — the shader then behaves as eye-on-axis.
-		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y) noexcept
+		// v0.2.123 parallax EMA state (render thread only).
+		float         g_pllxPrev[2] = {};
+		std::uint64_t g_pllxLastMs = 0;
+
+		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y, float& a_axialY) noexcept
 		{
 			a_x = a_y = 0.0f;
+			a_axialY = 0.0f;
 			if (!a_scopeParent) {
 				return false;
 			}
@@ -247,7 +310,11 @@ float4 PSMain(VSOut i) : SV_Target
 				// live-verified 2026-08-11).
 				const float lx = rot[0] * v[0] + rot[1] * v[1] + rot[2] * v[2];
 				const float lz = rot[8] * v[0] + rot[9] * v[1] + rot[10] * v[2];
-				if (!std::isfinite(lx) || !std::isfinite(lz)) {
+				// v0.2.123: tube-axial component (local +Y = down-range) of the
+				// eye position - the eye sits BEHIND the ocular, so ly < 0 and
+				// eye relief L = -ly. Parallax scales by D/(L+D).
+				const float ly = rot[4] * v[0] + rot[5] * v[1] + rot[6] * v[2];
+				if (!std::isfinite(lx) || !std::isfinite(lz) || !std::isfinite(ly)) {
 					continue;
 				}
 				const float m2 = lx * lx + lz * lz;
@@ -256,6 +323,7 @@ float4 PSMain(VSOut i) : SV_Target
 					// mesh X = right = screen +u; mesh Z = up = screen -v
 					a_x = lx / discR;
 					a_y = -lz / discR;
+					a_axialY = ly;
 				}
 			}
 			return best >= 0.0f && std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
@@ -770,10 +838,12 @@ float4 PSMain(VSOut i) : SV_Target
 		// v0.2.111 — modes from the probed zoom identity (ScopeIdent):
 		// screen look for the recon widget branch (overlay 16) or a
 		// Screen* measured shape; NV / recon color from the zoom's imod.
+		bool screenMode = false;
 		{
 			const auto ident = ScopeIdent::Get();
 			const bool screen = ident.zoomOverlay == 16 ||
 			                    std::strncmp(ident.faceShape, "Screen", 6) == 0;
+			screenMode = screen;
 			p.flags[1] = screen ? 1.0f : 0.0f;
 			p.flags[2] = (ident.zoomImodID & 0xFFFFFF) == 0x94636
 			                 ? static_cast<float>(*Settings::nvEffectStrength)
@@ -796,13 +866,83 @@ float4 PSMain(VSOut i) : SV_Target
 		// applies all three only to optical tubes (screen mode skips
 		// them — an LCD has no exit pupil and no field curvature).
 		{
-			float ex = 0.0f, ey = 0.0f;
+			float ex = 0.0f, ey = 0.0f, ly = 0.0f;
 			const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
-			if (strength > 0.0f && EyeLateral(a_in.scopeParent, ex, ey)) {
+			// v0.2.123: the pose read feeds four consumers now - eye-box (gain-
+			// scaled), rim parallax, sheen, and parallax depth (all RAW, so the
+			// glass effects never retune when eyeBoxGain is calibrated). Run it
+			// when ANY of them wants it; each consumer gates itself below.
+			const float rimStr = (std::max)(0.0f, static_cast<float>(*Settings::rimShadowStrength));
+			const float rimPll = static_cast<float>(*Settings::rimShadowParallax);
+			const float shStr = (std::max)(0.0f, static_cast<float>(*Settings::sheenStrength));
+			const float shFre = (std::max)(0.0f, static_cast<float>(*Settings::sheenFresnel));
+			const float pllxD = static_cast<float>(*Settings::parallaxDepthUnits);
+			const bool wantPose = strength > 0.0f || shStr > 0.0f || shFre > 0.0f ||
+			                      pllxD > 0.0f || (rimStr > 0.0f && rimPll != 0.0f);
+			const bool havePose = wantPose && EyeLateral(a_in.scopeParent, ex, ey, ly);
+			if (havePose && strength > 0.0f) {
 				const auto gain = static_cast<float>(*Settings::eyeBoxGain);
 				p.eyebox[0] = ex * gain;
 				p.eyebox[1] = ey * gain;
 				p.eyebox[2] = strength;
+			}
+			if (havePose) {
+				p.pose[0] = ex;
+				p.pose[1] = ey;
+			}
+			// PARALLAX DEPTH (optical tubes only; an LCD sits AT the housing).
+			// Image plane D units behind the lens; shift = -0.5*D/(L+D)*offset,
+			// L = live eye relief (pistol at arm's length naturally shows less
+			// than a shouldered rifle). EMA across fills absorbs the auto-eye
+			// flip; a >500 ms gap snaps (no stale slide-in on scope-in); a pose
+			// failure decays toward zero through the same EMA instead of
+			// popping. The clamp keeps clamp-sampler smear under the rim band.
+			{
+				float tx = 0.0f, ty = 0.0f;
+				if (havePose && pllxD > 0.0f && !screenMode && std::isfinite(ly) && ly < 0.0f) {
+					const float L = (std::max)(static_cast<float>(*Settings::parallaxMinEyeRelief), -ly);
+					const float d = pllxD / (L + pllxD);
+					tx = -0.5f * d * ex;
+					ty = -0.5f * d * ey;
+					const float m = std::sqrt(tx * tx + ty * ty);
+					const float cap = static_cast<float>(*Settings::parallaxMaxShift);
+					if (m > cap && m > 0.0f) {
+						tx *= cap / m;
+						ty *= cap / m;
+					}
+				}
+				const auto now = ::GetTickCount64();
+				const float sm = (std::clamp)(static_cast<float>(*Settings::parallaxSmoothing), 0.0f, 0.95f);
+				if (now - g_pllxLastMs > 500) {
+					g_pllxPrev[0] = tx;
+					g_pllxPrev[1] = ty;
+				} else {
+					g_pllxPrev[0] += (tx - g_pllxPrev[0]) * (1.0f - sm);
+					g_pllxPrev[1] += (ty - g_pllxPrev[1]) * (1.0f - sm);
+				}
+				g_pllxLastMs = now;
+				p.pose[2] = g_pllxPrev[0];
+				p.pose[3] = g_pllxPrev[1];
+				p.sheen2[2] = static_cast<float>(*Settings::reticleParallaxFraction);
+			}
+			// RIM SHADOW: fill whenever on - without pose it degrades to the
+			// static top-biased ring (graceful; the shader clamps the center).
+			if (rimStr > 0.0f) {
+				p.rim[0] = static_cast<float>(*Settings::rimShadowStart);
+				p.rim[1] = static_cast<float>(*Settings::rimShadowEnd);
+				p.rim[2] = rimStr;
+				p.rim[3] = (std::clamp)(static_cast<float>(*Settings::rimShadowTopBias), -0.25f, 0.25f);
+				p.sheen2[3] = rimPll;
+			}
+			// GLASS SHEEN: pose-gated - a static centred glint would read as a
+			// bug, so the whole block turns off when the pose read fails.
+			if (havePose && (shStr > 0.0f || shFre > 0.0f)) {
+				p.sheen[0] = shStr;
+				p.sheen[1] = static_cast<float>(*Settings::sheenWidth);
+				p.sheen[2] = shFre;
+				p.sheen[3] = (std::max)(0.0f, static_cast<float>(*Settings::sheenSmudge));
+				p.sheen2[0] = static_cast<float>(*Settings::sheenTravel);
+				p.sheen2[1] = static_cast<float>(*Settings::sheenSmudgeScale);
 			}
 			p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
 			p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);

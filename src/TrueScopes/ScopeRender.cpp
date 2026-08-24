@@ -1749,7 +1749,12 @@ namespace TrueScopes::ScopeRender
 			// optic the table has never seen behaves exactly as it did before.
 			const auto  aperture = ScopeIdent::ApertureRadius();
 			const auto  scaleOverride = static_cast<float>(*Settings::widgetScaleOverride);
-			const float scale = scaleOverride > 0.0f ? scaleOverride : aperture / kVanillaRenderCircleRadius;
+			// v0.2.123 — under-aperture sizing (encapsulation layer 2): shrink the
+			// disc slightly inside the housing hole so the seam is never a bright
+			// picture pixel. Applies after the per-scope table, so every entry
+			// keeps its relative fit; the override (a bisect tool) bypasses it.
+			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 1.1f);
+			const float scale = scaleOverride > 0.0f ? scaleOverride : (aperture * apScale) / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
 			// cannot tell that apart from a broken render — refuse instead of guessing.
 			if (!(scale > 0.001f && scale < 8.0f)) {

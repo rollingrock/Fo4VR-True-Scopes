@@ -111,6 +111,52 @@ caStrength = 0.35
 # Night-vision phosphor scanlines, 0..1. Judged in VR at 0.8; 0 = clean NV.
 nvScanlines = 0.8
 
+# ============ THE GLASS SUITE (v0.2.123 - encapsulation polish) ============
+# Field feedback 2026-08-24: "the render feels apart from the scope mesh...
+# encapsulate it... glassy lens overlay". Three effects, all live-tunable and
+# all exact no-ops at 0. NOT yet judged in the headset - tune freely.
+
+# HOUSING RIM SHADOW - a hard near-black ring at the disc edge that reads as
+# the ocular tube WALL (the soft vignette above stays photographic). Optical
+# tubes only. Band runs rimShadowStart..rimShadowEnd in disc units (1.0 =
+# picture edge); topBias drops the shadow center so the tube interior reads
+# lit-from-above (rides the disc, so it cants with the gun); parallax shifts
+# the ring opposite the eye - the rim is NEAR geometry against the far image.
+rimShadowStrength = 0.9
+rimShadowStart = 0.86
+rimShadowEnd = 1.0
+rimShadowTopBias = 0.05
+rimShadowParallax = 0.2
+
+# Under-aperture sizing: the picture disc sits this fraction of the housing
+# hole so no bright pixel touches the seam. 1.0 = exact fit (old behavior).
+widgetApertureScale = 0.97
+
+# GLASS SHEEN - additive light on the eyepiece surface, in front of picture
+# and reticle. A broad glint that slides opposite head motion (sheenTravel),
+# a faint fresnel rim lift that grows off-axis, and a fixed smudge pattern
+# that only shows where the glint rakes it (smudge CARVES the glint, never
+# brightens). Applies to screen optics too - their front window is glass.
+# Tuning tip: set sheenStrength 0.3 to place travel/width, then walk down.
+sheenStrength = 0.06
+sheenWidth = 0.55
+sheenTravel = 0.9
+sheenFresnel = 0.04
+sheenSmudge = 0.35
+sheenSmudgeScale = 9.0
+
+# PARALLAX DEPTH - the picture shifts against the eye so the image plane
+# reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the
+# classic looking-through-a-tube depth cue). Uses live eye relief, so a
+# pistol at arm's length naturally shows less than a shouldered rifle.
+# Sweep 0/3/6/10 live to taste; 0 = off. reticleParallaxFraction 0 keeps the
+# reticle rim-anchored (a second-focal-plane cue); 1 moves it with the image.
+parallaxDepthUnits = 3.0
+parallaxMaxShift = 0.08
+parallaxSmoothing = 0.3
+parallaxMinEyeRelief = 4.0
+reticleParallaxFraction = 0.0
+
 # --- Pose-based activation (v0.2.116) ----------------------------------------
 # Replace the vanilla eye-proximity gate's verdict with the plugin's own pose
 # test. Vanilla activates only inside 38 units (~54 cm) of the eye, so a pistol

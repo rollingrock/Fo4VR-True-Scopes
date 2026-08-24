@@ -295,6 +295,36 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStart, 0.7);
 	// Chromatic fringe at the rim (red/blue focal split), 0..1. 0 disables.
 	MAKE_SETTING(fSetting, "TrueScopesVR", caStrength, 0.35);
+	// v0.2.123 — THE GLASS SUITE (encapsulation feedback 2026-08-24: "the render
+	// feels apart from the scope mesh... encapsulate it... glassy lens overlay").
+	// All live-tunable; every effect is an exact no-op at strength 0 (the Dim()
+	// constraint). Field-judgment pending.
+	// HOUSING RIM SHADOW — a hard near-black annulus at the disc edge that reads
+	// as the ocular tube wall (distinct from the soft vignette). Optical only.
+	MAKE_SETTING(fSetting, "TrueScopesVR", rimShadowStrength, 0.9);
+	MAKE_SETTING(fSetting, "TrueScopesVR", rimShadowStart, 0.86);
+	MAKE_SETTING(fSetting, "TrueScopesVR", rimShadowEnd, 1.0);
+	// Center drop in disc units — the shadow intrudes deeper at the top like a
+	// real tube interior lit from above. Rides the disc, so it cants with the gun.
+	MAKE_SETTING(fSetting, "TrueScopesVR", rimShadowTopBias, 0.05);
+	// Shadow center shifts opposite the eye by this factor of the RAW eye offset
+	// — the rim behaves as NEAR geometry against the far image.
+	MAKE_SETTING(fSetting, "TrueScopesVR", rimShadowParallax, 0.2);
+	// GLASS SHEEN — additive view-dependent glint + fresnel rim lift + smudge.
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenStrength, 0.06);
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenWidth, 0.55);
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenTravel, 0.9);
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenFresnel, 0.04);
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenSmudge, 0.35);
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenSmudgeScale, 9.0);
+	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
+	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 3.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.08);
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxSmoothing, 0.3);
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMinEyeRelief, 4.0);
+	// 0 = reticle anchored to the rim (second-focal-plane cue); 1 = moves with image.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleParallaxFraction, 0.0);
 	// NV phosphor scanlines, 0..1. Judged in the headset 2026-08-24 at 0.8
 	// ("that looks really nice") — ships ON at that value.
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.8);
@@ -357,6 +387,11 @@ namespace Settings
 	// the built-in table. Default is the hunting rifle's glass shape (measured
 	// 1.267). Recognised scopes use their own radius instead; see perScopeAperture.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetApertureRadius, 1.267);
+	// v0.2.123 — under-aperture sizing: multiplies the derived aperture so the
+	// picture disc sits slightly INSIDE the real housing hole and no bright
+	// pixel ever touches the seam (encapsulation layer 2). 1.0 = exact fit.
+	// Clamped to [0.8, 1.1] at use. widgetScaleOverride bypasses it (bisect tool).
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetApertureScale, 0.97);
 	// v0.2.85: look the aperture up PER SCOPE from the node names in the equipped
 	// weapon's 3D, instead of using one number for every optic. The shipped table
 	// covers the 26 vanilla scopes; [Scopes] in the TOML overrides and extends it.
@@ -723,6 +758,22 @@ namespace Settings
 		LOAD(edgeBlurStrength);
 		LOAD(edgeBlurStart);
 		LOAD(caStrength);
+		LOAD(rimShadowStrength);
+		LOAD(rimShadowStart);
+		LOAD(rimShadowEnd);
+		LOAD(rimShadowTopBias);
+		LOAD(rimShadowParallax);
+		LOAD(sheenStrength);
+		LOAD(sheenWidth);
+		LOAD(sheenTravel);
+		LOAD(sheenFresnel);
+		LOAD(sheenSmudge);
+		LOAD(sheenSmudgeScale);
+		LOAD(parallaxDepthUnits);
+		LOAD(parallaxMaxShift);
+		LOAD(parallaxSmoothing);
+		LOAD(parallaxMinEyeRelief);
+		LOAD(reticleParallaxFraction);
 		LOAD(nvScanlines);
 		LOAD(poseGateEnabled);
 		LOAD(poseMaxDistance);
@@ -736,6 +787,7 @@ namespace Settings
 		LOAD(hideWidgetHousing);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
+		LOAD(widgetApertureScale);
 		LOAD(perScopeAperture);
 		LOAD(widgetScaleOverride);
 		LOAD(widgetOffsetX);
