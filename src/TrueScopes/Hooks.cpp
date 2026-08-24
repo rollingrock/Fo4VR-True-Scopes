@@ -140,7 +140,15 @@ namespace TrueScopes::Hooks
 				// has-scope, and no blocking menu is open, so presence dies
 				// with eligibility (the stale poll hides the nodes ~1 s later).
 				if (*Settings::poseWidgetAlways) {
-					SetWidgetNodesHidden(player, false);
+					// v0.2.119: only once the widget is PRESENTABLE — the fit has
+					// been applied for the current baseline (or the user disabled
+					// the fit on purpose). Without this gate a first-drawn weapon
+					// showed Bethesda's giant un-fit band until the first aim
+					// (field screenshot 20260824151656). PresenceFit() in the fill
+					// hook makes the fit land within a few frames of the draw.
+					if (ScopeRender::WidgetPresentable()) {
+						SetWidgetNodesHidden(player, false);
+					}
 				} else if (g_presenceShown.load(std::memory_order_relaxed) && !v) {
 					// live-toggled off while pose-inactive: put vanilla's
 					// hidden state back once instead of leaving orphan nodes.
@@ -256,6 +264,15 @@ namespace TrueScopes::Hooks
 							REL::Module::get().base() + 0x5b043f0)) {
 						ScopeIdent::RunIfRequested(player);
 					}
+				}
+
+				// v0.2.119: while plugin-owned presence wants the widget (weapon
+				// drawn, verdict site alive), keep the ident + widget fit current
+				// even when no live fill runs — a save-load or first draw fits
+				// within a few frames instead of waiting for the first aim.
+				// Cheap: ApplyWidgetFit no-ops when nothing changed.
+				if (g_installed && *Settings::poseWidgetAlways && !PoseGate::SiteStale(90)) {
+					ScopeRender::PresenceFit();
 				}
 
 				// v0.2.52: sample the lens RT BEFORE we touch it — this reads what

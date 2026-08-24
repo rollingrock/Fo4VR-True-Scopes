@@ -1177,6 +1177,9 @@ namespace TrueScopes::ScopeRender
 			bool  applied = false;
 		};
 		WidgetState g_widget;
+		// v0.2.119: cross-thread mirror of g_widget.applied (read by the game-thread
+		// presence gate; written on the render thread wherever `applied` changes).
+		std::atomic_bool g_fitAppliedAtomic{ false };
 
 		void WriteScopeParent(std::uintptr_t a_sp, float a_tx, float a_ty, float a_tz, float a_scale)
 		{
@@ -1674,6 +1677,11 @@ namespace TrueScopes::ScopeRender
 				g_widget.baseScale = *s;
 				g_widget.captured = true;
 				g_widget.applied = false;
+				g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
+				// v0.2.119: an engine rewrite of ScopeParent IS the equip signal —
+				// re-identify the scope so a weapon swap can never keep the old
+				// weapon's aperture/placement (field: first-draw giant widget).
+				ScopeIdent::Request();
 				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
 					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 				// Sanity tripwire for exactly the failure that produced this fix: the engine
@@ -1696,6 +1704,7 @@ namespace TrueScopes::ScopeRender
 				if (stillOurs && g_widget.captured) {
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 					g_widget.applied = false;
+					g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
 					logger::info("WIDGET FIT off — restored engine transform"sv);
 				}
 				return;
@@ -1810,6 +1819,7 @@ namespace TrueScopes::ScopeRender
 			g_widget.lastOy = oy;
 			g_widget.lastOz = oz;
 			g_widget.applied = true;
+			g_fitAppliedAtomic.store(true, std::memory_order_relaxed);
 			logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) "
 			                        "base=({:.2f},{:.2f},{:.2f}) offset=({:.2f},{:.2f},{:.2f})"),
 				scale, aperture, kVanillaRenderCircleRadius,
@@ -3445,6 +3455,36 @@ namespace TrueScopes::ScopeRender
 		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 	}
 
+	bool WidgetPresentable()
+	{
+		// v0.2.119: may plugin-owned presence show the widget? True once the fit
+		// has been applied for the current ScopeParent baseline (or always, when
+		// the user runs with widgetFitEnabled=false and WANTS the vanilla look).
+		// Gating presence on this is what keeps the raw oversized vanilla band
+		// from ever being visible on a first-drawn weapon (field 2026-08-24).
+		return !*Settings::widgetFitEnabled || g_fitAppliedAtomic.load(std::memory_order_relaxed);
+	}
+
+	void PresenceFit()
+	{
+		// v0.2.119: run the ident probe + widget fit while plugin-owned presence
+		// holds (or is about to show) the widget WITHOUT a live fill — before this,
+		// both only ran inside RenderImpl, so a save-load or first draw showed
+		// Bethesda's giant un-fit disc until the first aim. Render thread (fill
+		// hook), same context RenderImpl runs them in; SEH because we are outside
+		// RenderGuarded's bracket here.
+		const auto base = REL::Module::get().base();
+		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
+		if (!player) {
+			return;
+		}
+		__try {
+			ScopeIdent::RunIfRequested(player);
+			ApplyWidgetFit(player);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			logger::warn("PresenceFit faulted (ignored)"sv);
+		}
+	}
 	void DimFrozenLens(float a_factor)
 	{
 		// v0.2.116 — POSE FREEZE dim. One-shot multiply of the frozen lens

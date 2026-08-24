@@ -38,6 +38,13 @@ namespace TrueScopes::ScopeRender
 	// Render-thread only.
 	void DimFrozenLens(float a_factor);
 
+	// v0.2.119 — plugin-owned widget presence support: may presence show the
+	// widget (fit applied, or fit disabled by choice)?
+	bool WidgetPresentable();
+
+	// Run ident probe + widget fit outside a live fill (render thread; SEH'd).
+	void PresenceFit();
+
 	// (v0.2.68 had a ResetWidgetFit() called on scope-in. REMOVED in v0.2.69: the engine
 	// rewrites ScopeParent at EQUIP, not scope-in, so that reset re-captured our own
 	// output as the new baseline and compounded the offset every scope cycle. The fit now
