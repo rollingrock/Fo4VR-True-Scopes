@@ -26,7 +26,10 @@ namespace TrueScopes::PoseGate
 		std::atomic<float>         g_lateral{ 0.0f };
 		std::atomic<float>         g_lookDeg{ 0.0f };
 		std::atomic<std::uint32_t> g_evals{ 0 };
-		std::atomic<std::uint64_t> g_evalFrame{ 0 };  // game frame of the last eval (freshness)
+		std::atomic<std::uint64_t> g_evalFrame{ 0 };  // game frame of the last POSE eval (freshness)
+		std::atomic<std::uint64_t> g_siteFrame{ 0 };  // game frame of the last verdict-site CALL,
+		                                              // updated even when the pose gate is disabled —
+		                                              // "is the site alive" (weapon drawn, eligible)
 		// Hysteresis memory. Game thread only (the verdict site is per-frame from
 		// Main::OnIdle), so no atomicity needed for the read-modify-write.
 		bool g_liveState = false;
@@ -154,6 +157,7 @@ namespace TrueScopes::PoseGate
 
 	bool OnGateVerdict(std::uintptr_t a_player, bool a_vanillaVerdict)
 	{
+		g_siteFrame.store(Hooks::FrameCount(), std::memory_order_relaxed);
 		if (!*Settings::poseGateEnabled) {
 			g_owned.store(false, std::memory_order_relaxed);
 			g_fillLive.store(true, std::memory_order_relaxed);
@@ -196,12 +200,16 @@ namespace TrueScopes::PoseGate
 		g_owned.store(true, std::memory_order_relaxed);
 		g_fillLive.store(live, std::memory_order_relaxed);
 
-		// The widget verdict: with poseWidgetAlways the widget is present for the
-		// whole time the weapon is up (this site only runs while the weapon is
-		// drawn, a gun, has a scope, and no blocking menu is open — the vanilla
-		// eligibility envelope), and the lens freezes/thaws off FillLive() with no
-		// pop-in. Without it the widget follows the pose, vanilla-style.
-		return *Settings::poseWidgetAlways ? true : live;
+		// v0.2.118: the verdict fed to vanilla is ALWAYS the pose. Feeding a
+		// perpetual "true" (the v0.2.116 poseWidgetAlways) kept the player
+		// SIGHTED the whole time the weapon was drawn — the enable switch's
+		// ActorState call drives the sighted state, sighted opens ScopeMenu,
+		// and FRIK reacts to ScopeMenu by collapsing the body root
+		// (hideHands: scale 0.00001) and blocking all Pip-Boy interaction.
+		// Field-diagnosed 2026-08-24 (stretched-body screenshot + dead
+		// Pip-Boy). Widget permanence is now plugin-owned node visibility in
+		// Hooks.cpp (WidgetPresence), which vanilla state never sees.
+		return live;
 	}
 
 	bool VerdictStale(std::uint64_t a_maxFrames)
@@ -212,6 +220,17 @@ namespace TrueScopes::PoseGate
 		const auto last = g_evalFrame.load(std::memory_order_relaxed);
 		const auto now = Hooks::FrameCount();
 		return now > last && now - last > a_maxFrames;
+	}
+
+	bool SiteStale(std::uint64_t a_maxFrames)
+	{
+		// Unlike VerdictStale this needs no pose ownership: it answers "has the
+		// verdict SITE run recently" (weapon drawn + eligible), which is what
+		// plugin-owned widget presence keys its hide on — it must work the same
+		// with the pose gate disabled (v0.2.118).
+		const auto last = g_siteFrame.load(std::memory_order_relaxed);
+		const auto now = Hooks::FrameCount();
+		return last != 0 && now > last && now - last > a_maxFrames;
 	}
 
 	bool FillLive()

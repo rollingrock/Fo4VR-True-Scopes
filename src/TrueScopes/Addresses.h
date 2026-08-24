@@ -112,6 +112,12 @@ namespace TrueScopes::Addr
 	// to texture slot 6. The bind is UNCONDITIONAL apart from this pointer equality. [LIVE]
 	inline constexpr std::uintptr_t kWidgetMaterialCache = 0x689b440;
 
+	// WSScopeModel singleton pointer cell (DAT_145acbf58; ctor FUN_140c8da70 stores
+	// it). +0x50/+0x68 = the two widget NiNodes the enable switch shows/hides
+	// (FUN_140c8e340 = SetAppCulled on exactly these two); +0x38 = the model root
+	// the render_circle walk uses. [LIVE]
+	inline constexpr std::uintptr_t kWidgetModelSingleton = 0x5acbf58;
+
 	// --- render target indices (logical, via RenderTargetManager remap table) ---
 
 	// Double-wide stereo frame color target (what gets submitted to OpenVR).

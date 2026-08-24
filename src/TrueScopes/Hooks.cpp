@@ -75,6 +75,50 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
+		// v0.2.118 — PLUGIN-OWNED WIDGET PRESENCE. The user wants the scope
+		// widget visible the whole time the weapon is drawn (no pop-in), but
+		// feeding the enable switch a perpetual "on" (v0.2.116) also kept the
+		// player SIGHTED → ScopeMenu open → FRIK collapsed the body and blocked
+		// the Pip-Boy (field-diagnosed 2026-08-24). The widget itself is plain
+		// world geometry: the enable switch's show/hide lines are exactly
+		// SetAppCulled on THREE nodes — ScopeParent (player+0x7d0) and the
+		// WSScopeModel singleton's +0x50/+0x68 (FUN_140c8e340, decompiled: two
+		// vfunc+0x180 calls, nothing else) — and NiAVObject::SetAppCulled is a
+		// write of flag bit 0 at +0x108 (the same bit LensComposite's reticle
+		// quad hide/restore has manipulated raw since v0.2.104). So presence =
+		// keeping those three bits cleared ourselves, refreshed after every
+		// verdict call in the same call stack (vanilla's own hide-edge can't
+		// even blink it), while every piece of vanilla STATE — sighted,
+		// ScopeMenu, bit 4, Pip-Boy, FRIK — follows the pose alone.
+		std::atomic_bool g_presenceShown{ false };
+
+		void SetWidgetNodesHidden(std::uintptr_t a_player, bool a_hidden)
+		{
+			__try {
+				const auto setBit = [](std::uintptr_t a_node, bool a_hide) {
+					if (a_node) {
+						auto& flags = *reinterpret_cast<std::uint8_t*>(a_node + 0x108);
+						if (a_hide) {
+							flags |= 1;
+						} else {
+							flags &= static_cast<std::uint8_t>(~1u);
+						}
+					}
+				};
+				if (a_player) {
+					setBit(*reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0), a_hidden);
+				}
+				const auto model = *reinterpret_cast<std::uintptr_t*>(
+					REL::Module::get().base() + Addr::kWidgetModelSingleton);
+				if (model) {
+					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), a_hidden);
+					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x68), a_hidden);
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			g_presenceShown.store(!a_hidden, std::memory_order_relaxed);
+		}
+
 		// v0.2.116 — POSE-BASED ACTIVATION. Replaces the per-frame verdict call
 		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
 		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). Our verdict flows
@@ -86,9 +130,22 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk(void* a_player, char a_verdict)
 			{
-				const bool v = PoseGate::OnGateVerdict(
-					reinterpret_cast<std::uintptr_t>(a_player), a_verdict != 0);
+				const auto player = reinterpret_cast<std::uintptr_t>(a_player);
+				const bool v = PoseGate::OnGateVerdict(player, a_verdict != 0);
 				func(a_player, v ? 1 : 0);
+				// Presence refresh (v0.2.118): AFTER the enable switch, same
+				// frame, game thread — its hide-edge culled the nodes a few
+				// instructions ago and this un-culls them before anything drew.
+				// This site only runs while the weapon is drawn, a gun,
+				// has-scope, and no blocking menu is open, so presence dies
+				// with eligibility (the stale poll hides the nodes ~1 s later).
+				if (*Settings::poseWidgetAlways) {
+					SetWidgetNodesHidden(player, false);
+				} else if (g_presenceShown.load(std::memory_order_relaxed) && !v) {
+					// live-toggled off while pose-inactive: put vanilla's
+					// hidden state back once instead of leaving orphan nodes.
+					SetWidgetNodesHidden(player, true);
+				}
 			}
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
@@ -163,6 +220,16 @@ namespace TrueScopes::Hooks
 					g_scopeActive.store(false);
 					LensComposite::RestoreReticleQuad();
 					logger::info("scope active -> false (verdict stale: holstered or menu)"sv);
+				}
+				// v0.2.118: widget presence dies with eligibility too — the verdict
+				// site going quiet (holster / blocking menu) is the hide signal.
+				// Same raw flag writes the show path uses; idempotent.
+				if (g_installed && g_presenceShown.load(std::memory_order_relaxed) &&
+					PoseGate::SiteStale(90)) {
+					const auto player = *reinterpret_cast<std::uintptr_t*>(
+						REL::Module::get().base() + 0x5b043f0);
+					SetWidgetNodesHidden(player, true);
+					logger::info("widget presence -> hidden (verdict stale)"sv);
 				}
 				// v0.2.111 debug: headless render arming (see Settings.h).
 				if (g_installed && *Settings::forceScopeActive && !g_scopeActive.load()) {
@@ -243,8 +310,10 @@ namespace TrueScopes::Hooks
 							// Cadence-skipped frame -> GREEN lens.
 							ScopeRender::TintLens(0.0f, 1.0f, 0.0f);
 						}
-					} else if (g_scopeActive.load()) {
-						// widget up, pose inactive -> frozen
+					} else if (g_scopeActive.load() ||
+					           (g_presenceShown.load(std::memory_order_relaxed) && *Settings::poseWidgetAlways)) {
+						// widget up (armed, or presence-kept after the pose
+						// off-edge dropped the arm — v0.2.118) -> frozen
 						if (s_dimPending) {
 							s_dimPending = false;
 							const auto dim = static_cast<float>(*Settings::poseFrozenDim);
@@ -433,6 +502,11 @@ namespace TrueScopes::Hooks
 	bool ScopeActive()
 	{
 		return g_scopeActive.load();
+	}
+
+	bool WidgetPresenceShown()
+	{
+		return g_presenceShown.load(std::memory_order_relaxed);
 	}
 
 	void OnGameLoaded()

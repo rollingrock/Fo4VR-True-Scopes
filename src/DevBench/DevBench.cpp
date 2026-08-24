@@ -537,6 +537,7 @@ namespace DevBench
 			// condition instead of relying on the operator's notes.
 			out += ",\"frames\":" + std::to_string(TrueScopes::Hooks::FrameCount());
 			out += ",\"scopeActive\":" + b(TrueScopes::Hooks::ScopeActive());
+			out += ",\"widgetPresence\":" + b(TrueScopes::Hooks::WidgetPresenceShown());
 			out += ",\"inOwnResolve\":" + b(TrueScopes::ScopeRender::InOwnResolve());
 			out += ",\"ownRenderThread\":" + std::to_string(TrueScopes::ScopeRender::OwnRenderThread());
 			out += ",\"sunBindHooks\":" + b(d.sunBindHooks);

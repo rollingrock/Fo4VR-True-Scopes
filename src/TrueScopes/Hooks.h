@@ -23,4 +23,7 @@ namespace TrueScopes::Hooks
 	// True while the scope is considered active (post-hysteresis). Lets a perf sample
 	// record which state it was taken in instead of trusting the operator's notes.
 	bool ScopeActive();
+
+	// v0.2.118: is the plugin-owned widget presence currently showing the nodes.
+	bool WidgetPresenceShown();
 }

@@ -321,10 +321,15 @@ namespace Settings
 	// ocular. Vanilla used 25/35 against the weapon; ours is against the scope.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeDegrees, 35.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeExitDegrees, 45.0);
-	// Widget presence: true = the scope widget stays up the whole time the
-	// weapon is drawn (lens FROZEN while the pose is inactive — RT 0x62
-	// persists, so freeze = don't fill; no pop-in). false = the widget follows
-	// the pose test, vanilla-style.
+	// Widget presence: true = the scope widget MESHES stay visible the whole
+	// time the weapon is drawn (lens FROZEN while the pose is inactive — RT
+	// 0x62 persists, so freeze = don't fill; no pop-in). v0.2.118: this is now
+	// PLUGIN-OWNED node visibility only — the verdict fed to vanilla is always
+	// the pose, so sighted/ScopeMenu/Pip-Boy/FRIK behave identically with this
+	// on or off. (The v0.2.116 version routed the VERDICT, which kept the
+	// player sighted, ScopeMenu open, FRIK's body collapsed and the Pip-Boy
+	// blocked whenever the weapon was drawn — field-diagnosed 2026-08-24.)
+	// false = the widget appears/disappears with the pose, vanilla-style.
 	MAKE_SETTING(bSetting, "TrueScopesVR", poseWidgetAlways, true);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.

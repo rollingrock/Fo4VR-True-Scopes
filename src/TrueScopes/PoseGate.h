@@ -63,6 +63,11 @@ namespace TrueScopes::PoseGate
 	// no ON edge, silently skipping the TOML reload and the scope re-ident).
 	bool VerdictStale(std::uint64_t a_maxFrames);
 
+	// True when the verdict SITE has not run for a_maxFrames game frames at all
+	// (weapon holstered / blocking menu), independent of pose-gate ownership —
+	// the hide signal for plugin-owned widget presence (v0.2.118).
+	bool SiteStale(std::uint64_t a_maxFrames);
+
 	// Diagnostics for DevBench /state.
 	struct Diag
 	{

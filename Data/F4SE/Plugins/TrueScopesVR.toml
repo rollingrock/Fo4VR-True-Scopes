@@ -139,7 +139,9 @@ poseWidgetAlways = true
 poseFrozenDim = 0.55
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
-disableApproachFade = false
+# TRUE with the pose gate (2026-08-24): the vanilla fade ramps at the OLD
+# activation distances (38-42 units) - now a meaningless dimming band on the way in.
+disableApproachFade = true
 
 # Black-burst hunt (v0.2.43): per-frame 1-pixel readback of accum+composite, dark
 # frames logged. Two GPU sync stalls per render - turn OFF when not hunting.
