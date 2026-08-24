@@ -94,6 +94,7 @@ namespace TrueScopes::Hooks
 
 		void SetWidgetNodesHidden(std::uintptr_t a_player, bool a_hidden)
 		{
+			const bool keepHousingHidden = !a_hidden && *Settings::hideWidgetHousing;
 			__try {
 				const auto setBit = [](std::uintptr_t a_node, bool a_hide) {
 					if (a_node) {
@@ -111,13 +112,37 @@ namespace TrueScopes::Hooks
 				const auto model = *reinterpret_cast<std::uintptr_t*>(
 					REL::Module::get().base() + Addr::kWidgetModelSingleton);
 				if (model) {
-					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), a_hidden);
+					// v0.2.121: while hideWidgetHousing is on, presence must NOT
+					// un-cull the ACTIVE-HOUSING slot (+0x50). v0.2.120's pale-ring
+					// defect was this very line: HideWidgetHousing culled the ring
+					// and this un-culled it ten lines later in the same thunk, every
+					// presentable frame — the plugin fought itself and the show ran
+					// last. The fade (+0x68) keeps its flow either way.
+					if (!keepHousingHidden) {
+						setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), a_hidden);
+					}
 					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x68), a_hidden);
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 			g_presenceShown.store(!a_hidden, std::memory_order_relaxed);
 		}
+
+		// v0.2.120/121 — housing suppression state, shared by the hide, the
+		// restore, and the one-shot log site in the verdict thunk. Game-thread
+		// only. The shape pointers are process-lifetime stable (the WSScopeModel
+		// clone is built exactly once — see Addresses.h kWidgetModelSingleton) but
+		// are still re-validated by NAME before every use.
+		std::uintptr_t   g_housingSp = 0;
+		std::uintptr_t   g_housingHunting = 0;
+		std::uintptr_t   g_housingRecon = 0;
+		float            g_housingSavedHunting = 0.0f;  // NIF-authored local scales,
+		float            g_housingSavedRecon = 0.0f;    // captured once per process
+		bool             g_housingScaleCaptured = false;
+		bool             g_housingZeroLogged = false;
+		std::atomic_bool g_housingZeroed{ false };    // log/DevBench visibility only
+		std::atomic_bool g_housingRestored{ false };  // one-shot restore log latch
+		inline constexpr float kHousingHiddenScale = 1.0e-4f;
 
 		// v0.2.120 — hide the widget model's own housing meshes (`scope_Hunting:0`
 		// and `scope_recon:0` inside world_scope.nif — the pale speckled ring the
@@ -127,9 +152,18 @@ namespace TrueScopes::Hooks
 		// frame; node pointers are cached and re-validated by NAME before every
 		// use (the LensComposite reticle-quad pattern — a stale pointer that still
 		// reads as memory must never be trusted to be the same object).
+		// v0.2.121 adds the permanent layer: a one-shot epsilon LOCAL SCALE on both
+		// housing shapes ("never render"). Ghidra-proven safe: every re-show path
+		// in the binary is flags-only, WSScopeModel's placement-refresh virtual is
+		// a literal no-op, world_scope.nif ships zero controller blocks, and the
+		// clone is never rebuilt — nothing can restore a zeroed scale. The flag
+		// hide stays as belt-and-suspenders and covers the frames before the next
+		// world-transform propagation.
 		void HideWidgetHousing(std::uintptr_t a_player)
 		{
-			static std::uintptr_t s_sp = 0, s_hunting = 0, s_recon = 0;
+			auto& s_sp = g_housingSp;
+			auto& s_hunting = g_housingHunting;
+			auto& s_recon = g_housingRecon;
 			__try {
 				const auto nameOf = [](std::uintptr_t a_node) -> const char* {
 					if (!a_node) {
@@ -183,8 +217,76 @@ namespace TrueScopes::Hooks
 				if (s_recon) {
 					*reinterpret_cast<std::uint8_t*>(s_recon + 0x108) |= 1;
 				}
+				// v0.2.121 — the permanent layer (see the function comment). Capture
+				// the NIF-authored scales exactly once (they never change; requiring
+				// both > sentinel and sane refuses a half-zeroed or foreign state),
+				// then hold the sentinel. The write is unconditional and idempotent:
+				// a couple of float stores per eligible frame, self-healing by
+				// construction.
+				if (s_hunting && s_recon && !g_housingScaleCaptured) {
+					const float h = *reinterpret_cast<const float*>(s_hunting + 0x6c);
+					const float r = *reinterpret_cast<const float*>(s_recon + 0x6c);
+					if (h > kHousingHiddenScale && h < 1000.0f &&
+						r > kHousingHiddenScale && r < 1000.0f) {
+						g_housingSavedHunting = h;
+						g_housingSavedRecon = r;
+						g_housingScaleCaptured = true;
+					}
+				}
+				if (g_housingScaleCaptured) {
+					if (s_hunting) {
+						*reinterpret_cast<float*>(s_hunting + 0x6c) = kHousingHiddenScale;
+					}
+					if (s_recon) {
+						*reinterpret_cast<float*>(s_recon + 0x6c) = kHousingHiddenScale;
+					}
+					g_housingZeroed.store(true, std::memory_order_relaxed);
+				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				s_sp = s_hunting = s_recon = 0;
+			}
+		}
+
+		// v0.2.121 — idempotent restore for a live hideWidgetHousing=false toggle:
+		// keyed on MEMORY state (cached shapes still name-valid AND carrying the
+		// sentinel scale), not on our own bookkeeping, so a fault or missed frame
+		// can never strand the housing invisible against the user's setting. Flags
+		// are deliberately NOT touched: un-culling both housings here would show
+		// the INACTIVE one too; visibility returns through the normal paths (the
+		// presence un-cull next frame, or vanilla's next arm edge) which only ever
+		// show the active housing.
+		void RestoreWidgetHousing()
+		{
+			__try {
+				const auto nameOf = [](std::uintptr_t a_node) -> const char* {
+					if (!a_node) {
+						return nullptr;
+					}
+					const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+					return entry >= 0x10000 ? reinterpret_cast<const char*>(entry + 0x18) : nullptr;
+				};
+				if (!g_housingScaleCaptured) {
+					return;
+				}
+				bool        restored = false;
+				const char* hn = g_housingHunting ? nameOf(g_housingHunting) : nullptr;
+				const char* rn = g_housingRecon ? nameOf(g_housingRecon) : nullptr;
+				if (hn && std::strcmp(hn, "scope_Hunting:0") == 0 &&
+					*reinterpret_cast<const float*>(g_housingHunting + 0x6c) == kHousingHiddenScale) {
+					*reinterpret_cast<float*>(g_housingHunting + 0x6c) = g_housingSavedHunting;
+					restored = true;
+				}
+				if (rn && std::strcmp(rn, "scope_recon:0") == 0 &&
+					*reinterpret_cast<const float*>(g_housingRecon + 0x6c) == kHousingHiddenScale) {
+					*reinterpret_cast<float*>(g_housingRecon + 0x6c) = g_housingSavedRecon;
+					restored = true;
+				}
+				if (restored) {
+					g_housingZeroed.store(false, std::memory_order_relaxed);
+					g_housingRestored.store(true, std::memory_order_relaxed);
+					g_housingZeroLogged = false;  // a later re-zero logs again
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 		}
 		// v0.2.116 — POSE-BASED ACTIVATION. Replaces the per-frame verdict call
@@ -209,6 +311,18 @@ namespace TrueScopes::Hooks
 				// with eligibility (the stale poll hides the nodes ~1 s later).
 				if (*Settings::hideWidgetHousing) {
 					HideWidgetHousing(player);
+					if (!g_housingZeroLogged && g_housingZeroed.load(std::memory_order_relaxed)) {
+						g_housingZeroLogged = true;
+						logger::info(FMT_STRING("widget housing zero-scaled (hunting {:.3f} recon {:.3f} saved for restore)"),
+							g_housingSavedHunting, g_housingSavedRecon);
+					}
+				} else {
+					// v0.2.121: live A/B — put the NIF scales back when the user
+					// turns the housing back on (idempotent; see the function).
+					RestoreWidgetHousing();
+					if (g_housingRestored.exchange(false, std::memory_order_relaxed)) {
+						logger::info("widget housing scale restored (hideWidgetHousing off)"sv);
+					}
 				}
 				if (*Settings::poseWidgetAlways) {
 					// v0.2.119: only once the widget is PRESENTABLE — the fit has
@@ -224,6 +338,35 @@ namespace TrueScopes::Hooks
 					// live-toggled off while pose-inactive: put vanilla's
 					// hidden state back once instead of leaving orphan nodes.
 					SetWidgetNodesHidden(player, true);
+				}
+			}
+			static inline REL::Relocation<void (*)(void*, char)> func;
+		};
+
+		// v0.2.121 — HOUSING SHOW FILTER. The ONE engine site that un-hides the
+		// widget housing (Addresses.h kHousingShowCallSite: the arm switch's
+		// edge-gated call into WSScopeModel's show-active-housing-and-fade).
+		// Passthrough first — the fade keeps vanilla flow and the arm block's
+		// later shader-cache refresh (the lens RT bind gate) is untouched — then
+		// re-cull the ACTIVE housing while hideWidgetHousing is on. With the
+		// zero-scale hide this is belt-and-suspenders; it also covers a live
+		// toggle before the housing node cache has first built.
+		struct HousingShowFilterHook
+		{
+			static void thunk(void* a_model, char a_active)
+			{
+				func(a_model, a_active);
+				if (a_model && *Settings::hideWidgetHousing) {
+					Recull(reinterpret_cast<std::uintptr_t>(a_model));
+				}
+			}
+			static void Recull(std::uintptr_t a_model)
+			{
+				__try {
+					if (const auto h = *reinterpret_cast<std::uintptr_t*>(a_model + 0x50)) {
+						*reinterpret_cast<std::uint8_t*>(h + 0x108) |= 1;
+					}
+				} __except (EXCEPTION_EXECUTE_HANDLER) {
 				}
 			}
 			static inline REL::Relocation<void (*)(void*, char)> func;
@@ -517,6 +660,20 @@ namespace TrueScopes::Hooks
 				logger::info("pose-gate verdict hook installed"sv);
 			} else {
 				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) — poseGateEnabled will be inert"sv);
+			}
+		}
+
+		// v0.2.121: housing-show filter — the one engine un-hide of the widget
+		// housing (arm-switch edge). Non-fatal: without it the zero-scale hide
+		// still stands; only the flag-level re-show returns.
+		{
+			REL::Relocation<std::uintptr_t> housingShow{ REL::Offset(Addr::kHousingShowCallSite) };
+			static constexpr std::uint8_t   kHousingShowOrig[] = { 0xE8, 0x49, 0x38, 0xD9, 0xFF };
+			if (VerifyBytes(housingShow, { kHousingShowOrig, 5 }, "housing show site"sv)) {
+				pstl::write_thunk_call<HousingShowFilterHook>(housingShow.address());
+				logger::info("housing-show filter installed"sv);
+			} else {
+				logger::warn("housing-show filter NOT installed (byte mismatch) — arm edges may re-show housing flags (zero-scale still holds)"sv);
 			}
 		}
 

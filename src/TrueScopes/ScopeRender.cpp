@@ -1652,11 +1652,24 @@ namespace TrueScopes::ScopeRender
 		}
 
 
-		void ApplyWidgetFit(std::uintptr_t a_player, bool a_censusPlacementOnly = false)
+		// v0.2.121: what a fit call actually did with PLACEMENT — the load-in
+		// defect was PresenceFit latching "done" on a call that had (correctly)
+		// declined a garbage post-load placement, which made the good probe 38 ms
+		// later invisible. Only the callee knows whether the census gate consumed
+		// a placement, so it says so.
+		enum class FitOutcome
+		{
+			kNotWritten,       // no ScopeParent / fit disabled / scale refused
+			kPlacedCensus,     // eye-independent census target applied
+			kPlacedHeuristic,  // eye-relative bound heuristic applied (live path only)
+			kFallbackOffsets   // TOML/global offsets only — auto-place declined or off
+		};
+
+		FitOutcome ApplyWidgetFit(std::uintptr_t a_player, bool a_censusPlacementOnly = false)
 		{
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
 			if (!sp) {
-				return;
+				return FitOutcome::kNotWritten;
 			}
 
 			auto*      t = reinterpret_cast<float*>(sp + 0x60);
@@ -1707,7 +1720,7 @@ namespace TrueScopes::ScopeRender
 					g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
 					logger::info("WIDGET FIT off — restored engine transform"sv);
 				}
-				return;
+				return FitOutcome::kNotWritten;
 			}
 
 			// v0.2.85: per-scope, from the equipped weapon's node names. Falls back
@@ -1725,7 +1738,7 @@ namespace TrueScopes::ScopeRender
 					logger::warn(FMT_STRING("WIDGET FIT refused: scale {} out of range (aperture={} override={})"),
 						scale, aperture, scaleOverride);
 				}
-				return;
+				return FitOutcome::kNotWritten;
 			}
 
 			// v0.2.91: per-scope, falling back per axis to the global settings.
@@ -1798,8 +1811,11 @@ namespace TrueScopes::ScopeRender
 						g_place.agreement);
 				}
 			}
+			auto outcome = FitOutcome::kFallbackOffsets;
 			if (*Settings::widgetAutoPlace && g_place.valid &&
 				(!a_censusPlacementOnly || g_place.eyeIndependent)) {
+				outcome = g_place.eyeIndependent ? FitOutcome::kPlacedCensus
+				                                 : FitOutcome::kPlacedHeuristic;
 				// censusPlacementOnly (the presence path, v0.2.120): the bound
 				// HEURISTIC uses the eye position and is garbage at hip poses - the
 				// disc-by-the-hammer field defect. Presence applies placement only
@@ -1818,7 +1834,7 @@ namespace TrueScopes::ScopeRender
 			// the subtree, and the engine itself only does this at equip.
 			if (g_widget.applied && g_widget.lastScale == scale && g_widget.lastOx == ox &&
 				g_widget.lastOy == oy && g_widget.lastOz == oz) {
-				return;
+				return outcome;
 			}
 
 			const float nx = g_widget.baseTx + ox;
@@ -1839,6 +1855,7 @@ namespace TrueScopes::ScopeRender
 			                        "base=({:.2f},{:.2f},{:.2f}) offset=({:.2f},{:.2f},{:.2f})"),
 				scale, aperture, kVanillaRenderCircleRadius,
 				g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, ox, oy, oz);
+			return outcome;
 		}
 
 		// The whole render, POD-only so the SEH wrapper below is legal.
@@ -3490,16 +3507,38 @@ namespace TrueScopes::ScopeRender
 		// fit exactly ONCE per baseline - census-only placement (see
 		// ApplyWidgetFit) - and go quiet until the next equip. Live fills keep
 		// continuous ownership while actually aiming, exactly as before .119.
+		//
+		// v0.2.121 - DON'T LATCH ON A DECLINE. The 2026-08-24 load-in defect,
+		// log-proven: the first post-load probe walks fine but carries
+		// one-update-stale WORLD transforms (P-Scope at (34.7,15.5,78.1) at
+		// 15:44:59.048; the correct (229.1,-246.4,81.9) existed by .086), the
+		// auto-place sanity gate correctly refuses ("offset implausibly large"),
+		// the fit applies offset (0,0,0)... and s_done latched anyway, so the
+		// good data 38 ms later was never consumed until the first live aim.
+		// Now: latch only when a census placement actually LANDED, or when none
+		// is expected (heuristic-only scope, fit/auto-place disabled, faulted
+		// probe), or when a bounded retry budget is spent. Placement re-reads
+		// world transforms live, so a retry needs a fresh PROBE only when the
+		// face never resolved. Converges on the first retry in the logged case.
 		const auto base = REL::Module::get().base();
 		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
 		if (!player) {
 			return;
 		}
-		static bool s_done = false;
+		constexpr std::uint32_t kRetryFrames = 30;  // ~1/3 s at 90 fps
+		constexpr std::uint32_t kMaxTries = 8;      // ~2.7 s worst case, then latch
+		static bool          s_done = false;
+		static std::uint32_t s_tries = 0;
+		static std::uint32_t s_cooldown = 0;
+		bool                 warnExhausted = false;
+		bool                 logRetry = false;
+		int                  outcomeForLog = 0;
 		__try {
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(player + kScopeParentInPlayer);
 			if (!sp) {
 				s_done = false;
+				s_tries = 0;
+				s_cooldown = 0;
 				return;
 			}
 			const auto* t = reinterpret_cast<const float*>(sp + 0x60);
@@ -3510,16 +3549,58 @@ namespace TrueScopes::ScopeRender
 			if (!stillOurs) {
 				// the engine rewrote ScopeParent = an equip happened
 				s_done = false;
+				s_tries = 0;
+				s_cooldown = 0;
 				ScopeIdent::Request();
 			}
 			ScopeIdent::RunIfRequested(player);
 			if (s_done || ScopeIdent::ProbePending()) {
 				return;
 			}
-			ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
-			s_done = true;
+			if (s_cooldown > 0) {
+				--s_cooldown;
+				return;
+			}
+			const auto outcome = ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
+			// Retry only while a census placement is genuinely expected AND the
+			// machinery that could deliver one is enabled - otherwise this would
+			// burn the budget on every equip of a heuristic-only scope, or spin
+			// forever with widgetAutoPlace=false (a documented live knob).
+			const bool wantCensus = ScopeIdent::CensusFaceExpected() &&
+			                        *Settings::widgetFitEnabled &&
+			                        *Settings::widgetAutoPlace;
+			if (outcome == FitOutcome::kPlacedCensus || !wantCensus) {
+				s_done = true;
+				s_tries = 0;
+				return;
+			}
+			if (++s_tries >= kMaxTries) {
+				warnExhausted = true;
+				s_done = true;
+				s_tries = 0;
+				return;
+			}
+			// The face resolved but placement declined (stale transforms): the
+			// live re-read fixes itself, no probe needed. Face never resolved:
+			// ask for a fresh walk before the next try.
+			if (!ScopeIdent::CensusFaceResolved()) {
+				ScopeIdent::Request();
+			}
+			s_cooldown = kRetryFrames;
+			logRetry = true;
+			outcomeForLog = static_cast<int>(outcome);
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
 			logger::warn("PresenceFit faulted (ignored)"sv);
+		}
+		if (logRetry) {
+			logger::info(FMT_STRING("PresenceFit: census placement not landed yet "
+			                        "(outcome={}), retry {}/{} in {} frames"),
+				outcomeForLog, s_tries, kMaxTries, kRetryFrames);
+		}
+		if (warnExhausted) {
+			logger::warn(FMT_STRING("PresenceFit: census placement never landed after {} tries - "
+			                        "keeping engine-baseline placement until the first live aim"),
+				kMaxTries);
 		}
 	}
 

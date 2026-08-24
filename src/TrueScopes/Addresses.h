@@ -113,10 +113,31 @@ namespace TrueScopes::Addr
 	inline constexpr std::uintptr_t kWidgetMaterialCache = 0x689b440;
 
 	// WSScopeModel singleton pointer cell (DAT_145acbf58; ctor FUN_140c8da70 stores
-	// it). +0x50/+0x68 = the two widget NiNodes the enable switch shows/hides
-	// (FUN_140c8e340 = SetAppCulled on exactly these two); +0x38 = the model root
-	// the render_circle walk uses. [LIVE]
+	// it). Field map (Ghidra 2026-08-24, TS_WSScopeModel_InitShapes 0x140c8ddb0):
+	// +0x10 root (process-lifetime clone of world_scope.nif; init latch byte +0x19
+	// is cleared only in the ctor, so the clone is NEVER rebuilt — cached child
+	// pointers are stable for the whole session), +0x38 ACTIVE render shape,
+	// +0x40 render_circle:0, +0x48 render_square:0, +0x50 ACTIVE housing,
+	// +0x58 scope_Hunting:0, +0x60 scope_recon:0, +0x68 ACTIVE screenFade,
+	// +0x70 recon_screenFade:0, +0x78 hunting_screenFade:0, +0x80 render_UI:0.
+	// The placement-refresh virtual (vtbl slot 2, 0x140c8dc50) is a literal no-op
+	// for this model: nothing in the engine writes the child shapes' LOCAL
+	// transforms post-load, and world_scope.nif ships zero controller blocks —
+	// which is what makes the v0.2.121 zero-scale housing hide permanent. [LIVE]
 	inline constexpr std::uintptr_t kWidgetModelSingleton = 0x5acbf58;
+
+	// The ONE call site in the whole binary that un-hides the widget housing:
+	// inside the enable switch FUN_140efaa60 (TS_Player_ScopedModeArmSwitch),
+	// edge-gated on the arm state, calling FUN_140c8e340
+	// (TS_WSScopeModel_ShowActiveHousingAndFade = SetAppCulled on model+0x50
+	// ACTIVE housing and +0x68 ACTIVE screenFade — decompiled 2026-08-24, xref
+	// sweep confirmed single site). Fires on every scope-raise edge, which is
+	// why a poked flag hide "survived until an aim edge" in the field.
+	// v0.2.121 thunks it: passthrough (fade + the arm block's later
+	// shader-cache refresh keep vanilla flow), then re-cull the housing while
+	// hideWidgetHousing is on.
+	// [GHIDRA] original bytes: E8 49 38 D9 FF (verified 2026-08-24)
+	inline constexpr std::uintptr_t kHousingShowCallSite = 0xefaaf2;
 
 	// --- render target indices (logical, via RenderTargetManager remap table) ---
 

@@ -1120,6 +1120,21 @@ namespace TrueScopes::ScopeIdent
 		return g_probeCount.load(std::memory_order_relaxed);
 	}
 
+	bool CensusFaceExpected()
+	{
+		// A face is "expected" when the table row that matched this scope names a
+		// face shape. faceShape is copied whether or not the shape resolved (the
+		// no-usable-face warning depends on that), so this is exactly "the census
+		// promised placement data for this optic". A faulted walk latches
+		// immediately: probing is disabled, retries could never improve it.
+		return g_info.probed && !g_info.faulted && g_info.fromTable && g_info.faceShape[0] != 0;
+	}
+
+	bool CensusFaceResolved()
+	{
+		return g_info.probed && g_info.haveFace;
+	}
+
 	void RunIfRequested(std::uintptr_t a_player)
 	{
 		if (!a_player || !g_request.exchange(false)) {

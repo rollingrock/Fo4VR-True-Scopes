@@ -256,6 +256,14 @@ namespace TrueScopes::ScopeIdent
 	// v0.2.120: completed-probe generation counter - consumers re-latch state
 	// derived from ident data when this changes (the stale-bound-placement fix).
 	std::uint32_t ProbeCount();
+	// v0.2.121: does the matched table row promise a census face for this scope?
+	// (PresenceFit retries a declined placement only while one is actually
+	// expected; a heuristic-only or faulted scope latches immediately.)
+	bool CensusFaceExpected();
+	// v0.2.121: did the last probe actually resolve that face in the weapon's 3D?
+	// (When it did, placement re-reads world transforms live, so a retry needs no
+	// fresh probe; when it did not, the retry re-Requests one.)
+	bool CensusFaceResolved();
 
 	// Render-thread: run a pending probe. No-op if none was requested.
 	void RunIfRequested(std::uintptr_t a_player);

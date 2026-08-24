@@ -137,6 +137,14 @@ poseLookConeExitDegrees = 45.0
 # the lens FROZEN (last live picture, dimmed once) while the pose is inactive -
 # no pop-in. false = the widget appears/disappears with the pose test.
 poseWidgetAlways = true
+
+# Never render the widget's own housing meshes (the pale speckled ring /
+# bezel inside world_scope.nif) - the real weapon provides the housing; the
+# widget only needs its render surfaces. v0.2.121: enforced three ways (the
+# plugin's presence path no longer re-shows it, the engine's single show
+# site is filtered, and the shapes are held at epsilon scale), so this is
+# now a true never-render. Toggling false live restores the NIF scales.
+hideWidgetHousing = true
 # One-shot dim multiplier applied to the frozen picture (1.0 = no dim).
 poseFrozenDim = 0.55
 
