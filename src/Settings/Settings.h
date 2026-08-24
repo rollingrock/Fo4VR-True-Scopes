@@ -267,6 +267,27 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvEffectStrength, 1.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvGain, 1.6);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reconEffectStrength, 1.0);
+	// --- glass effects (v0.2.113) --------------------------------------------
+	// The deferred half of the own-delivery-pass design (SESSION_2026-08-23_
+	// RETICLE_AND_GLASS.md §4 step 3). All three apply to OPTICAL tubes only —
+	// screen-type optics (recon/thermal) are displays and skip them.
+	//
+	// Eye-box / exit pupil: the picture clips and dims as the head moves off the
+	// tube axis, computed per frame from the REAL head-to-scope pose (camera
+	// root vs ScopeParent — the FTS getparallax idea, fed from the HMD). On axis
+	// it is a no-op. Strength 0 disables (and skips the pose math); gain scales
+	// how strongly head movement moves the shadow — raise it for a twitchier,
+	// less forgiving scope.
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxStrength, 0.85);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 1.5);
+	// Edge blur: field-curvature softness from edgeBlurStart (disc radius 0..1)
+	// out to the rim. 0 disables.
+	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStrength, 0.35);
+	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStart, 0.7);
+	// Chromatic fringe at the rim (red/blue focal split), 0..1. 0 disables.
+	MAKE_SETTING(fSetting, "TrueScopesVR", caStrength, 0.35);
+	// NV phosphor scanlines, 0..1. Off by default — flavor, not physics.
+	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.0);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
@@ -636,6 +657,12 @@ namespace Settings
 		LOAD(nvEffectStrength);
 		LOAD(nvGain);
 		LOAD(reconEffectStrength);
+		LOAD(eyeBoxStrength);
+		LOAD(eyeBoxGain);
+		LOAD(edgeBlurStrength);
+		LOAD(edgeBlurStart);
+		LOAD(caStrength);
+		LOAD(nvScanlines);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
 		LOAD(perScopeAperture);

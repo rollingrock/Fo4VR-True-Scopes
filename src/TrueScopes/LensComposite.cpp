@@ -52,7 +52,9 @@ cbuffer Params : register(b0)
     float4 vignette;  // x inner radius, y outer radius, z strength, w edge-darken power
     float4 tint;      // rgb multiplier, w exposure
     float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
-    float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), zw unused
+    float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w unused
+    float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w unused
+    float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w unused
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -71,7 +73,35 @@ VSOut VSMain(uint id : SV_VertexID)
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    float3 c = picture.Sample(smp, i.uv).rgb;
+    float2 cuv = i.uv - 0.5;
+    float  r   = length(cuv) * 2.0;      // disc units: 1.0 at the picture edge
+
+    float3 c;
+    // --- chromatic fringe at the rim (optical tubes only; a screen is a display)
+    // Real glass focuses red and blue at slightly different radii; sample the
+    // channels at radially split UVs, amount growing with r^2 so the centre
+    // stays untouched. fx.z is small (0.002-0.01 in UV terms at the rim).
+    if (fx.z > 0.0 && flags.y == 0.0) {
+        float2 k = cuv * (fx.z * r * r);
+        c.r = picture.Sample(smp, i.uv - k).r;
+        c.g = picture.Sample(smp, i.uv).g;
+        c.b = picture.Sample(smp, i.uv + k).b;
+    } else {
+        c = picture.Sample(smp, i.uv).rgb;
+    }
+
+    // --- edge blur (optical tubes only): field curvature softens the rim.
+    // Four taps on a small ring, blended in from fx.y (start radius) to the edge.
+    if (fx.x > 0.0 && flags.y == 0.0 && r > fx.y) {
+        float  w  = saturate((r - fx.y) / max(1.0 - fx.y, 0.05)) * saturate(fx.x);
+        float  br = 0.006 * w;                    // tap ring radius in UV
+        float3 b = picture.Sample(smp, i.uv + float2( br,  br)).rgb
+                 + picture.Sample(smp, i.uv + float2(-br,  br)).rgb
+                 + picture.Sample(smp, i.uv + float2( br, -br)).rgb
+                 + picture.Sample(smp, i.uv + float2(-br, -br)).rgb;
+        c = lerp(c, b * 0.25, w);
+    }
+
     c *= tint.rgb * tint.w;
 
     // --- in-lens recreations of the suppressed fullscreen zoom imods ---------
@@ -82,6 +112,10 @@ float4 PSMain(VSOut i) : SV_Target
         float l = dot(c, float3(0.299, 0.587, 0.114));
         float3 nv = l * float3(0.31, 0.816, 0.216) * 2.2; // green phosphor
         c = lerp(c, nv, 0.686 * saturate(flags.z));
+        // phosphor scanlines: subtle horizontal banding, image-intensifier flavor
+        if (nvp.z > 0.0) {
+            c *= 1.0 - nvp.z * 0.5 * (0.5 + 0.5 * sin(i.uv.y * 620.0));
+        }
     }
     if (flags.w > 0.0) {           // zd_ScopeTargetingRecon
         float l = dot(c, float3(0.299, 0.587, 0.114));
@@ -111,7 +145,6 @@ float4 PSMain(VSOut i) : SV_Target
         }
     } else {
         // radial term in "disc units": 1.0 at the picture disc's edge
-        float r = length((i.uv - 0.5) * 2.0);
         v = 1.0 - smoothstep(vignette.x, vignette.y, r);
         v = pow(saturate(v), max(vignette.w, 0.001));
         c *= lerp(1.0, v, saturate(vignette.z));
@@ -124,6 +157,22 @@ float4 PSMain(VSOut i) : SV_Target
             c = lerp(c, rc.rgb, saturate(rc.a * flags.x));
         }
     }
+
+    // --- eye-box / exit pupil (optical tubes only), AFTER the reticle: the
+    // whole sight picture lives behind the eyepiece, so moving the head off the
+    // tube axis clips picture and reticle together. eyebox.xy is the eye's real
+    // lateral offset from the tube axis in disc units (computed per frame on the
+    // CPU from ScopeParent's world transform and the camera root, gain-scaled).
+    // The exit pupil is a disc that SHIFTS OPPOSITE the eye and SHRINKS as the
+    // eye moves off axis; on axis (offset 0) the pupil is larger than the
+    // picture and this is a no-op.
+    if (eyebox.z > 0.0 && flags.y == 0.0) {
+        float2 p   = cuv * 2.0;
+        float  m   = length(eyebox.xy);
+        float  rad = 1.15 - 0.9 * saturate(m);
+        float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
+        c *= lerp(1.0, vis, saturate(eyebox.z));
+    }
     return float4(c, 1.0);
 }
 )";
@@ -135,7 +184,59 @@ float4 PSMain(VSOut i) : SV_Target
 			float tint[4];
 			float flags[4];
 			float nvp[4];
+			float eyebox[4];
+			float fx[4];
 		};
+
+		// --- eye-box pose (v0.2.113) ------------------------------------------
+		// The eye's lateral offset from the scope tube's axis, in disc-radius
+		// units, measured at the ScopeParent disc. Ground truth shared with
+		// ScopeRender.cpp's DeriveScopeFovDegrees (which documents where each
+		// offset was read out of the VR binary):
+		//   PlayerCamera singleton  [base+0x5930608], camera root at +0x20
+		//   NiAVObject world rotate +0x70 (NiMatrix3 = 3 rows of NiPoint4),
+		//   world translate +0xa0, world scale +0xac
+		// ScopeParent's local axes: X = right across the lens, Y = the tube axis
+		// (down-range), Z = up. local = R^T * (world - T): local_c = sum_r
+		// rot[r][c] * v[r], rows 0x10 apart.
+		// Returns false (offsets zeroed) when any pointer is missing or the
+		// numbers are not sane — the shader then behaves as eye-on-axis.
+		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y) noexcept
+		{
+			a_x = a_y = 0.0f;
+			if (!a_scopeParent) {
+				return false;
+			}
+			const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + 0x5930608);
+			if (!playerCam) {
+				return false;
+			}
+			const auto camRoot = *reinterpret_cast<std::uintptr_t*>(playerCam + 0x20);
+			if (!camRoot) {
+				return false;
+			}
+			const auto* rot = reinterpret_cast<const float*>(a_scopeParent + 0x70);
+			const auto* disc = reinterpret_cast<const float*>(a_scopeParent + 0xa0);
+			const float scale = *reinterpret_cast<const float*>(a_scopeParent + 0xac);
+			const auto* eye = reinterpret_cast<const float*>(camRoot + 0xa0);
+			const float v[3] = { eye[0] - disc[0], eye[1] - disc[1], eye[2] - disc[2] };
+			// The world transform R (world = R * local) relates to raw memory as
+			// R[r][c] = m[c*4 + r] — the SAME transposed-on-read convention
+			// ScopeIdent::OcularFaceWorld uses, which was verified live on
+			// 2026-08-11 (R^T * (boundCentre_world - T) reproduced the file's
+			// declared bound centre exactly; the untransposed read did not).
+			// Therefore local_c = sum_r R[r][c] * v[r] = raw memory row c dot v:
+			const float lx = rot[0] * v[0] + rot[1] * v[1] + rot[2] * v[2];
+			const float lz = rot[8] * v[0] + rot[9] * v[1] + rot[10] * v[2];
+			const float discR = 7.852f * scale;  // vanilla render_circle radius at scale 1
+			if (!(discR > 0.001f) || !std::isfinite(lx) || !std::isfinite(lz)) {
+				return false;
+			}
+			// mesh X = right = screen +u; mesh Z = up = screen -v (uv y grows down)
+			a_x = lx / discR;
+			a_y = -lz / discR;
+			return std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
+		}
 
 		using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
 
@@ -528,6 +629,25 @@ float4 PSMain(VSOut i) : SV_Target
 					// 1.0 (every circular optic and square screen) is a no-op.
 					const float aspect = ident.screenAspect;
 					p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
+					p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
+				}
+				// v0.2.113 — the glass effects (SESSION_2026-08-23_RETICLE_AND_
+				// GLASS.md §4 step 3, the deferred half): eye-box from the real
+				// head-to-scope pose, edge blur, chromatic fringe. The shader
+				// applies all three only to optical tubes (screen mode skips
+				// them — an LCD has no exit pupil and no field curvature).
+				{
+					float ex = 0.0f, ey = 0.0f;
+					const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
+					if (strength > 0.0f && EyeLateral(a_in.scopeParent, ex, ey)) {
+						const auto gain = static_cast<float>(*Settings::eyeBoxGain);
+						p.eyebox[0] = ex * gain;
+						p.eyebox[1] = ey * gain;
+						p.eyebox[2] = strength;
+					}
+					p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
+					p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);
+					p.fx[2] = static_cast<float>(*Settings::caStrength) * 0.02f;
 				}
 				std::memcpy(m.pData, &p, sizeof(p));
 				d3d->Unmap(g_cb, 0);

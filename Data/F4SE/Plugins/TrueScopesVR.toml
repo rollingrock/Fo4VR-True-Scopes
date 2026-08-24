@@ -88,6 +88,22 @@ forceAlwaysOn = false
 # world + scope at the same time.
 suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks are recreated in-lens
 
+# --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
+# Eye-box / exit pupil: the picture clips and dims as your head drifts off the tube
+# axis, from the real head-to-scope pose. The signature "real scope" feel.
+# strength 0..1 (0 = off); gain = how strongly head movement moves the shadow
+# (raise for a twitchier, less forgiving scope; lower if it feels too strict).
+eyeBoxStrength = 0.85
+eyeBoxGain = 1.5
+# Edge blur: field-curvature softness from edgeBlurStart (0..1 of the disc radius)
+# out to the rim. strength 0 = off.
+edgeBlurStrength = 0.35
+edgeBlurStart = 0.7
+# Chromatic fringe at the rim (red/blue focal split), 0..1. 0 = off.
+caStrength = 0.35
+# Night-vision phosphor scanlines, 0..1. Off by default — flavor, not physics.
+nvScanlines = 0.0
+
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 disableApproachFade = false
 
