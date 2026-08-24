@@ -1560,6 +1560,27 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
+			// v0.2.122 — STALENESS GUARD. The post-load probe walks fine but its
+			// WORLD transforms still hold the pre-placement rig pose (the same
+			// (34.7,15.5,78.1) in every session's log) until the first skeleton
+			// update lands. That garbage produced a 30.7-unit offset in the 17:03
+			// field run — under the 40-unit misread cap above — which latched a
+			// census placement and parked the disc out of sight. The eye can never
+			// be more than arm's length + weapon (~60 units) from an equipped
+			// scope, so distance-from-eye is the principled test; the decline
+			// feeds PresenceFit's bounded retry (v0.2.121), which converges as
+			// soon as the transforms are real (26 ms after load in the logs).
+			{
+				const float dx = target[0] - eye[0];
+				const float dy = target[1] - eye[1];
+				const float dz = target[2] - eye[2];
+				const float eyeDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+				if (eyeDist > static_cast<float>(*Settings::widgetPlaceMaxEyeDist)) {
+					PlaceDecline("target implausibly far from eye (stale pre-placement transforms)");
+					return;
+				}
+			}
+
 			p.valid = true;
 			p.converged = true;  // open loop: the answer is exact, there is no second pass
 			p.steps = 1;
@@ -1851,10 +1872,27 @@ namespace TrueScopes::ScopeRender
 			g_widget.lastOz = oz;
 			g_widget.applied = true;
 			g_fitAppliedAtomic.store(true, std::memory_order_relaxed);
-			logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) "
-			                        "base=({:.2f},{:.2f},{:.2f}) offset=({:.2f},{:.2f},{:.2f})"),
-				scale, aperture, kVanillaRenderCircleRadius,
-				g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, ox, oy, oz);
+			// v0.2.122 — the census path recomputes per frame (v0.2.100), so this
+			// wrote (and logged) every ~9 ms while aiming: 2000+ identical lines
+			// per minute in the 17:03 field log. The WRITE stays per-frame (that
+			// is the live tracking); the LOG only speaks when something meaningful
+			// changed: a rebaseline, a scale change, or the offset moving more
+			// than a quarter unit since the last logged value.
+			static float s_logScale = -1.0f, s_logOx = 0.0f, s_logOy = 0.0f, s_logOz = 0.0f;
+			const bool logWorthy = rebaselined || scale != s_logScale ||
+			                       std::fabs(ox - s_logOx) > 0.25f ||
+			                       std::fabs(oy - s_logOy) > 0.25f ||
+			                       std::fabs(oz - s_logOz) > 0.25f;
+			if (logWorthy) {
+				s_logScale = scale;
+				s_logOx = ox;
+				s_logOy = oy;
+				s_logOz = oz;
+				logger::info(FMT_STRING("WIDGET FIT applied: scale={:.4f} (aperture={:.3f} / {:.3f}) "
+				                        "base=({:.2f},{:.2f},{:.2f}) offset=({:.2f},{:.2f},{:.2f})"),
+					scale, aperture, kVanillaRenderCircleRadius,
+					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, ox, oy, oz);
+			}
 			return outcome;
 		}
 

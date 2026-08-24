@@ -362,6 +362,14 @@ namespace Settings
 	// covers the 26 vanilla scopes; [Scopes] in the TOML overrides and extends it.
 	// Turn this off to go back to the single widgetApertureRadius above.
 	MAKE_SETTING(bSetting, "TrueScopesVR", perScopeAperture, true);
+	// v0.2.122 — STALENESS GUARD ceiling: auto-placement refuses a target that is
+	// farther than this many units from the eye. Right after a save load the
+	// weapon 3D walks fine but its WORLD transforms still hold the pre-placement
+	// rig pose (~350 units from the eye in the field logs) until the first
+	// skeleton update; an equipped scope can never actually be beyond arm's
+	// length + weapon (~60 units). The refusal feeds PresenceFit's bounded retry
+	// (v0.2.121), which converges as soon as the transforms are real.
+	MAKE_SETTING(fSetting, "TrueScopesVR", widgetPlaceMaxEyeDist, 100.0);
 	// Bypass the aperture math and set ScopeParent's scale directly (0 = derive).
 	// For bisecting when the derived value looks wrong.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetScaleOverride, 0.0);
@@ -734,6 +742,7 @@ namespace Settings
 		LOAD(widgetOffsetY);
 		LOAD(widgetOffsetZ);
 		LOAD(widgetAutoPlace);
+		LOAD(widgetPlaceMaxEyeDist);
 		LOAD(retryAfterFault);
 		LOAD(diagLensReadback);
 		LOAD(diagPauseTint);

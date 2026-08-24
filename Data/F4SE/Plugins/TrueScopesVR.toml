@@ -255,6 +255,13 @@ widgetOffsetY = 0.0
 widgetOffsetZ = 0.0
 widgetAutoPlace = true
 
+# Staleness guard (v0.2.122): auto-placement refuses a target farther than this
+# many units from the eye. Post-save-load probes carry pre-placement transforms
+# (~350 units out) until the first skeleton update; a real equipped scope is
+# never past ~60. The refusal makes the presence fit retry instead of latching
+# a garbage position (the "no disc until I waved the gun around" defect).
+widgetPlaceMaxEyeDist = 100.0
+
 # ---------------------------------------------------------------------------
 # PER-SCOPE APERTURE OVERRIDES
 #
