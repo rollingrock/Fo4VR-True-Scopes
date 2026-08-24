@@ -1103,9 +1103,21 @@ namespace TrueScopes::ScopeIdent
 		return r;
 	}
 
+	static std::atomic<std::uint32_t> g_probeCount{ 0 };
+
 	void Request()
 	{
 		g_request.store(true);
+	}
+
+	bool ProbePending()
+	{
+		return g_request.load();
+	}
+
+	std::uint32_t ProbeCount()
+	{
+		return g_probeCount.load(std::memory_order_relaxed);
 	}
 
 	void RunIfRequested(std::uintptr_t a_player)
@@ -1137,6 +1149,7 @@ namespace TrueScopes::ScopeIdent
 		{
 			const std::scoped_lock lock(g_lock);
 			g_info = info;
+			g_probeCount.fetch_add(1, std::memory_order_relaxed);
 		}
 		LogInfo(info);
 	}

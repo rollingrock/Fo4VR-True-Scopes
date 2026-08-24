@@ -119,6 +119,74 @@ namespace TrueScopes::Hooks
 			g_presenceShown.store(!a_hidden, std::memory_order_relaxed);
 		}
 
+		// v0.2.120 — hide the widget model's own housing meshes (`scope_Hunting:0`
+		// and `scope_recon:0` inside world_scope.nif — the pale speckled ring the
+		// field screenshots showed floating on the real scope). The real weapon
+		// provides the housing; the widget only needs its render surfaces. The
+		// engine re-shows these on scope-in edges, so this runs every eligible
+		// frame; node pointers are cached and re-validated by NAME before every
+		// use (the LensComposite reticle-quad pattern — a stale pointer that still
+		// reads as memory must never be trusted to be the same object).
+		void HideWidgetHousing(std::uintptr_t a_player)
+		{
+			static std::uintptr_t s_sp = 0, s_hunting = 0, s_recon = 0;
+			__try {
+				const auto nameOf = [](std::uintptr_t a_node) -> const char* {
+					if (!a_node) {
+						return nullptr;
+					}
+					const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+					return entry >= 0x10000 ? reinterpret_cast<const char*>(entry + 0x18) : nullptr;
+				};
+				const auto sp = a_player ? *reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0) : 0;
+				if (!sp) {
+					s_sp = s_hunting = s_recon = 0;
+					return;
+				}
+				const char* hn = s_hunting ? nameOf(s_hunting) : nullptr;
+				const char* rn = s_recon ? nameOf(s_recon) : nullptr;
+				const bool cacheOk = sp == s_sp &&
+				                     hn && std::strcmp(hn, "scope_Hunting:0") == 0 &&
+				                     rn && std::strcmp(rn, "scope_recon:0") == 0;
+				if (!cacheOk) {
+					s_sp = sp;
+					s_hunting = s_recon = 0;
+					// ScopeParent -> world_scope.nif -> shapes (VR NiNode: children
+					// +0x168, count u16 +0x174; verified live 2026-08-24)
+					const auto spKids = *reinterpret_cast<std::uintptr_t*>(sp + 0x168);
+					const auto spCnt = *reinterpret_cast<std::uint16_t*>(sp + 0x174);
+					for (std::uint16_t i = 0; spKids && i < spCnt && !s_hunting; ++i) {
+						const auto root = *reinterpret_cast<std::uintptr_t*>(spKids + 8ull * i);
+						const char* rootName = nameOf(root);
+						if (!rootName || std::strcmp(rootName, "world_scope.nif") != 0) {
+							continue;
+						}
+						const auto kids = *reinterpret_cast<std::uintptr_t*>(root + 0x168);
+						const auto cnt = *reinterpret_cast<std::uint16_t*>(root + 0x174);
+						for (std::uint16_t k = 0; kids && k < cnt; ++k) {
+							const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * k);
+							const char* cn = nameOf(c);
+							if (!cn) {
+								continue;
+							}
+							if (std::strcmp(cn, "scope_Hunting:0") == 0) {
+								s_hunting = c;
+							} else if (std::strcmp(cn, "scope_recon:0") == 0) {
+								s_recon = c;
+							}
+						}
+					}
+				}
+				if (s_hunting) {
+					*reinterpret_cast<std::uint8_t*>(s_hunting + 0x108) |= 1;
+				}
+				if (s_recon) {
+					*reinterpret_cast<std::uint8_t*>(s_recon + 0x108) |= 1;
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				s_sp = s_hunting = s_recon = 0;
+			}
+		}
 		// v0.2.116 — POSE-BASED ACTIVATION. Replaces the per-frame verdict call
 		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
 		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). Our verdict flows
@@ -139,6 +207,9 @@ namespace TrueScopes::Hooks
 				// This site only runs while the weapon is drawn, a gun,
 				// has-scope, and no blocking menu is open, so presence dies
 				// with eligibility (the stale poll hides the nodes ~1 s later).
+				if (*Settings::hideWidgetHousing) {
+					HideWidgetHousing(player);
+				}
 				if (*Settings::poseWidgetAlways) {
 					// v0.2.119: only once the widget is PRESENTABLE — the fit has
 					// been applied for the current baseline (or the user disabled

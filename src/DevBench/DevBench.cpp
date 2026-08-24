@@ -318,6 +318,7 @@ namespace DevBench
 				{ "poseLookConeExitDegrees", Kind::Float, &poseLookConeExitDegrees },
 				{ "poseWidgetAlways", Kind::Bool, &poseWidgetAlways },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
+				{ "hideWidgetHousing", Kind::Bool, &hideWidgetHousing },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
 				{ "perScopeAperture", Kind::Bool, &perScopeAperture },

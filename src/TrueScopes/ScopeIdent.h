@@ -251,6 +251,11 @@ namespace TrueScopes::ScopeIdent
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
 	// runs on the render thread because that is where the 3D is safe to touch.
 	void Request();
+	// v0.2.120: is a requested probe still waiting to run?
+	bool ProbePending();
+	// v0.2.120: completed-probe generation counter - consumers re-latch state
+	// derived from ident data when this changes (the stale-bound-placement fix).
+	std::uint32_t ProbeCount();
 
 	// Render-thread: run a pending probe. No-op if none was requested.
 	void RunIfRequested(std::uintptr_t a_player);

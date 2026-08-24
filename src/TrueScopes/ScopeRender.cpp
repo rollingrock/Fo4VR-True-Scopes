@@ -1652,7 +1652,7 @@ namespace TrueScopes::ScopeRender
 		}
 
 
-		void ApplyWidgetFit(std::uintptr_t a_player)
+		void ApplyWidgetFit(std::uintptr_t a_player, bool a_censusPlacementOnly = false)
 		{
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
 			if (!sp) {
@@ -1759,6 +1759,15 @@ namespace TrueScopes::ScopeRender
 			// frame would creep the disc with head motion, which is the concern that
 			// (correctly) motivated latching in the first place. It just should
 			// never have been applied to the census path.
+			// v0.2.120: a completed probe is new ident data - anything latched from
+			// before it (a bound-heuristic placement computed in the probe gap, the
+			// field defect of 2026-08-24) must re-latch. The generation counter makes
+			// that structural instead of hoping the paths happen to order correctly.
+			static std::uint32_t s_probeGen = 0;
+			if (const auto gen = ScopeIdent::ProbeCount(); gen != s_probeGen) {
+				s_probeGen = gen;
+				g_placeDirty.store(true);
+			}
 			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
 			if (relatch || g_place.eyeIndependent) {
 				ComputeAutoPlacement(a_player);
@@ -1789,7 +1798,13 @@ namespace TrueScopes::ScopeRender
 						g_place.agreement);
 				}
 			}
-			if (*Settings::widgetAutoPlace && g_place.valid) {
+			if (*Settings::widgetAutoPlace && g_place.valid &&
+				(!a_censusPlacementOnly || g_place.eyeIndependent)) {
+				// censusPlacementOnly (the presence path, v0.2.120): the bound
+				// HEURISTIC uses the eye position and is garbage at hip poses - the
+				// disc-by-the-hammer field defect. Presence applies placement only
+				// from the eye-independent census target; heuristic scopes keep the
+				// engine baseline until the first live aim places them, as pre-.119.
 				// Open loop, computed once per equip from same-frame data. See
 				// ObserveAutoPlacement for why the closed loop it replaces was a
 				// regression rather than an improvement.
@@ -3467,24 +3482,47 @@ namespace TrueScopes::ScopeRender
 
 	void PresenceFit()
 	{
-		// v0.2.119: run the ident probe + widget fit while plugin-owned presence
-		// holds (or is about to show) the widget WITHOUT a live fill — before this,
-		// both only ran inside RenderImpl, so a save-load or first draw showed
-		// Bethesda's giant un-fit disc until the first aim. Render thread (fill
-		// hook), same context RenderImpl runs them in; SEH because we are outside
-		// RenderGuarded's bracket here.
+		// v0.2.120 rework - the v0.2.119 version ran the fit continuously and
+		// UNGATED: after an equip it applied with the PREVIOUS weapon's aperture
+		// and a bound-heuristic placement computed at a hip pose (eye far away),
+		// which then latched (field: disc by the hammer). Now: on an engine
+		// rewrite of ScopeParent request the probe, WAIT for it, then apply the
+		// fit exactly ONCE per baseline - census-only placement (see
+		// ApplyWidgetFit) - and go quiet until the next equip. Live fills keep
+		// continuous ownership while actually aiming, exactly as before .119.
 		const auto base = REL::Module::get().base();
 		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
 		if (!player) {
 			return;
 		}
+		static bool s_done = false;
 		__try {
+			const auto sp = *reinterpret_cast<std::uintptr_t*>(player + kScopeParentInPlayer);
+			if (!sp) {
+				s_done = false;
+				return;
+			}
+			const auto* t = reinterpret_cast<const float*>(sp + 0x60);
+			const float sc = *reinterpret_cast<const float*>(sp + 0x6c);
+			const bool  stillOurs = g_widget.applied &&
+			                       t[0] == g_widget.wroteTx && t[1] == g_widget.wroteTy &&
+			                       t[2] == g_widget.wroteTz && sc == g_widget.wroteScale;
+			if (!stillOurs) {
+				// the engine rewrote ScopeParent = an equip happened
+				s_done = false;
+				ScopeIdent::Request();
+			}
 			ScopeIdent::RunIfRequested(player);
-			ApplyWidgetFit(player);
+			if (s_done || ScopeIdent::ProbePending()) {
+				return;
+			}
+			ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
+			s_done = true;
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
 			logger::warn("PresenceFit faulted (ignored)"sv);
 		}
 	}
+
 	void DimFrozenLens(float a_factor)
 	{
 		// v0.2.116 — POSE FREEZE dim. One-shot multiply of the frozen lens

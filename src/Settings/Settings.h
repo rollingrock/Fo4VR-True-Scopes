@@ -334,6 +334,12 @@ namespace Settings
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.55);
+	// v0.2.120: hide the widget model's own housing meshes (scope_Hunting:0 /
+	// scope_recon:0 in world_scope.nif - the pale speckled ring Bethesda drew
+	// around the picture). The REAL weapon's scope provides the housing; the
+	// widget only needs its render surfaces. Re-hidden every eligible frame
+	// because the engine re-shows them on scope-in edges.
+	MAKE_SETTING(bSetting, "TrueScopesVR", hideWidgetHousing, true);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
@@ -719,6 +725,7 @@ namespace Settings
 		LOAD(poseLookConeExitDegrees);
 		LOAD(poseWidgetAlways);
 		LOAD(poseFrozenDim);
+		LOAD(hideWidgetHousing);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
 		LOAD(perScopeAperture);
