@@ -6,6 +6,8 @@ set(sources ${sources}
 	src/DevBenchClient/DevBenchClient.cpp
 	src/TrueScopes/Hooks.cpp
 	src/TrueScopes/LensComposite.cpp
+	src/TrueScopes/PoseGate.cpp
+	src/TrueScopes/PoseGate.h
 	src/TrueScopes/VerdictInput.cpp
 	src/TrueScopes/VerdictInput.h
 	src/TrueScopes/LensComposite.h

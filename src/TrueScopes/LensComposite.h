@@ -35,6 +35,11 @@ namespace TrueScopes::LensComposite
 	// caller's SEH bracket covers the D3D calls.
 	bool Run(const Inputs& a_in) noexcept;
 
+	// v0.2.116 — one-shot multiply of the lens picture by a_factor (the pose
+	// freeze dim: stale must not read as live). Same machinery as Run() with a
+	// neutral parameter set; applied once per freeze edge, never compounds.
+	bool Dim(const Inputs& a_in, float a_factor) noexcept;
+
 	// Un-hide `render_UI:0` (if we hid it). Called on scope-off and when the pass
 	// is disabled live.
 	void RestoreReticleQuad() noexcept;
@@ -47,6 +52,7 @@ namespace TrueScopes::LensComposite
 		std::int32_t reticlePhys;    // physical slot
 		std::uint32_t runs;
 		std::uint32_t skips;         // Run() returned false
+		std::uint32_t dims;          // v0.2.116: freeze-dim passes applied
 		bool         quadHidden;
 		char         rendererName[32];
 	};

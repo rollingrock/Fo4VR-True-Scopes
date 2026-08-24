@@ -13,6 +13,7 @@
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/PoseGate.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 
@@ -308,6 +309,15 @@ namespace DevBench
 				{ "edgeBlurStart", Kind::Float, &edgeBlurStart },
 				{ "caStrength", Kind::Float, &caStrength },
 				{ "nvScanlines", Kind::Float, &nvScanlines },
+				{ "poseGateEnabled", Kind::Bool, &poseGateEnabled },
+				{ "poseMaxDistance", Kind::Float, &poseMaxDistance },
+				{ "poseExitDistance", Kind::Float, &poseExitDistance },
+				{ "poseMaxLateral", Kind::Float, &poseMaxLateral },
+				{ "poseExitLateral", Kind::Float, &poseExitLateral },
+				{ "poseLookConeDegrees", Kind::Float, &poseLookConeDegrees },
+				{ "poseLookConeExitDegrees", Kind::Float, &poseLookConeExitDegrees },
+				{ "poseWidgetAlways", Kind::Bool, &poseWidgetAlways },
+				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
 				{ "perScopeAperture", Kind::Bool, &perScopeAperture },
@@ -565,8 +575,30 @@ namespace DevBench
 				out += ",\"reticlePhys\":" + std::to_string(lc.reticlePhys);
 				out += ",\"runs\":" + std::to_string(lc.runs);
 				out += ",\"skips\":" + std::to_string(lc.skips);
+				out += ",\"dims\":" + std::to_string(lc.dims);
 				out += ",\"quadHidden\":" + std::string(lc.quadHidden ? "true" : "false");
 				out += ",\"renderer\":" + Quote(lc.rendererName) + "}";
+			}
+			// v0.2.116 — pose-based activation: the live pose numbers + verdicts.
+			// `evals` advancing = the verdict hook is being reached (weapon drawn,
+			// gun, has-scope, no blocking menu); `owned` = the pose test is the
+			// decider; dist/lateral/lookDeg are the last measured pose — the
+			// numbers to read while tuning the pose* knobs live.
+			{
+				const auto pg = TrueScopes::PoseGate::GetDiag();
+				const auto f = [](float v) {
+					char buf[48];
+					if (std::isfinite(v)) std::snprintf(buf, sizeof(buf), "%.3g", v);
+					else                  std::snprintf(buf, sizeof(buf), "\"%s\"", std::isnan(v) ? "NaN" : "Inf");
+					return std::string(buf);
+				};
+				out += ",\"poseGate\":{\"enabled\":" + b(pg.enabled);
+				out += ",\"owned\":" + b(pg.owned);
+				out += ",\"fillLive\":" + b(pg.fillLive);
+				out += ",\"dist\":" + f(pg.dist);
+				out += ",\"lateral\":" + f(pg.lateral);
+				out += ",\"lookDeg\":" + f(pg.lookDeg);
+				out += ",\"evals\":" + std::to_string(pg.evals) + "}";
 			}
 			out += ",\"camRect\":[";
 			for (int k = 0; k < 6; ++k) {

@@ -38,6 +38,21 @@ namespace TrueScopes::Addr
 	// [GHIDRA] original bytes: E8 CD 9C E9 00
 	inline constexpr std::uintptr_t kScopeArmWriteCallSite = 0xefaace;
 
+	// Inside the vanilla eye-gate TS_Player_UpdateScopeEyeGate (FUN_140ef7b00, per
+	// frame on the game thread from Main::OnIdle): the ONE call that feeds the
+	// per-frame proximity VERDICT to the enable switch —
+	//     movzx edx, bl ; mov rcx, rdi ; call FUN_140efaa60
+	// The verdict upstream = look cone (fHmdToWeaponAngleEnter/ExitScopeConeDegrees
+	// 25/35) AND weapon-forward cone (fWeaponAngleEnter/ExitScopeConeDegrees 7/15,
+	// widened by (fScopeWeaponAngleWideningFactor 60 / dist)^2) AND eye↔scope
+	// distance (fWeaponDistEnterScope/Exit 38/40 — the pistol-at-arm's-length
+	// blocker), with player+0x12a1 bit 8 ("Steady" hold-breath) forcing true.
+	// v0.2.116 thunks this call and routes the verdict through PoseGate. The other
+	// FUN_140efaa60 call sites (menus-open/holster force-off, equip paths) are
+	// deliberately NOT hooked — their force-off meaning is kept.
+	// [GHIDRA] original bytes: E8 3C 25 00 00 (verified 2026-08-24)
+	inline constexpr std::uintptr_t kScopeGateVerdictCallSite = 0xef851f;
+
 	// FUN_141d947d0 — the renderer+4 (scoped-pass) READER, exactly 5 bytes:
 	// "0F B6 41 04 C3" (movzx eax, byte [rcx+4]; ret). Entry-hooked in v0.2.48 so
 	// scoped mode is answered ONLY to our render thread while our bracket is live —

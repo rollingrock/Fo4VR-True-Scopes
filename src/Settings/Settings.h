@@ -298,6 +298,37 @@ namespace Settings
 	// NV phosphor scanlines, 0..1. Judged in the headset 2026-08-24 at 0.8
 	// ("that looks really nice") — ships ON at that value.
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.8);
+	// --- pose-based activation (v0.2.116) ------------------------------------
+	// Replace the vanilla eye-proximity gate's verdict with our own pose test
+	// (PoseGate.h has the mechanism write-up). The vanilla gate's 38-unit
+	// distance cap makes pistol scopes impossible to activate at arm's length;
+	// ours tests eye→ocular distance, the eye's lateral offset from the actual
+	// tube axis (distance-invariant — wide angle up close, narrow at arm's
+	// length, like real optics), and a head look cone. Each has an enter/exit
+	// pair for spatial hysteresis. DEFAULT OFF in code until judged in the
+	// headset; the deployed TOML turns it on for testing.
+	MAKE_SETTING(bSetting, "TrueScopesVR", poseGateEnabled, false);
+	// Eye→ocular distance band, game units (1 ≈ 1.43 cm). 90 ≈ 1.3 m covers a
+	// pistol at full extension with margin; vanilla's cap was 38/40.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxDistance, 90.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitDistance, 100.0);
+	// Eye's perpendicular distance from the tube axis, game units. 6 ≈ 8.6 cm:
+	// ~26 deg off-axis at a shouldered rifle (13 units), ~6.9 deg at arm's
+	// length (50) — the natural distance-scaled cone.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxLateral, 6.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitLateral, 9.0);
+	// Head orientation: angle between HMD forward and the direction to the
+	// ocular. Vanilla used 25/35 against the weapon; ours is against the scope.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeDegrees, 35.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeExitDegrees, 45.0);
+	// Widget presence: true = the scope widget stays up the whole time the
+	// weapon is drawn (lens FROZEN while the pose is inactive — RT 0x62
+	// persists, so freeze = don't fill; no pop-in). false = the widget follows
+	// the pose test, vanilla-style.
+	MAKE_SETTING(bSetting, "TrueScopesVR", poseWidgetAlways, true);
+	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
+	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.55);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
@@ -674,6 +705,15 @@ namespace Settings
 		LOAD(edgeBlurStart);
 		LOAD(caStrength);
 		LOAD(nvScanlines);
+		LOAD(poseGateEnabled);
+		LOAD(poseMaxDistance);
+		LOAD(poseExitDistance);
+		LOAD(poseMaxLateral);
+		LOAD(poseExitLateral);
+		LOAD(poseLookConeDegrees);
+		LOAD(poseLookConeExitDegrees);
+		LOAD(poseWidgetAlways);
+		LOAD(poseFrozenDim);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
 		LOAD(perScopeAperture);

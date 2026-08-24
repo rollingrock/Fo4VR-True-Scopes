@@ -4,6 +4,7 @@
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/PoseGate.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 
@@ -12,6 +13,7 @@ namespace TrueScopes::Hooks
 	namespace
 	{
 		bool g_installed = false;
+		bool g_verdictHookInstalled = false;  // v0.2.116: pose gate owns the verdict feed
 
 		// Plugin-owned replacement for the "scope render armed" state that vanilla keeps
 		// in BSGraphics::Renderer+3. The real +3 stays 0 forever, so Main::Swap's frame
@@ -73,6 +75,24 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
+		// v0.2.116 — POSE-BASED ACTIVATION. Replaces the per-frame verdict call
+		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
+		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). Our verdict flows
+		// through the untouched enable switch, whose state read/arm write are
+		// already thunked above — so the widget show/hide stays edge-triggered
+		// (single-fire; the v0.1.0 per-tick-spam crash class cannot recur) and
+		// every force-off path (menus, holster, weapon change) keeps its meaning.
+		struct ScopeGateVerdictHook
+		{
+			static void thunk(void* a_player, char a_verdict)
+			{
+				const bool v = PoseGate::OnGateVerdict(
+					reinterpret_cast<std::uintptr_t>(a_player), a_verdict != 0);
+				func(a_player, v ? 1 : 0);
+			}
+			static inline REL::Relocation<void (*)(void*, char)> func;
+		};
+
 		// Replaces the WHOLE renderer+4 reader FUN_141d947d0 (5 bytes, movzx+ret):
 		// scoped mode is answered only to our render thread while our bracket is
 		// live. Every other thread — including engine jobs racing our mid-frame
@@ -115,8 +135,14 @@ namespace TrueScopes::Hooks
 				g_frames.fetch_add(1, std::memory_order_relaxed);
 				// v0.2.51 hysteresis poll (runs every frame): honor a gate-OFF only
 				// after it persisted scopeOffHoldMs; an ON in between cancels it.
+				// v0.2.116: when the pose gate owns the verdict, its enter/exit
+				// threshold pairs ARE the hysteresis, and a time-hold here would
+				// just replay the enable switch's off-block every frame for the
+				// hold window — the time-hold applies to the vanilla gate only.
 				if (g_installed && g_scopeActive.load() && !g_gateRaw.load()) {
-					const auto holdMs = static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
+					const auto holdMs = (g_verdictHookInstalled && *Settings::poseGateEnabled)
+					                        ? 0ull
+					                        : static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
 					if (static_cast<std::uint64_t>(::GetTickCount64()) - g_gateOffTick.load() >= holdMs) {
 						g_scopeActive.store(false);
 						LensComposite::RestoreReticleQuad();
@@ -170,7 +196,16 @@ namespace TrueScopes::Hooks
 					// black (post-composite path), RED = eye-gate paused the fill,
 					// BLACK = some third party cleared the lens RT.
 					static std::uint32_t sinceFill = 1000;
-					if (g_scopeActive.load()) {
+					// v0.2.116 — POSE FREEZE. While the widget is up but the pose
+					// says the eye is not at the tube, the lens FREEZES: no fill,
+					// RT 0x62 persists, so the last live picture stays. A one-shot
+					// dim on the live->frozen edge keeps stale from reading as
+					// live; thawing needs no special-case — the next fill
+					// overwrites the whole delivery footprint.
+					static bool s_poseWasLive = true;
+					const bool  poseLive = PoseGate::FillLive();
+					if (g_scopeActive.load() && poseLive) {
+						s_poseWasLive = true;
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
 							if (*Settings::diagPauseTint) {
@@ -189,12 +224,24 @@ namespace TrueScopes::Hooks
 							// Cadence-skipped frame -> GREEN lens.
 							ScopeRender::TintLens(0.0f, 1.0f, 0.0f);
 						}
-					} else if (*Settings::diagPauseTint && sinceFill < 300) {
-						++sinceFill;
-						// Eye-gate pause during active aiming -> RED lens. The
-						// sinceFill window keeps the tint from leaking into ordinary
-						// unscoped gameplay (the v0.2.45 always-red artifact).
-						ScopeRender::TintLens(1.0f, 0.0f, 0.0f);
+					} else if (g_scopeActive.load()) {
+						// widget up, pose inactive -> frozen
+						if (s_poseWasLive) {
+							s_poseWasLive = false;
+							const auto dim = static_cast<float>(*Settings::poseFrozenDim);
+							if (dim < 0.999f) {
+								ScopeRender::DimFrozenLens(std::clamp(dim, 0.0f, 1.0f));
+							}
+						}
+					} else {
+						s_poseWasLive = true;
+						if (*Settings::diagPauseTint && sinceFill < 300) {
+							++sinceFill;
+							// Eye-gate pause during active aiming -> RED lens. The
+							// sinceFill window keeps the tint from leaking into ordinary
+							// unscoped gameplay (the v0.2.45 always-red artifact).
+							ScopeRender::TintLens(1.0f, 0.0f, 0.0f);
+						}
 					}
 				}
 				func();
@@ -280,6 +327,21 @@ namespace TrueScopes::Hooks
 		// Fill hook, every frame in the normal draw path.
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
+
+		// v0.2.116: pose-gate verdict hook — the per-frame proximity verdict feed
+		// into the enable switch. Non-fatal: without it poseGateEnabled is inert
+		// and the vanilla eye-gate keeps deciding (v0.2.115 behavior).
+		{
+			REL::Relocation<std::uintptr_t> verdictSite{ REL::Offset(Addr::kScopeGateVerdictCallSite) };
+			static constexpr std::uint8_t kVerdictOrig[] = { 0xE8, 0x3C, 0x25, 0x00, 0x00 };
+			if (VerifyBytes(verdictSite, { kVerdictOrig, 5 }, "eye-gate verdict site"sv)) {
+				pstl::write_thunk_call<ScopeGateVerdictHook>(verdictSite.address());
+				g_verdictHookInstalled = true;
+				logger::info("pose-gate verdict hook installed"sv);
+			} else {
+				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) — poseGateEnabled will be inert"sv);
+			}
+		}
 
 		// v0.2.48: renderer+4 reader replacement (thread-scoped scoped-mode answer).
 		{

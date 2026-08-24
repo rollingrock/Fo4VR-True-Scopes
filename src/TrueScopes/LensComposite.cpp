@@ -570,6 +570,149 @@ float4 PSMain(VSOut i) : SV_Target
 		return g_diag;
 	}
 
+	namespace
+	{
+		// The shared draw core: copy the lens picture to the scratch, upload the
+		// given constants, draw the fullscreen triangle back into the lens RT with
+		// exact state save/restore, then invalidate the engine's cached-state block
+		// (v0.2.116 refactor — split out of Run() so Dim() can reuse it verbatim).
+		// Does NOT release a_lens.tex and does not touch the run counters; the
+		// caller owns both.
+		bool Execute(
+			ID3D11DeviceContext*      a_d3d,
+			const PhysRT&             a_lens,
+			ID3D11ShaderResourceView* a_reticleSRV,
+			const Params&             a_p,
+			const Inputs&             a_in) noexcept
+		{
+			// 1. picture -> scratch
+			a_d3d->CopyResource(g_scratch, a_lens.tex);
+
+			// 2. constants
+			{
+				D3D11_MAPPED_SUBRESOURCE m{};
+				if (SUCCEEDED(a_d3d->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+					std::memcpy(m.pData, &a_p, sizeof(a_p));
+					a_d3d->Unmap(g_cb, 0);
+				}
+			}
+
+			// 3. save every piece of state we touch
+			ID3D11RenderTargetView*   oldRTV[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+			ID3D11DepthStencilView*   oldDSV = nullptr;
+			D3D11_VIEWPORT            oldVP[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+			UINT                      oldVPCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+			ID3D11VertexShader*       oldVS = nullptr;
+			ID3D11PixelShader*        oldPS = nullptr;
+			ID3D11GeometryShader*     oldGS = nullptr;
+			ID3D11HullShader*         oldHS = nullptr;
+			ID3D11DomainShader*       oldDS = nullptr;
+			ID3D11InputLayout*        oldIL = nullptr;
+			D3D11_PRIMITIVE_TOPOLOGY  oldTopo = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+			ID3D11ShaderResourceView* oldSRV[2] = {};
+			ID3D11SamplerState*       oldSamp = nullptr;
+			ID3D11Buffer*             oldCB = nullptr;
+			ID3D11BlendState*         oldBlend = nullptr;
+			float                     oldBlendFactor[4] = {};
+			UINT                      oldSampleMask = 0xffffffff;
+			ID3D11RasterizerState*    oldRaster = nullptr;
+			ID3D11DepthStencilState*  oldDSS = nullptr;
+			UINT                      oldStencilRef = 0;
+
+			a_d3d->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTV, &oldDSV);
+			a_d3d->RSGetViewports(&oldVPCount, oldVP);
+			a_d3d->VSGetShader(&oldVS, nullptr, nullptr);
+			a_d3d->PSGetShader(&oldPS, nullptr, nullptr);
+			a_d3d->GSGetShader(&oldGS, nullptr, nullptr);
+			a_d3d->HSGetShader(&oldHS, nullptr, nullptr);
+			a_d3d->DSGetShader(&oldDS, nullptr, nullptr);
+			a_d3d->IAGetInputLayout(&oldIL);
+			a_d3d->IAGetPrimitiveTopology(&oldTopo);
+			a_d3d->PSGetShaderResources(0, 2, oldSRV);
+			a_d3d->PSGetSamplers(0, 1, &oldSamp);
+			a_d3d->PSGetConstantBuffers(0, 1, &oldCB);
+			a_d3d->OMGetBlendState(&oldBlend, oldBlendFactor, &oldSampleMask);
+			a_d3d->RSGetState(&oldRaster);
+			a_d3d->OMGetDepthStencilState(&oldDSS, &oldStencilRef);
+
+			// 4. our draw
+			{
+				// the picture must not be bound as an SRV while we render into it
+				ID3D11ShaderResourceView* nulls[2] = {};
+				a_d3d->PSSetShaderResources(0, 2, nulls);
+				ID3D11RenderTargetView* rtvs[1] = { a_lens.rtv };
+				a_d3d->OMSetRenderTargets(1, rtvs, nullptr);
+				D3D11_VIEWPORT vp{};
+				vp.Width = static_cast<float>(g_scratchW);
+				vp.Height = static_cast<float>(g_scratchH);
+				vp.MaxDepth = 1.0f;
+				a_d3d->RSSetViewports(1, &vp);
+				a_d3d->IASetInputLayout(nullptr);
+				a_d3d->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				a_d3d->VSSetShader(g_vs, nullptr, 0);
+				a_d3d->GSSetShader(nullptr, nullptr, 0);
+				a_d3d->HSSetShader(nullptr, nullptr, 0);
+				a_d3d->DSSetShader(nullptr, nullptr, 0);
+				a_d3d->PSSetShader(g_ps, nullptr, 0);
+				ID3D11ShaderResourceView* srvs[2] = { g_scratchSRV, a_reticleSRV };
+				a_d3d->PSSetShaderResources(0, 2, srvs);
+				a_d3d->PSSetSamplers(0, 1, &g_sampler);
+				a_d3d->PSSetConstantBuffers(0, 1, &g_cb);
+				const float bf[4] = { 0, 0, 0, 0 };
+				a_d3d->OMSetBlendState(g_blend, bf, 0xffffffff);
+				a_d3d->RSSetState(g_raster);
+				a_d3d->OMSetDepthStencilState(g_dss, 0);
+				a_d3d->Draw(3, 0);
+			}
+
+			// 5. restore + release the refs Get* handed us
+			{
+				ID3D11ShaderResourceView* nulls[2] = {};
+				a_d3d->PSSetShaderResources(0, 2, nulls);
+			}
+			a_d3d->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTV, oldDSV);
+			a_d3d->RSSetViewports(oldVPCount, oldVP);
+			a_d3d->VSSetShader(oldVS, nullptr, 0);
+			a_d3d->PSSetShader(oldPS, nullptr, 0);
+			a_d3d->GSSetShader(oldGS, nullptr, 0);
+			a_d3d->HSSetShader(oldHS, nullptr, 0);
+			a_d3d->DSSetShader(oldDS, nullptr, 0);
+			a_d3d->IASetInputLayout(oldIL);
+			a_d3d->IASetPrimitiveTopology(oldTopo);
+			a_d3d->PSSetShaderResources(0, 2, oldSRV);
+			a_d3d->PSSetSamplers(0, 1, &oldSamp);
+			a_d3d->PSSetConstantBuffers(0, 1, &oldCB);
+			a_d3d->OMSetBlendState(oldBlend, oldBlendFactor, oldSampleMask);
+			a_d3d->RSSetState(oldRaster);
+			a_d3d->OMSetDepthStencilState(oldDSS, oldStencilRef);
+			for (auto& v : oldRTV) {
+				SafeRelease(v);
+			}
+			SafeRelease(oldDSV);
+			SafeRelease(oldVS);
+			SafeRelease(oldPS);
+			SafeRelease(oldGS);
+			SafeRelease(oldHS);
+			SafeRelease(oldDS);
+			SafeRelease(oldIL);
+			for (auto& v : oldSRV) {
+				SafeRelease(v);
+			}
+			SafeRelease(oldSamp);
+			SafeRelease(oldCB);
+			SafeRelease(oldBlend);
+			SafeRelease(oldRaster);
+			SafeRelease(oldDSS);
+
+			// 6. the engine caches what it believes is bound; tell it to forget.
+			if (a_in.ctx) {
+				Fn<void (*)(std::uintptr_t)>(kStateBlockInvalidate)(a_in.ctx + kStateBlock);
+			}
+			Fn<void (*)(std::uintptr_t)>(kRendererRebindCBs)(a_in.renderer);
+			return true;
+		}
+	}
+
 	bool Run(const Inputs& a_in) noexcept
 	{
 		const auto base = REL::Module::get().base();
@@ -610,188 +753,96 @@ float4 PSMain(VSOut i) : SV_Target
 			RestoreReticleQuad();
 		}
 
-		// 1. picture -> scratch
-		d3d->CopyResource(g_scratch, lens.tex);
-
-		// 2. constants
+		Params p{};
+		p.reticle[0] = static_cast<float>(*Settings::reticleScaleX);
+		p.reticle[1] = static_cast<float>(*Settings::reticleScaleY);
+		p.reticle[2] = static_cast<float>(*Settings::reticleOffsetX);
+		p.reticle[3] = static_cast<float>(*Settings::reticleOffsetY);
+		p.vignette[0] = static_cast<float>(*Settings::vignetteInner);
+		p.vignette[1] = static_cast<float>(*Settings::vignetteOuter);
+		p.vignette[2] = static_cast<float>(*Settings::vignetteStrength);
+		p.vignette[3] = static_cast<float>(*Settings::vignettePower);
+		p.tint[0] = static_cast<float>(*Settings::lensTintR);
+		p.tint[1] = static_cast<float>(*Settings::lensTintG);
+		p.tint[2] = static_cast<float>(*Settings::lensTintB);
+		p.tint[3] = static_cast<float>(*Settings::lensExposure);
+		p.flags[0] = (wantReticle && reticleSRV) ? static_cast<float>(*Settings::reticleAlpha) : 0.0f;
+		// v0.2.111 — modes from the probed zoom identity (ScopeIdent):
+		// screen look for the recon widget branch (overlay 16) or a
+		// Screen* measured shape; NV / recon color from the zoom's imod.
 		{
-			D3D11_MAPPED_SUBRESOURCE m{};
-			if (SUCCEEDED(d3d->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
-				Params p{};
-				p.reticle[0] = static_cast<float>(*Settings::reticleScaleX);
-				p.reticle[1] = static_cast<float>(*Settings::reticleScaleY);
-				p.reticle[2] = static_cast<float>(*Settings::reticleOffsetX);
-				p.reticle[3] = static_cast<float>(*Settings::reticleOffsetY);
-				p.vignette[0] = static_cast<float>(*Settings::vignetteInner);
-				p.vignette[1] = static_cast<float>(*Settings::vignetteOuter);
-				p.vignette[2] = static_cast<float>(*Settings::vignetteStrength);
-				p.vignette[3] = static_cast<float>(*Settings::vignettePower);
-				p.tint[0] = static_cast<float>(*Settings::lensTintR);
-				p.tint[1] = static_cast<float>(*Settings::lensTintG);
-				p.tint[2] = static_cast<float>(*Settings::lensTintB);
-				p.tint[3] = static_cast<float>(*Settings::lensExposure);
-				p.flags[0] = (wantReticle && reticleSRV) ? static_cast<float>(*Settings::reticleAlpha) : 0.0f;
-				// v0.2.111 — modes from the probed zoom identity (ScopeIdent):
-				// screen look for the recon widget branch (overlay 16) or a
-				// Screen* measured shape; NV / recon color from the zoom's imod.
-				{
-					const auto ident = ScopeIdent::Get();
-					const bool screen = ident.zoomOverlay == 16 ||
-					                    std::strncmp(ident.faceShape, "Screen", 6) == 0;
-					p.flags[1] = screen ? 1.0f : 0.0f;
-					p.flags[2] = (ident.zoomImodID & 0xFFFFFF) == 0x94636
-					                 ? static_cast<float>(*Settings::nvEffectStrength)
-					                 : 0.0f;
-					p.flags[3] = (ident.zoomImodID & 0xFFFFFF) == 0x2041b6
-					                 ? static_cast<float>(*Settings::reconEffectStrength)
-					                 : 0.0f;
-					p.nvp[0] = static_cast<float>(*Settings::nvGain);
-					// v0.2.112 — rectangular screens (MGScopeThermal is 2.55 x
-					// 1.37): the aperture is the screen's half-WIDTH, and the
-					// shader crops the vertical overshoot to aspect = h/w.
-					// 1.0 (every circular optic and square screen) is a no-op.
-					const float aspect = ident.screenAspect;
-					p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
-					p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
-				}
-				// v0.2.113 — the glass effects (SESSION_2026-08-23_RETICLE_AND_
-				// GLASS.md §4 step 3, the deferred half): eye-box from the real
-				// head-to-scope pose, edge blur, chromatic fringe. The shader
-				// applies all three only to optical tubes (screen mode skips
-				// them — an LCD has no exit pupil and no field curvature).
-				{
-					float ex = 0.0f, ey = 0.0f;
-					const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
-					if (strength > 0.0f && EyeLateral(a_in.scopeParent, ex, ey)) {
-						const auto gain = static_cast<float>(*Settings::eyeBoxGain);
-						p.eyebox[0] = ex * gain;
-						p.eyebox[1] = ey * gain;
-						p.eyebox[2] = strength;
-					}
-					p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
-					p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);
-					p.fx[2] = static_cast<float>(*Settings::caStrength) * 0.02f;
-				}
-				std::memcpy(m.pData, &p, sizeof(p));
-				d3d->Unmap(g_cb, 0);
+			const auto ident = ScopeIdent::Get();
+			const bool screen = ident.zoomOverlay == 16 ||
+			                    std::strncmp(ident.faceShape, "Screen", 6) == 0;
+			p.flags[1] = screen ? 1.0f : 0.0f;
+			p.flags[2] = (ident.zoomImodID & 0xFFFFFF) == 0x94636
+			                 ? static_cast<float>(*Settings::nvEffectStrength)
+			                 : 0.0f;
+			p.flags[3] = (ident.zoomImodID & 0xFFFFFF) == 0x2041b6
+			                 ? static_cast<float>(*Settings::reconEffectStrength)
+			                 : 0.0f;
+			p.nvp[0] = static_cast<float>(*Settings::nvGain);
+			// v0.2.112 — rectangular screens (MGScopeThermal is 2.55 x
+			// 1.37): the aperture is the screen's half-WIDTH, and the
+			// shader crops the vertical overshoot to aspect = h/w.
+			// 1.0 (every circular optic and square screen) is a no-op.
+			const float aspect = ident.screenAspect;
+			p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
+			p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
+		}
+		// v0.2.113 — the glass effects (SESSION_2026-08-23_RETICLE_AND_
+		// GLASS.md §4 step 3, the deferred half): eye-box from the real
+		// head-to-scope pose, edge blur, chromatic fringe. The shader
+		// applies all three only to optical tubes (screen mode skips
+		// them — an LCD has no exit pupil and no field curvature).
+		{
+			float ex = 0.0f, ey = 0.0f;
+			const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
+			if (strength > 0.0f && EyeLateral(a_in.scopeParent, ex, ey)) {
+				const auto gain = static_cast<float>(*Settings::eyeBoxGain);
+				p.eyebox[0] = ex * gain;
+				p.eyebox[1] = ey * gain;
+				p.eyebox[2] = strength;
 			}
+			p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
+			p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);
+			p.fx[2] = static_cast<float>(*Settings::caStrength) * 0.02f;
 		}
 
-		// 3. save every piece of state we touch
-		ID3D11RenderTargetView*   oldRTV[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-		ID3D11DepthStencilView*   oldDSV = nullptr;
-		D3D11_VIEWPORT            oldVP[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
-		UINT                      oldVPCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-		ID3D11VertexShader*       oldVS = nullptr;
-		ID3D11PixelShader*        oldPS = nullptr;
-		ID3D11GeometryShader*     oldGS = nullptr;
-		ID3D11HullShader*         oldHS = nullptr;
-		ID3D11DomainShader*       oldDS = nullptr;
-		ID3D11InputLayout*        oldIL = nullptr;
-		D3D11_PRIMITIVE_TOPOLOGY  oldTopo = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-		ID3D11ShaderResourceView* oldSRV[2] = {};
-		ID3D11SamplerState*       oldSamp = nullptr;
-		ID3D11Buffer*             oldCB = nullptr;
-		ID3D11BlendState*         oldBlend = nullptr;
-		float                     oldBlendFactor[4] = {};
-		UINT                      oldSampleMask = 0xffffffff;
-		ID3D11RasterizerState*    oldRaster = nullptr;
-		ID3D11DepthStencilState*  oldDSS = nullptr;
-		UINT                      oldStencilRef = 0;
-
-		d3d->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTV, &oldDSV);
-		d3d->RSGetViewports(&oldVPCount, oldVP);
-		d3d->VSGetShader(&oldVS, nullptr, nullptr);
-		d3d->PSGetShader(&oldPS, nullptr, nullptr);
-		d3d->GSGetShader(&oldGS, nullptr, nullptr);
-		d3d->HSGetShader(&oldHS, nullptr, nullptr);
-		d3d->DSGetShader(&oldDS, nullptr, nullptr);
-		d3d->IAGetInputLayout(&oldIL);
-		d3d->IAGetPrimitiveTopology(&oldTopo);
-		d3d->PSGetShaderResources(0, 2, oldSRV);
-		d3d->PSGetSamplers(0, 1, &oldSamp);
-		d3d->PSGetConstantBuffers(0, 1, &oldCB);
-		d3d->OMGetBlendState(&oldBlend, oldBlendFactor, &oldSampleMask);
-		d3d->RSGetState(&oldRaster);
-		d3d->OMGetDepthStencilState(&oldDSS, &oldStencilRef);
-
-		// 4. our draw
-		{
-			// the picture must not be bound as an SRV while we render into it
-			ID3D11ShaderResourceView* nulls[2] = {};
-			d3d->PSSetShaderResources(0, 2, nulls);
-			ID3D11RenderTargetView* rtvs[1] = { lens.rtv };
-			d3d->OMSetRenderTargets(1, rtvs, nullptr);
-			D3D11_VIEWPORT vp{};
-			vp.Width = static_cast<float>(g_scratchW);
-			vp.Height = static_cast<float>(g_scratchH);
-			vp.MaxDepth = 1.0f;
-			d3d->RSSetViewports(1, &vp);
-			d3d->IASetInputLayout(nullptr);
-			d3d->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			d3d->VSSetShader(g_vs, nullptr, 0);
-			d3d->GSSetShader(nullptr, nullptr, 0);
-			d3d->HSSetShader(nullptr, nullptr, 0);
-			d3d->DSSetShader(nullptr, nullptr, 0);
-			d3d->PSSetShader(g_ps, nullptr, 0);
-			ID3D11ShaderResourceView* srvs[2] = { g_scratchSRV, reticleSRV };
-			d3d->PSSetShaderResources(0, 2, srvs);
-			d3d->PSSetSamplers(0, 1, &g_sampler);
-			d3d->PSSetConstantBuffers(0, 1, &g_cb);
-			const float bf[4] = { 0, 0, 0, 0 };
-			d3d->OMSetBlendState(g_blend, bf, 0xffffffff);
-			d3d->RSSetState(g_raster);
-			d3d->OMSetDepthStencilState(g_dss, 0);
-			d3d->Draw(3, 0);
-		}
-
-		// 5. restore + release the refs Get* handed us
-		{
-			ID3D11ShaderResourceView* nulls[2] = {};
-			d3d->PSSetShaderResources(0, 2, nulls);
-		}
-		d3d->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTV, oldDSV);
-		d3d->RSSetViewports(oldVPCount, oldVP);
-		d3d->VSSetShader(oldVS, nullptr, 0);
-		d3d->PSSetShader(oldPS, nullptr, 0);
-		d3d->GSSetShader(oldGS, nullptr, 0);
-		d3d->HSSetShader(oldHS, nullptr, 0);
-		d3d->DSSetShader(oldDS, nullptr, 0);
-		d3d->IASetInputLayout(oldIL);
-		d3d->IASetPrimitiveTopology(oldTopo);
-		d3d->PSSetShaderResources(0, 2, oldSRV);
-		d3d->PSSetSamplers(0, 1, &oldSamp);
-		d3d->PSSetConstantBuffers(0, 1, &oldCB);
-		d3d->OMSetBlendState(oldBlend, oldBlendFactor, oldSampleMask);
-		d3d->RSSetState(oldRaster);
-		d3d->OMSetDepthStencilState(oldDSS, oldStencilRef);
-		for (auto& v : oldRTV) {
-			SafeRelease(v);
-		}
-		SafeRelease(oldDSV);
-		SafeRelease(oldVS);
-		SafeRelease(oldPS);
-		SafeRelease(oldGS);
-		SafeRelease(oldHS);
-		SafeRelease(oldDS);
-		SafeRelease(oldIL);
-		for (auto& v : oldSRV) {
-			SafeRelease(v);
-		}
-		SafeRelease(oldSamp);
-		SafeRelease(oldCB);
-		SafeRelease(oldBlend);
-		SafeRelease(oldRaster);
-		SafeRelease(oldDSS);
-
-		// 6. the engine caches what it believes is bound; tell it to forget.
-		if (a_in.ctx) {
-			Fn<void (*)(std::uintptr_t)>(kStateBlockInvalidate)(a_in.ctx + kStateBlock);
-		}
-		Fn<void (*)(std::uintptr_t)>(kRendererRebindCBs)(a_in.renderer);
-
+		Execute(d3d, lens, reticleSRV, p, a_in);
 		lens.tex->Release();
 		++g_diag.runs;
+		return true;
+	}
+
+	bool Dim(const Inputs& a_in, float a_factor) noexcept
+	{
+		// v0.2.116 — one-shot multiply on the frozen lens picture (pose freeze:
+		// the fill stops, RT 0x62 persists, and this keeps the stale picture from
+		// reading as live). A neutral parameter set turns the composite shader
+		// into `picture * factor`: no reticle, optical path with every effect at
+		// zero, vignette strength 0 — only the unconditional tint multiply acts.
+		// Applied ONCE per freeze edge by the caller, so nothing compounds.
+		const auto base = REL::Module::get().base();
+		auto* const d3d = *reinterpret_cast<ID3D11DeviceContext**>(base + kD3DContextRVA);
+		if (!d3d || !EnsureStatic(d3d)) {
+			return false;
+		}
+		const auto lens = LookupRT(a_in.renderer, a_in.rtm, static_cast<std::int32_t>(a_in.lensLogicalRT));
+		if (!lens.tex || !lens.rtv) {
+			return false;
+		}
+		if (!EnsureScratch(lens.tex)) {
+			lens.tex->Release();
+			return false;
+		}
+		Params p{};
+		p.tint[0] = p.tint[1] = p.tint[2] = a_factor;
+		p.tint[3] = 1.0f;
+		p.nvp[1] = 1.0f;  // aspect no-op (screen path is off anyway)
+		Execute(d3d, lens, nullptr, p, a_in);
+		lens.tex->Release();
+		++g_diag.dims;
 		return true;
 	}
 }

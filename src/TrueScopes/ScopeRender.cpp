@@ -3445,6 +3445,33 @@ namespace TrueScopes::ScopeRender
 		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 	}
 
+	void DimFrozenLens(float a_factor)
+	{
+		// v0.2.116 — POSE FREEZE dim. One-shot multiply of the frozen lens
+		// picture, applied by the fill hook on the live->frozen edge (pose gate:
+		// widget up, eye not at the tube; RT 0x62 persists so the last live
+		// picture would otherwise read as live). Runs at the same fill-hook slot
+		// TintLens / the phase-1 ImageSpaceCopy proved safe, and LensComposite
+		// saves/restores all D3D state + invalidates the engine's cached-state
+		// block itself.
+		const auto base = REL::Module::get().base();
+		LensComposite::Inputs in{};
+		in.renderer = base + kRendererRVA;
+		in.rtm = base + kRTManager;
+		in.ctx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
+		if (!in.ctx && g_ctxPtrB) {
+			in.ctx = *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB);
+		}
+		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
+		in.scopeParent = player ? *reinterpret_cast<std::uintptr_t*>(player + kScopeParentInPlayer) : 0;
+		in.lensLogicalRT = static_cast<std::uint32_t>(Addr::kRT_ScopeLens);
+		__try {
+			LensComposite::Dim(in, a_factor);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			logger::warn("DimFrozenLens faulted (ignored)"sv);
+		}
+	}
+
 	void SamplePreFillLens()
 	{
 		// v0.2.52 — THE MISSING MEASUREMENT. Every readback so far ran INSIDE the

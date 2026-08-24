@@ -109,6 +109,35 @@ caStrength = 0.35
 # Night-vision phosphor scanlines, 0..1. Judged in VR at 0.8; 0 = clean NV.
 nvScanlines = 0.8
 
+# --- Pose-based activation (v0.2.116) ----------------------------------------
+# Replace the vanilla eye-proximity gate's verdict with the plugin's own pose
+# test. Vanilla activates only inside 38 units (~54 cm) of the eye, so a pistol
+# scope at arm's length can NEVER activate. The pose test measures, per frame,
+# against the ACTUAL scope tube (the measured ocular face + tube axis, nearest
+# eye): eye distance, the eye's sideways offset from the tube axis line, and a
+# head look cone. Each has an enter/exit pair (spatial hysteresis - no flicker
+# hold needed). ON for field judgment; set false for v0.2.115 behavior.
+poseGateEnabled = true
+# Eye-to-ocular distance band, game units (1 unit ~ 1.43 cm). Enter under
+# poseMaxDistance, drop only past poseExitDistance.
+poseMaxDistance = 90.0
+poseExitDistance = 100.0
+# Sideways offset of the (nearest) eye from the tube axis, game units. This is
+# the "could the eye be looking down the tube" test: 6 units is ~26 deg off-axis
+# at a shouldered rifle and ~7 deg at arm's length - the cone scales with
+# distance the way real optics do.
+poseMaxLateral = 6.0
+poseExitLateral = 9.0
+# The head must be oriented at the scope: HMD-forward vs direction-to-ocular.
+poseLookConeDegrees = 35.0
+poseLookConeExitDegrees = 45.0
+# true = the scope widget stays visible the whole time the weapon is drawn, with
+# the lens FROZEN (last live picture, dimmed once) while the pose is inactive -
+# no pop-in. false = the widget appears/disappears with the pose test.
+poseWidgetAlways = true
+# One-shot dim multiplier applied to the frozen picture (1.0 = no dim).
+poseFrozenDim = 0.55
+
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 disableApproachFade = false
 

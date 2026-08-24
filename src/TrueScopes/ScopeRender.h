@@ -33,6 +33,11 @@ namespace TrueScopes::ScopeRender
 	// frames the fill hook skipped). Render-thread only.
 	void TintLens(float a_r, float a_g, float a_b);
 
+	// v0.2.116 — POSE FREEZE: one-shot dim of the frozen lens picture (fill hook,
+	// live->frozen edge). Builds the LensComposite inputs itself; SEH-guarded.
+	// Render-thread only.
+	void DimFrozenLens(float a_factor);
+
 	// (v0.2.68 had a ResetWidgetFit() called on scope-in. REMOVED in v0.2.69: the engine
 	// rewrites ScopeParent at EQUIP, not scope-in, so that reset re-captured our own
 	// output as the new baseline and compounded the offset every scope cycle. The fit now
