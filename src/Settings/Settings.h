@@ -278,8 +278,17 @@ namespace Settings
 	// it is a no-op. Strength 0 disables (and skips the pose math); gain scales
 	// how strongly head movement moves the shadow — raise it for a twitchier,
 	// less forgiving scope.
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxStrength, 0.85);
+	// Strength 1.0 = the shadow goes fully black (a real scope shadow is);
+	// lower it only for a deliberately see-through shadow — the first headset
+	// look (2026-08-24) called the 0.85 floor out as "you can still make out
+	// the render".
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxStrength, 1.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 1.5);
+	// Interpupillary distance in GAME UNITS (1 unit ~ 1.43 cm; 64 mm ~ 4.5).
+	// The camera root is the HMD centre, so the aiming eye sits half of this
+	// off it; the eye-box tests both eyes and follows whichever is closer to
+	// the tube axis.
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxIpdUnits, 4.5);
 	// Edge blur: field-curvature softness from edgeBlurStart (disc radius 0..1)
 	// out to the rim. 0 disables.
 	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStrength, 0.35);
@@ -659,6 +668,7 @@ namespace Settings
 		LOAD(reconEffectStrength);
 		LOAD(eyeBoxStrength);
 		LOAD(eyeBoxGain);
+		LOAD(eyeBoxIpdUnits);
 		LOAD(edgeBlurStrength);
 		LOAD(edgeBlurStart);
 		LOAD(caStrength);

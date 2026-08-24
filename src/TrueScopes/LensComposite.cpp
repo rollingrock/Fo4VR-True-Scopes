@@ -218,24 +218,47 @@ float4 PSMain(VSOut i) : SV_Target
 			const auto* rot = reinterpret_cast<const float*>(a_scopeParent + 0x70);
 			const auto* disc = reinterpret_cast<const float*>(a_scopeParent + 0xa0);
 			const float scale = *reinterpret_cast<const float*>(a_scopeParent + 0xac);
-			const auto* eye = reinterpret_cast<const float*>(camRoot + 0xa0);
-			const float v[3] = { eye[0] - disc[0], eye[1] - disc[1], eye[2] - disc[2] };
-			// The world transform R (world = R * local) relates to raw memory as
-			// R[r][c] = m[c*4 + r] — the SAME transposed-on-read convention
-			// ScopeIdent::OcularFaceWorld uses, which was verified live on
-			// 2026-08-11 (R^T * (boundCentre_world - T) reproduced the file's
-			// declared bound centre exactly; the untransposed read did not).
-			// Therefore local_c = sum_r R[r][c] * v[r] = raw memory row c dot v:
-			const float lx = rot[0] * v[0] + rot[1] * v[1] + rot[2] * v[2];
-			const float lz = rot[8] * v[0] + rot[9] * v[1] + rot[10] * v[2];
+			const auto* camPos = reinterpret_cast<const float*>(camRoot + 0xa0);
+			// The camera root is the HMD CENTRE, between the eyes — measured from
+			// it, the aiming eye reads ~half an IPD off axis (~2.2 units against a
+			// ~1.3-unit disc radius) and the shadow can never centre (first
+			// in-headset report, 2026-08-24). So compute BOTH eye positions —
+			// camera ± half-IPD along the head's own X axis — and use whichever
+			// sits closer to the tube axis: that auto-selects the eye the player
+			// is actually aiming with, with no dominance setting to configure.
+			//
+			// The head's world X axis: with the verified convention R[r][c] =
+			// m[c*4 + r], world_dir(local X)[r] = R[r][0] = m[r] — i.e. the first
+			// three floats of the raw matrix, directly.
+			const auto* camRot = reinterpret_cast<const float*>(camRoot + 0x70);
+			const float halfIpd = 0.5f * static_cast<float>(*Settings::eyeBoxIpdUnits);
 			const float discR = 7.852f * scale;  // vanilla render_circle radius at scale 1
-			if (!(discR > 0.001f) || !std::isfinite(lx) || !std::isfinite(lz)) {
+			if (!(discR > 0.001f)) {
 				return false;
 			}
-			// mesh X = right = screen +u; mesh Z = up = screen -v (uv y grows down)
-			a_x = lx / discR;
-			a_y = -lz / discR;
-			return std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
+			float best = -1.0f;
+			for (const float side : { -1.0f, 1.0f }) {
+				const float e[3] = { camPos[0] + side * halfIpd * camRot[0],
+					                 camPos[1] + side * halfIpd * camRot[1],
+					                 camPos[2] + side * halfIpd * camRot[2] };
+				const float v[3] = { e[0] - disc[0], e[1] - disc[1], e[2] - disc[2] };
+				// local = R^T * v: local_c = sum_r R[r][c]*v[r] = raw row c dot v
+				// (same transposed-on-read convention ScopeIdent::OcularFaceWorld
+				// live-verified 2026-08-11).
+				const float lx = rot[0] * v[0] + rot[1] * v[1] + rot[2] * v[2];
+				const float lz = rot[8] * v[0] + rot[9] * v[1] + rot[10] * v[2];
+				if (!std::isfinite(lx) || !std::isfinite(lz)) {
+					continue;
+				}
+				const float m2 = lx * lx + lz * lz;
+				if (best < 0.0f || m2 < best) {
+					best = m2;
+					// mesh X = right = screen +u; mesh Z = up = screen -v
+					a_x = lx / discR;
+					a_y = -lz / discR;
+				}
+			}
+			return best >= 0.0f && std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
 		}
 
 		using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);

@@ -93,8 +93,13 @@ suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks 
 # axis, from the real head-to-scope pose. The signature "real scope" feel.
 # strength 0..1 (0 = off); gain = how strongly head movement moves the shadow
 # (raise for a twitchier, less forgiving scope; lower if it feels too strict).
-eyeBoxStrength = 0.85
+# strength 1.0 = shadow goes fully black (a real scope shadow is); lower for a
+# deliberately see-through shadow. The eye-box follows whichever EYE is closer
+# to the tube axis (the camera sits between your eyes), using eyeBoxIpdUnits
+# (game units; 64 mm ~ 4.5) to find them.
+eyeBoxStrength = 1.0
 eyeBoxGain = 1.5
+eyeBoxIpdUnits = 4.5
 # Edge blur: field-curvature softness from edgeBlurStart (0..1 of the disc radius)
 # out to the rim. strength 0 = off.
 edgeBlurStrength = 0.35
