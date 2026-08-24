@@ -149,6 +149,21 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
+				// v0.2.117 — stale-verdict deactivation (review finding). Vanilla's
+				// per-frame force-off reads the REAL renderer+3 (always 0 for us),
+				// so it never reaches our state — and a mid-unequip re-arm from an
+				// unhooked equip-path caller can latch g_gateRaw+g_scopeActive true
+				// for the whole holstered period. Then the next draw fires no
+				// OFF->ON edge and the TOML reload + scope re-ident silently skip.
+				// The verdict site going quiet for ~1 s IS the holster/menu signal
+				// (it runs per frame while eligible), so force the off edge here.
+				if (g_installed && g_verdictHookInstalled && *Settings::poseGateEnabled &&
+					g_scopeActive.load() && PoseGate::VerdictStale(90)) {
+					g_gateRaw.store(false);
+					g_scopeActive.store(false);
+					LensComposite::RestoreReticleQuad();
+					logger::info("scope active -> false (verdict stale: holstered or menu)"sv);
+				}
 				// v0.2.111 debug: headless render arming (see Settings.h).
 				if (g_installed && *Settings::forceScopeActive && !g_scopeActive.load()) {
 					g_scopeActive.store(true);
@@ -199,13 +214,17 @@ namespace TrueScopes::Hooks
 					// v0.2.116 — POSE FREEZE. While the widget is up but the pose
 					// says the eye is not at the tube, the lens FREEZES: no fill,
 					// RT 0x62 persists, so the last live picture stays. A one-shot
-					// dim on the live->frozen edge keeps stale from reading as
-					// live; thawing needs no special-case — the next fill
-					// overwrites the whole delivery footprint.
-					static bool s_poseWasLive = true;
+					// dim keeps stale from reading as live; thawing needs no
+					// special-case — the next fill overwrites the whole delivery
+					// footprint. v0.2.117 (review finding): the dim re-arms ONLY
+					// after a live fill actually repainted the lens — arming it in
+					// the widget-off branch let every widget off/on cycle while
+					// still frozen multiply the same picture by poseFrozenDim
+					// (menu open/close x4 ~= black lens).
+					static bool s_dimPending = false;
 					const bool  poseLive = PoseGate::FillLive();
 					if (g_scopeActive.load() && poseLive) {
-						s_poseWasLive = true;
+						s_dimPending = true;
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
 							if (*Settings::diagPauseTint) {
@@ -226,15 +245,16 @@ namespace TrueScopes::Hooks
 						}
 					} else if (g_scopeActive.load()) {
 						// widget up, pose inactive -> frozen
-						if (s_poseWasLive) {
-							s_poseWasLive = false;
+						if (s_dimPending) {
+							s_dimPending = false;
 							const auto dim = static_cast<float>(*Settings::poseFrozenDim);
 							if (dim < 0.999f) {
 								ScopeRender::DimFrozenLens(std::clamp(dim, 0.0f, 1.0f));
 							}
 						}
 					} else {
-						s_poseWasLive = true;
+						// widget off: deliberately do NOT re-arm the dim — only a
+						// live fill does (see the v0.2.117 note above).
 						if (*Settings::diagPauseTint && sinceFill < 300) {
 							++sinceFill;
 							// Eye-gate pause during active aiming -> RED lens. The

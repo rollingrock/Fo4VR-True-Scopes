@@ -2,7 +2,6 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
-#include "TrueScopes/ScopeIdent.h"
 
 namespace TrueScopes::PoseGate
 {
@@ -73,16 +72,21 @@ namespace TrueScopes::PoseGate
 				a /= axisLen;
 			}
 
-			// Ocular point: the measured ocular face when the ident has probed the
-			// weapon; the ScopeParent origin (= vanilla's widget position) before
-			// that. Both are on the eyepiece, which is what the eye approaches.
-			float D[3];
-			if (!ScopeIdent::OcularFaceWorld(D)) {
-				const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
-				D[0] = t[0];
-				D[1] = t[1];
-				D[2] = t[2];
-			}
+			// Ocular point = the ScopeParent origin (the vanilla widget anchor,
+			// engine-owned, re-read through the player every frame — can never
+			// dangle). Deliberately NOT ScopeIdent::OcularFaceWorld here: that
+			// walks node pointers cached at probe time, which dangle for a frame
+			// or more after every weapon/mod swap, and this is a per-frame
+			// GAME-thread path with no SEH bracket (v0.2.116 review finding —
+			// the render-thread consumers are all inside RenderGuarded's __try).
+			// The two points differ by at most a couple of units on the same
+			// eyepiece; against 6–9-unit lateral and 90–100-unit distance
+			// thresholds the precision difference is noise.
+			float       D[3];
+			const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
+			D[0] = t[0];
+			D[1] = t[1];
+			D[2] = t[2];
 
 			const auto* camPos = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
 			const auto* camRot = reinterpret_cast<const float*>(camRoot + kWorldRotate);
@@ -166,10 +170,18 @@ namespace TrueScopes::PoseGate
 			return a_vanillaVerdict;
 		}
 
-		const bool  was = g_liveState;
-		const float dMax = static_cast<float>(was ? *Settings::poseExitDistance : *Settings::poseMaxDistance);
-		const float latMax = static_cast<float>(was ? *Settings::poseExitLateral : *Settings::poseMaxLateral);
-		const float lookMax = static_cast<float>(was ? *Settings::poseLookConeExitDegrees : *Settings::poseLookConeDegrees);
+		const bool was = g_liveState;
+		// Effective exit = max(exit, enter): the hysteresis invariant. Editing a
+		// pair one knob at a time over DevBench can momentarily invert it
+		// (exit < current < enter), which oscillates live/frozen every eval —
+		// and each flap cost a dim pass in the v0.2.116 field test. Clamped,
+		// any edit order produces at most one clean transition.
+		const auto band = [was](double a_enter, double a_exit) {
+			return static_cast<float>(was ? std::max<double>(a_exit, a_enter) : a_enter);
+		};
+		const float dMax = band(*Settings::poseMaxDistance, *Settings::poseExitDistance);
+		const float latMax = band(*Settings::poseMaxLateral, *Settings::poseExitLateral);
+		const float lookMax = band(*Settings::poseLookConeDegrees, *Settings::poseLookConeExitDegrees);
 		const bool  live = s.dist < dMax && s.lateral < latMax && s.lookDeg < lookMax;
 		if (live != was) {
 			logger::info(
@@ -190,6 +202,16 @@ namespace TrueScopes::PoseGate
 		// eligibility envelope), and the lens freezes/thaws off FillLive() with no
 		// pop-in. Without it the widget follows the pose, vanilla-style.
 		return *Settings::poseWidgetAlways ? true : live;
+	}
+
+	bool VerdictStale(std::uint64_t a_maxFrames)
+	{
+		if (!g_owned.load(std::memory_order_relaxed)) {
+			return false;
+		}
+		const auto last = g_evalFrame.load(std::memory_order_relaxed);
+		const auto now = Hooks::FrameCount();
+		return now > last && now - last > a_maxFrames;
 	}
 
 	bool FillLive()
