@@ -157,6 +157,28 @@ parallaxSmoothing = 0.3
 parallaxMinEyeRelief = 4.0
 reticleParallaxFraction = 0.0
 
+# ONE EURO CAMERA DAMPING (v0.2.124) - kills magnified hand tremor without
+# lagging deliberate pans (speed-adaptive). Filters ONLY the scope render
+# camera's orientation; hands/weapon/reticle relationships stay honest, and
+# the filtered-vs-true divergence is hard-capped at camSmoothMaxLagDegrees
+# (converges to zero at rest - precision shots see the true pose).
+# Code default is OFF; enabled here for the field-judgment session.
+# TUNING LADDER (DevBench, no rebuild): 1) camSmoothBeta=0, raise
+# camSmoothMinCutoffHz from 0.5 until at-rest tremor is gone (expect
+# 0.8-1.5). 2) raise camSmoothBeta from 0.1 until pans track without slew.
+# 3) snap-turn/teleport must adopt instantly (camSmoothSnapDegrees).
+# NOTE: right after a snap turn smoothing is briefly reduced (the filter
+# seeds its speed estimate from the jump) - expected, not a bug.
+camSmoothEnabled = true
+camSmoothMinCutoffHz = 1.0
+camSmoothBeta = 0.5
+camSmoothDCutoffHz = 1.0
+# Fill gap above this = adopt raw pose (freeze/thaw, menus). Keep well above
+# the fill interval (fillEveryNFrames * frame time) or every step resets.
+camSmoothResetMs = 250
+camSmoothSnapDegrees = 30.0
+camSmoothMaxLagDegrees = 2.0
+
 # --- Pose-based activation (v0.2.116) ----------------------------------------
 # Replace the vanilla eye-proximity gate's verdict with the plugin's own pose
 # test. Vanilla activates only inside 38 units (~54 cm) of the eye, so a pistol

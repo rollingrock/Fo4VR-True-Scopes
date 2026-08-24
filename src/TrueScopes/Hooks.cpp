@@ -57,6 +57,10 @@ namespace TrueScopes::Hooks
 					g_gateRaw.store(true);
 					if (!g_scopeActive.exchange(true)) {
 						logger::info("scope active -> true"sv);
+						// v0.2.124: deterministic camera-smoothing reset on the
+						// scope-in edge (weapon swap may reuse the same camera
+						// node, so the dt-gap heuristic alone is not enough).
+						ScopeRender::CamSmoothReset();
 						// live-tuning loop: re-read the TOML on every scope-in
 						Settings::load();
 						// ...and re-identify the scope: the weapon or its mods may have
@@ -459,6 +463,7 @@ namespace TrueScopes::Hooks
 					Settings::load();
 					ScopeIdent::Request();
 					logger::info("scope active -> true (forceScopeActive)"sv);
+					ScopeRender::CamSmoothReset();
 				}
 				// v0.2.109: controller verdict chords, polled per frame.
 				if (g_installed) {

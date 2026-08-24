@@ -9,6 +9,7 @@
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/OneEuro.h"
 
 // Phase 2: mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62.
 //
@@ -1396,6 +1397,114 @@ namespace TrueScopes::ScopeRender
 		// target for a new frame: the geometry must be re-read (the weapon moves)
 		// but the loop's accumulated offset, step count and best-so-far must NOT be
 		// reset, or the servo restarts from scratch every frame and never converges.
+		// v0.2.124 — ONE EURO CAMERA DAMPING (STATUS 3.7d). Filters the scope
+		// camera's WORLD orientation once per live fill, at the single coherent
+		// point after SetCameraFOV's Update has derived a fresh weapon-parented
+		// pose and before anything downstream consumes it (culling planes, the
+		// camera-state commits, AccumulateScene all read the filtered basis).
+		// Feed-forward and self-healing: next fill regenerates raw pose from
+		// the parent, the engine never accumulates our correction. Orientation
+		// only — positional tremor is unamplified parallax; filtering position
+		// risks the camera swimming inside the tube. Never touches weapon or
+		// hand nodes (FRIK's mistake), never ScopeParent: the widget disc
+		// tracks the honest weapon, only the lens IMAGE is damped, and the
+		// composited reticle marks the damped camera's boresight so image and
+		// reticle stay mutually coherent (both lag true aim by <= maxLag).
+		// While pose-frozen no renders happen, so thaw arrives as a dt gap
+		// > camSmoothResetMs and snaps to raw — no lurch, no bogus velocity.
+		struct CamSmoothState
+		{
+			OneEuro::QuatFilter f;
+			long long           lastQpc = 0;
+			long long           qpcFreq = 0;
+			std::uintptr_t      cam = 0;
+			std::uint32_t       resets = 0;
+		};
+		CamSmoothState   g_camSmooth{};
+		std::atomic_bool g_camSmoothResetReq{ false };
+
+		void ApplyCamSmooth(std::uintptr_t a_cam) noexcept
+		{
+			if (!*Settings::camSmoothEnabled) {
+				g_camSmooth.f.primed = false;
+				return;
+			}
+			auto* m = reinterpret_cast<float*>(a_cam + 0x70);
+			// Reject mid-teardown garbage: 9 floats finite, rows near unit.
+			for (const int base : { 0, 4, 8 }) {
+				const float l2 = m[base] * m[base] + m[base + 1] * m[base + 1] + m[base + 2] * m[base + 2];
+				if (!std::isfinite(l2) || std::fabs(l2 - 1.0f) > 0.01f) {
+					g_camSmooth.f.primed = false;
+					return;
+				}
+			}
+			float qraw[4];
+			OneEuro::QuatFromBasis(m, qraw);
+			::LARGE_INTEGER now{};
+			::QueryPerformanceCounter(&now);
+			if (!g_camSmooth.qpcFreq) {
+				// own static — g_qpcFreq only initializes under perfTimers
+				::LARGE_INTEGER fr{};
+				::QueryPerformanceFrequency(&fr);
+				g_camSmooth.qpcFreq = fr.QuadPart;
+			}
+			const double dtRaw = g_camSmooth.lastQpc
+			                         ? double(now.QuadPart - g_camSmooth.lastQpc) / double(g_camSmooth.qpcFreq)
+			                         : 1.0;
+			g_camSmooth.lastQpc = now.QuadPart;
+			const double resetS = double(*Settings::camSmoothResetMs) / 1000.0;
+			if (!g_camSmooth.f.primed || dtRaw > resetS || a_cam != g_camSmooth.cam ||
+				g_camSmoothResetReq.exchange(false)) {
+				std::memcpy(g_camSmooth.f.q, qraw, sizeof(qraw));
+				std::memcpy(g_camSmooth.f.qRawPrev, qraw, sizeof(qraw));
+				g_camSmooth.f.omegaHat = 0.0f;
+				g_camSmooth.f.primed = true;
+				g_camSmooth.cam = a_cam;
+				++g_camSmooth.resets;
+				static bool s_logged = false;
+				if (!s_logged) {
+					s_logged = true;
+					logger::info(FMT_STRING("CAM SMOOTH: enabled minCutoff={} beta={} dCutoff={} "
+					                        "resetMs={} snap={} maxLag={}"),
+						*Settings::camSmoothMinCutoffHz, *Settings::camSmoothBeta,
+						*Settings::camSmoothDCutoffHz, *Settings::camSmoothResetMs,
+						*Settings::camSmoothSnapDegrees, *Settings::camSmoothMaxLagDegrees);
+				}
+				return;  // pose already raw — nothing to write
+			}
+			const float dt = (std::clamp)(float(dtRaw), 1.0e-4f, 0.1f);
+			// Adaptive core (Casiez 2012). NOTE: the magnitude-only derivative
+			// cannot average oscillating tremor toward zero — at rest the
+			// effective cutoff is minCutoff + beta*mean|tremor rate|. Tune
+			// minCutoff FIRST with beta=0 (the ladder in the TOML).
+			const float ang = OneEuro::Angle(g_camSmooth.f.qRawPrev, qraw);
+			std::memcpy(g_camSmooth.f.qRawPrev, qraw, sizeof(qraw));
+			const float omega = ang / dt;
+			const float aD = OneEuro::Alpha(dt, float(*Settings::camSmoothDCutoffHz));
+			g_camSmooth.f.omegaHat += aD * (omega - g_camSmooth.f.omegaHat);
+			const float fc = float(*Settings::camSmoothMinCutoffHz) +
+			                 float(*Settings::camSmoothBeta) * g_camSmooth.f.omegaHat;
+			const float a = OneEuro::Alpha(dt, fc);
+			const float snapRad = float(*Settings::camSmoothSnapDegrees) * 0.017453292f;
+			const float lagRad = float(*Settings::camSmoothMaxLagDegrees) * 0.017453292f;
+			if (OneEuro::Angle(g_camSmooth.f.q, qraw) > snapRad) {
+				// Discontinuity (snap turn / teleport): adopt raw instantly.
+				// Seeding omegaHat = omega leaves the cutoff elevated for a few
+				// hundred ms after — motion-plausible, not a bug (see TOML).
+				std::memcpy(g_camSmooth.f.q, qraw, sizeof(qraw));
+				g_camSmooth.f.omegaHat = omega;
+			} else {
+				OneEuro::Slerp(g_camSmooth.f.q, qraw, a, g_camSmooth.f.q);
+			}
+			// Aim honesty: filtered-vs-raw divergence hard-bounded; at rest the
+			// filter converges to raw, so precision shots see the true pose.
+			const float lag = OneEuro::Angle(g_camSmooth.f.q, qraw);
+			if (lag > lagRad && lag > 1.0e-6f) {
+				OneEuro::Slerp(g_camSmooth.f.q, qraw, 1.0f - lagRad / lag, g_camSmooth.f.q);
+			}
+			OneEuro::BasisFromQuat(g_camSmooth.f.q, m);
+		}
+
 		void ComputeAutoPlacement(std::uintptr_t a_player, bool a_keepLoopState = false)
 		{
 			if (!g_widget.captured) {
@@ -1987,6 +2096,12 @@ namespace TrueScopes::ScopeRender
 				static_cast<float>(*Settings::scopeNearClip));
 			*mode738 = saved738;
 			*mode750 = saved750;
+
+			// v0.2.124: damp the scope camera's orientation HERE — the Update
+			// above just derived a fresh world pose; everything downstream
+			// (culling planes, camera-state commits, AccumulateScene) consumes
+			// the filtered basis coherently. See ApplyCamSmooth.
+			ApplyCamSmooth(cam);
 
 			// NOTE: this VR camera type is NOT flatrim NiCamera. SetCameraFOV's own code
 			// shows: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
@@ -3528,6 +3643,11 @@ namespace TrueScopes::ScopeRender
 		Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
 		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+	}
+
+	void CamSmoothReset() noexcept
+	{
+		g_camSmoothResetReq.store(true);
 	}
 
 	bool WidgetPresentable()

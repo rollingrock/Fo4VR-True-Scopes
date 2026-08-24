@@ -44,6 +44,9 @@ namespace TrueScopes::ScopeRender
 
 	// Run ident probe + widget fit outside a live fill (render thread; SEH'd).
 	void PresenceFit();
+	// v0.2.124: request a camera-smoothing state reset (scope-in edge, weapon
+	// swap) — adopted on the next live fill.
+	void CamSmoothReset() noexcept;
 
 	// (v0.2.68 had a ResetWidgetFit() called on scope-in. REMOVED in v0.2.69: the engine
 	// rewrites ScopeParent at EQUIP, not scope-in, so that reset re-captured our own

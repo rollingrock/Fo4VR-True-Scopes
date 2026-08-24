@@ -60,6 +60,19 @@ namespace Settings
 	// fade-to-black over the lens (the "black bursts"). Off-edges are only
 	// honored after the gate stayed off this long. 0 = vanilla behavior.
 	MAKE_SETTING(iSetting, "TrueScopesVR", scopeOffHoldMs, std::int64_t(1500));
+	// v0.2.124 — ONE EURO CAMERA DAMPING (STATUS 3.7d): magnification amplifies
+	// hand tremor ~6x at 4x zoom; a speed-adaptive filter crushes at-rest
+	// tremor without lagging deliberate pans. Filters ONLY our scope render
+	// camera's orientation — never hands, weapon, or vanilla state. Code
+	// default OFF (poseGateEnabled precedent); the deployed TOML enables it
+	// for the field-judgment session.
+	MAKE_SETTING(bSetting, "TrueScopesVR", camSmoothEnabled, false);
+	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothMinCutoffHz, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothBeta, 0.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothDCutoffHz, 1.0);
+	MAKE_SETTING(iSetting, "TrueScopesVR", camSmoothResetMs, std::int64_t(250));
+	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothSnapDegrees, 30.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothMaxLagDegrees, 2.0);
 	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
 	// WARNING (2026-08-08): currently CRASHES on scope-in (ScopeMenu/input-layer
 	// null-deref, crash-2026-08-08-17-07-51) — needs rework before use.
@@ -710,6 +723,13 @@ namespace Settings
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
 		LOAD(scopeOffHoldMs);
+		LOAD(camSmoothEnabled);
+		LOAD(camSmoothMinCutoffHz);
+		LOAD(camSmoothBeta);
+		LOAD(camSmoothDCutoffHz);
+		LOAD(camSmoothResetMs);
+		LOAD(camSmoothSnapDegrees);
+		LOAD(camSmoothMaxLagDegrees);
 		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
