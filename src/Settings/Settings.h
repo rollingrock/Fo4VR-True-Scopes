@@ -473,6 +473,13 @@ namespace Settings
 		double offsetX = std::numeric_limits<double>::quiet_NaN();
 		double offsetY = std::numeric_limits<double>::quiet_NaN();
 		double offsetZ = std::numeric_limits<double>::quiet_NaN();
+		// v0.2.112: height/width of a RECTANGULAR screen optic, 0 = not
+		// specified (circular optics and square screens are 1.0 in the built-in
+		// table). When < 1, the aperture is the screen's HALF-WIDTH and the
+		// composite masks the picture's vertical overshoot, so a wide display
+		// (MGScopeThermal, 2.55 x 1.37) shows a wide picture instead of a
+		// circle spilling above and below it.
+		double aspect = 0.0;
 	};
 
 	// v0.2.101: a [Scopes] key may now be a MODEL PATH as well as a node name,
@@ -708,8 +715,20 @@ namespace Settings
 						if (const auto* n = sub->get("offsetZ")) {
 							readNumber(*n, e.offsetZ);
 						}
+						if (const auto* n = sub->get("aspect")) {
+							readNumber(*n, e.aspect);
+						}
 					} else {
 						readNumber(value, e.aperture);
+					}
+
+					// The composite's screen mask only crops VERTICALLY (no
+					// shipped screen is taller than wide), so an aspect above 1
+					// cannot do what its author hopes -- refuse it out loud
+					// rather than crop the wrong axis silently.
+					if (e.aspect != 0.0 && !(e.aspect >= 0.1 && e.aspect <= 1.0)) {
+						logger::warn(FMT_STRING("[Scopes] {}: aspect {} ignored (expected 0.1 to 1.0)"), name, e.aspect);
+						e.aspect = 0.0;
 					}
 
 					// A zero or absurd radius makes the lens vanish or swallow the
@@ -722,7 +741,7 @@ namespace Settings
 						logger::warn(FMT_STRING("[Scopes] {}: aperture {} ignored (expected 0.01 to 64)"), name, e.aperture);
 						e.aperture = 0.0;
 					}
-					if (e.aperture > 0.0 || haveOffset) {
+					if (e.aperture > 0.0 || haveOffset || e.aspect > 0.0) {
 						// Stored normalized so a lookup can normalize too and the
 						// two always meet, whatever the user typed.
 						const auto norm = NormalizeScopeKey(name);

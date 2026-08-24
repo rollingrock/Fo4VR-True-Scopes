@@ -1265,6 +1265,7 @@ namespace DevBench
 			}
 			out += "]}";
 			out += ",\"aperture\":" + std::to_string(i.aperture);
+			out += ",\"screenAspect\":" + std::to_string(i.screenAspect);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");
 			// HOW it resolved, not just to what. "node" on a modded load order is
@@ -1322,6 +1323,7 @@ namespace DevBench
 				first = false;
 				out += Quote(e.path) + ":{\"node\":" + Quote(e.node) +
 				       ",\"aperture\":" + std::to_string(e.aperture) +
+				       ",\"aspect\":" + std::to_string(e.aspect) +
 				       ",\"shape\":" + Quote(e.shape) + ",\"face\":" + Vec3(e.face) + "}";
 			}
 			out += "}}";
@@ -1422,6 +1424,7 @@ namespace DevBench
 			out += ",\"hit\":" + std::string(r.hit ? "true" : "false");
 			out += ",\"fromToml\":" + std::string(r.fromToml ? "true" : "false");
 			out += ",\"aperture\":" + std::to_string(r.aperture);
+			out += ",\"aspect\":" + std::to_string(r.aspect);
 			out += ",\"key\":" + Quote(r.key);
 			out += ",\"node\":" + Quote(r.node);
 			out += ",\"shape\":" + Quote(r.shape);

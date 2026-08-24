@@ -52,7 +52,7 @@ cbuffer Params : register(b0)
     float4 vignette;  // x inner radius, y outer radius, z strength, w edge-darken power
     float4 tint;      // rgb multiplier, w exposure
     float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
-    float4 nvp;       // x nv gain, yzw unused
+    float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), zw unused
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -93,10 +93,22 @@ float4 PSMain(VSOut i) : SV_Target
 
     float v;
     if (flags.y > 0.0) {
-        // screen-type optic: square soft edge instead of the radial vignette
-        float2 e = 1.0 - smoothstep(0.86, 1.02, abs(i.uv - 0.5) * 2.0);
+        // screen-type optic: square soft edge instead of the radial vignette.
+        // A rectangular display (aspect = h/w < 1) is delivered with the
+        // aperture sized to its half-WIDTH, so the vertical edge arrives at
+        // "aspect" instead of 1 -- dividing y by it reuses the same ramp.
+        float2 d = abs(i.uv - 0.5) * 2.0;
+        d.y /= max(nvp.y, 0.05);
+        float2 e = 1.0 - smoothstep(0.86, 1.02, d);
         v = e.x * e.y;
         c *= lerp(1.0, v, 0.85);
+        // The 0.85 edge leaves a 15% floor -- right where a SQUARE screen's
+        // edge meets its bezel (VR-verified), wrong past a RECTANGLE's crop
+        // line, which lies INSIDE the quad on housing pixels. Full crop there,
+        // and only there: squares (aspect 1) never take this branch.
+        if (nvp.y < 0.999) {
+            c *= 1.0 - smoothstep(0.98, 1.06, d.y);
+        }
     } else {
         // radial term in "disc units": 1.0 at the picture disc's edge
         float r = length((i.uv - 0.5) * 2.0);
@@ -510,6 +522,12 @@ float4 PSMain(VSOut i) : SV_Target
 					                 ? static_cast<float>(*Settings::reconEffectStrength)
 					                 : 0.0f;
 					p.nvp[0] = static_cast<float>(*Settings::nvGain);
+					// v0.2.112 — rectangular screens (MGScopeThermal is 2.55 x
+					// 1.37): the aperture is the screen's half-WIDTH, and the
+					// shader crops the vertical overshoot to aspect = h/w.
+					// 1.0 (every circular optic and square screen) is a no-op.
+					const float aspect = ident.screenAspect;
+					p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
 				}
 				std::memcpy(m.pData, &p, sizeof(p));
 				d3d->Unmap(g_cb, 0);

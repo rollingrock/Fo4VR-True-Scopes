@@ -185,6 +185,11 @@ namespace TrueScopes::ScopeIdent
 		// (the v0.2.96 defect below).
 		char          overrideKey[kPathLen] = {};
 		float         aperture = 0.0f;   // resolved ocular radius actually in use
+		// v0.2.112: height/width of a rectangular screen optic (1.0 = circular
+		// optic or square screen — every row but MGScopeThermal). When < 1 the
+		// aperture above is the screen's HALF-WIDTH and the lens composite masks
+		// the vertical overshoot, so a wide display shows a wide picture.
+		float         screenAspect = 1.0f;
 		bool          fromTable = false;  // false = fell back to widgetApertureRadius
 		// Per-scope widget POSITION. NaN = this scope does not specify the axis, so
 		// the global widgetOffset* setting applies; 0.0 is a real, deliberate zero.
@@ -282,7 +287,8 @@ namespace TrueScopes::ScopeIdent
 		// because the OMOD list is not always readable (a scope welded into a
 		// weapon's base mesh rather than attached as a mod has no OMOD at all).
 		const char* node;
-		float       aperture;  // ocular radius
+		float       aperture;  // ocular radius (half-WIDTH for a rectangular screen)
+		float       aspect;    // screen h/w; 1.0 = circular optic or square screen
 		const char* shape;     // the ONE shape the census measured
 		float       face[3];   // ocular face centre, in that shape's own space
 		// |face - the shape's bounding-sphere centre|, from the mesh. Checked
@@ -311,6 +317,7 @@ namespace TrueScopes::ScopeIdent
 		bool  hit;          // table row or [Scopes] aperture found
 		bool  fromToml;     // an override supplied/changed the aperture
 		float aperture;
+		float aspect;       // screen h/w (1.0 = circular/square)
 		char  key[160];     // the normalized key that was looked up
 		char  node[64];     // matched row's fallback node name ("" if override-only)
 		char  shape[64];    // matched row's measured shape

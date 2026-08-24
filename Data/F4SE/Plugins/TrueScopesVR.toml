@@ -222,11 +222,11 @@ widgetAutoPlace = true
 # That means the optic is almost certainly modded and is currently borrowing
 # some vanilla scope's numbers -- exactly the case an entry here should fix.
 #
-# The built-in table covers the 26 vanilla scopes. One caveat worth knowing:
-# only the hunting rifle ships a distinct glass shape, so its 1.267 is a real
-# clear aperture; the other 25 are measured on the tube body, which reads about
-# 15% high. If a vanilla scope's picture spills slightly past the lens, trimming
-# its radius here is the fix.
+# The built-in table covers the vanilla + DLC scopes (34 rows as of v0.2.112,
+# measured at the rear rim of each optic and verified in VR where possible).
+# If a scope's picture still spills slightly past the lens, trimming its
+# radius here is the fix; slightly small reads as a sliver of bezel and is the
+# easier direction to live with.
 #
 # THIS MUST BE THE LAST SECTION IN THE FILE — every key below a TOML section
 # header belongs to that section, so anything added after it would silently
@@ -234,12 +234,20 @@ widgetAutoPlace = true
 # Short form  -- aperture only (quote a path; a bare node name needs no quotes):
 #     "weapons/thermalscope/scopetherm1.nif" = 0.9
 #     HuntingScope = 1.267
-# Long form   -- aperture and/or position:
+# Long form   -- aperture and/or position and/or screen aspect:
 #     [Scopes."weapons/huntingrifle/huntingriflescope.nif"]
 #     aperture = 1.267
 #     offsetY  = -1.8
 # An entry may set position ONLY; the built-in radius still applies. That is the
 # common case for a scope whose size is fine but which sits off the lens.
+#
+# aspect (0.1 to 1.0) marks a RECTANGULAR screen optic: the aperture is then
+# the screen's half-WIDTH and the picture is cropped vertically to height =
+# aspect x width. The vanilla thermal MG scope ships aspect 0.538 built in;
+# set it here for a modded optic whose display is wider than tall:
+#     [Scopes."weapons/somegun/widescreen.nif"]
+#     aperture = 1.3
+#     aspect   = 0.55
 [Scopes]
 
 # VR-confirmed on the hunting rifle (user: "pretty damn close"). The aperture is
