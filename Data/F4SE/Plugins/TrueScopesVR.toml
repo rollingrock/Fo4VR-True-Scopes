@@ -106,8 +106,8 @@ edgeBlurStrength = 0.35
 edgeBlurStart = 0.7
 # Chromatic fringe at the rim (red/blue focal split), 0..1. 0 = off.
 caStrength = 0.35
-# Night-vision phosphor scanlines, 0..1. Off by default — flavor, not physics.
-nvScanlines = 0.0
+# Night-vision phosphor scanlines, 0..1. Judged in VR at 0.8; 0 = clean NV.
+nvScanlines = 0.8
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 disableApproachFade = false

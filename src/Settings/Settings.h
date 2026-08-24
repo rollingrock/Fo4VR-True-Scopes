@@ -295,8 +295,9 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStart, 0.7);
 	// Chromatic fringe at the rim (red/blue focal split), 0..1. 0 disables.
 	MAKE_SETTING(fSetting, "TrueScopesVR", caStrength, 0.35);
-	// NV phosphor scanlines, 0..1. Off by default — flavor, not physics.
-	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.0);
+	// NV phosphor scanlines, 0..1. Judged in the headset 2026-08-24 at 0.8
+	// ("that looks really nice") — ships ON at that value.
+	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.8);
 	// --- widget fit (v0.2.68) -------------------------------------------------
 	// Fit the vanilla VR scope widget to the REAL scope's lens instead of leaving it
 	// at Bethesda's oversized floating disc. The widget mesh hangs off the engine's
