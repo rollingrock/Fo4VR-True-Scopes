@@ -4126,10 +4126,20 @@ namespace TrueScopes::ScopeRender
 				g_decalStep.load());
 			return;
 		}
-		static bool s_first = true;
-		if (s_first && n > 0) {
-			s_first = false;
-			logger::info(FMT_STRING("DECAL STAGE: first run drew {} decal(s) in {} batch(es)"), n, b);
+		// v0.2.136: log whenever the drawn/total counts CHANGE (field 2026-08-25:
+		// "some holes show, others do not - always the same ones" - the next
+		// diagnosis needs drew-vs-SSN-total per fill, not just the first run).
+		static std::uint32_t s_lastN = 0xffffffffu, s_lastTotal = 0xffffffffu;
+		std::uint32_t        total = 0;
+		const auto           ssnG = *reinterpret_cast<std::uintptr_t*>(
+            REL::Module::get().base() + Addr::kSSNDecalOwnerPtr);
+		if (ssnG) {
+			total = *reinterpret_cast<const std::uint32_t*>(ssnG + 0x228);
+		}
+		if (n != s_lastN || total != s_lastTotal) {
+			s_lastN = n;
+			s_lastTotal = total;
+			logger::info(FMT_STRING("DECAL STAGE: drew {}/{} decal(s) in {} batch(es)"), n, total, b);
 		}
 	}
 
