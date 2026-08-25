@@ -148,6 +148,10 @@ sheenSmudgeScale = 9.0
 # the picture darkens - a black (eye-box-clipped / frozen) lens keeps glass
 # surface life instead of reading as a dead screen. 0 = off. Tune 0-6.
 sheenDarkBoost = 3.0
+# Real-scope observation 2026-08-25: the reticle stays faintly visible inside
+# the blacked-out eye box. 1 = reticle clips with the picture (old behavior),
+# 0 = always visible; the picture always clips fully either way.
+reticleEyeBoxFollow = 0.35
 
 # PARALLAX DEPTH - the picture shifts against the eye so the image plane
 # reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the

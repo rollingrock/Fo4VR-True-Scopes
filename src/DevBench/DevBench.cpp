@@ -321,6 +321,7 @@ namespace DevBench
 				{ "sheenSmudge", Kind::Float, &sheenSmudge },
 				{ "sheenSmudgeScale", Kind::Float, &sheenSmudgeScale },
 				{ "sheenDarkBoost", Kind::Float, &sheenDarkBoost },
+				{ "reticleEyeBoxFollow", Kind::Float, &reticleEyeBoxFollow },
 				{ "parallaxDepthUnits", Kind::Float, &parallaxDepthUnits },
 				{ "parallaxMaxShift", Kind::Float, &parallaxMaxShift },
 				{ "parallaxSmoothing", Kind::Float, &parallaxSmoothing },

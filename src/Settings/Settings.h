@@ -342,6 +342,10 @@ namespace Settings
 	// as the composed picture darkens. 0 = off. The field verdict behind it:
 	// a black lens reads as a dead screen; real glass keeps surface life.
 	MAKE_SETTING(fSetting, "TrueScopesVR", sheenDarkBoost, 3.0);
+	// v0.2.129 — how much the RETICLE follows the eye-box clip (real-scope
+	// observation: the reticle stays faintly visible inside the blacked-out eye
+	// box). 1 = clips with the picture (pre-.129 behavior), 0 = always visible.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleEyeBoxFollow, 0.35);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
 	// Field-judged 2026-08-25 against a REAL scope: "way more parallax than we
@@ -811,6 +815,7 @@ namespace Settings
 		LOAD(sheenSmudge);
 		LOAD(sheenSmudgeScale);
 		LOAD(sheenDarkBoost);
+		LOAD(reticleEyeBoxFollow);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
 		LOAD(parallaxSmoothing);

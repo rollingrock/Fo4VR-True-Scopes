@@ -52,7 +52,7 @@ cbuffer Params : register(b0)
     float4 vignette;  // x inner radius, y outer radius, z strength, w edge-darken power
     float4 tint;      // rgb multiplier, w exposure
     float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
-    float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w unused
+    float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w reticle eye-box follow
     float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w unused
     float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w sheen dark boost
     // v0.2.123 glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
@@ -160,28 +160,32 @@ float4 PSMain(VSOut i) : SV_Target
         c *= lerp(1.0, v, saturate(vignette.z));
     }
 
-    if (flags.x > 0.0) {
-        float2 ruv = (i.uv + pose.zw * sheen2.z - 0.5) * reticle.xy + 0.5 + reticle.zw;
-        if (all(ruv >= 0.0) && all(ruv <= 1.0)) {
-            float4 rc = reticleT.Sample(smp, ruv);
-            c = lerp(c, rc.rgb, saturate(rc.a * flags.x));
-        }
-    }
-
-    // --- eye-box / exit pupil (optical tubes only), AFTER the reticle: the
-    // whole sight picture lives behind the eyepiece, so moving the head off the
-    // tube axis clips picture and reticle together. eyebox.xy is the eye's real
-    // lateral offset from the tube axis in disc units (computed per frame on the
-    // CPU from ScopeParent's world transform and the camera root, gain-scaled).
-    // The exit pupil is a disc that SHIFTS OPPOSITE the eye and SHRINKS as the
-    // eye moves off axis; on axis (offset 0) the pupil is larger than the
-    // picture and this is a no-op.
+    // --- eye-box / exit pupil (optical tubes only), BEFORE the reticle as of
+    // v0.2.129: the PICTURE clips fully as approved, but the reticle gets its
+    // own, weaker response (real-scope observation 2026-08-25: the reticle
+    // stays faintly visible inside the blacked-out eye box, silhouetted
+    // against residual scatter - which the dark-adaptive sheen now provides).
+    // nvp.w = reticleEyeBoxFollow: 1 = reticle clips with the picture (the
+    // old behavior), 0 = reticle immune. eyebox.xy is the eye's real lateral
+    // offset from the tube axis in disc units (computed per frame on the CPU,
+    // gain-scaled). The exit pupil SHIFTS OPPOSITE the eye and SHRINKS as the
+    // eye moves off axis; on axis it is larger than the picture = no-op.
+    float ebMul = 1.0;
     if (eyebox.z > 0.0 && flags.y == 0.0) {
         float2 p   = cuv * 2.0;
         float  m   = length(eyebox.xy);
         float  rad = 1.15 - 0.9 * saturate(m);
         float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
-        c *= lerp(1.0, vis, saturate(eyebox.z));
+        ebMul = lerp(1.0, vis, saturate(eyebox.z));
+    }
+    c *= ebMul;
+
+    if (flags.x > 0.0) {
+        float2 ruv = (i.uv + pose.zw * sheen2.z - 0.5) * reticle.xy + 0.5 + reticle.zw;
+        if (all(ruv >= 0.0) && all(ruv <= 1.0)) {
+            float4 rc = reticleT.Sample(smp, ruv);
+            c = lerp(c, rc.rgb, saturate(rc.a * flags.x) * lerp(1.0, ebMul, saturate(nvp.w)));
+        }
     }
 
     // --- v0.2.123 HOUSING RIM SHADOW (optical tubes only): a hard near-black
@@ -867,6 +871,7 @@ float4 PSMain(VSOut i) : SV_Target
 			const float aspect = ident.screenAspect;
 			p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
 			p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
+			p.nvp[3] = std::clamp(static_cast<float>(*Settings::reticleEyeBoxFollow), 0.0f, 1.0f);
 		}
 		// v0.2.113 — the glass effects (SESSION_2026-08-23_RETICLE_AND_
 		// GLASS.md §4 step 3, the deferred half): eye-box from the real
