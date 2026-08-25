@@ -53,7 +53,7 @@ cbuffer Params : register(b0)
     float4 tint;      // rgb multiplier, w exposure
     float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
     float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w reticle eye-box follow
-    float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w unused
+    float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w residual scatter floor
     float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w sheen dark boost
     // v0.2.123 glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
     float4 pose;      // xy RAW eye lateral offset (disc units, UN-gained); zw smoothed parallax UV shift
@@ -178,7 +178,12 @@ float4 PSMain(VSOut i) : SV_Target
         float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
         ebMul = lerp(1.0, vis, saturate(eyebox.z));
     }
-    c *= ebMul;
+    // v0.2.130: the clip bottoms out at a faint FLAT scatter (eyebox.w), not
+    // pure black - scene-independent (a constant, never the world), which is
+    // what a dark reticle silhouettes against in a real tube. v0.2.129's
+    // follow knob was invisible in the field because black reticle lines over
+    // a 0.0 background are unconditionally black at every alpha.
+    c = c * ebMul + float3(0.92, 1.0, 0.97) * (eyebox.w * (1.0 - ebMul));
 
     if (flags.x > 0.0) {
         float2 ruv = (i.uv + pose.zw * sheen2.z - 0.5) * reticle.xy + 0.5 + reticle.zw;
@@ -898,6 +903,7 @@ float4 PSMain(VSOut i) : SV_Target
 				p.eyebox[0] = ex * gain;
 				p.eyebox[1] = ey * gain;
 				p.eyebox[2] = strength;
+				p.eyebox[3] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidual));
 			}
 			if (havePose) {
 				p.pose[0] = ex;

@@ -346,6 +346,10 @@ namespace Settings
 	// observation: the reticle stays faintly visible inside the blacked-out eye
 	// box). 1 = clips with the picture (pre-.129 behavior), 0 = always visible.
 	MAKE_SETTING(fSetting, "TrueScopesVR", reticleEyeBoxFollow, 0.35);
+	// v0.2.130 — the eye-box clip bottoms out at this flat scatter level
+	// instead of pure black (scene-independent: a constant, never the world).
+	// This is what makes the dark reticle visible in the black at all.
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidual, 0.05);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
 	// Field-judged 2026-08-25 against a REAL scope: "way more parallax than we
@@ -816,6 +820,7 @@ namespace Settings
 		LOAD(sheenSmudgeScale);
 		LOAD(sheenDarkBoost);
 		LOAD(reticleEyeBoxFollow);
+		LOAD(eyeBoxResidual);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
 		LOAD(parallaxSmoothing);

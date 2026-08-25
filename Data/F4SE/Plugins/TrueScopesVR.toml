@@ -152,6 +152,10 @@ sheenDarkBoost = 3.0
 # the blacked-out eye box. 1 = reticle clips with the picture (old behavior),
 # 0 = always visible; the picture always clips fully either way.
 reticleEyeBoxFollow = 0.35
+# The eye-box black bottoms out at this flat scatter level (0 = true black,
+# which makes the reticle invisible regardless of the follow knob - field
+# lesson 2026-08-25). Scene-independent; tune 0.03-0.10.
+eyeBoxResidual = 0.05
 
 # PARALLAX DEPTH - the picture shifts against the eye so the image plane
 # reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the
