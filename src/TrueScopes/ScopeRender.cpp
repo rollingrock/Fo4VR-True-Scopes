@@ -3979,20 +3979,28 @@ namespace TrueScopes::ScopeRender
 		alignas(16) float plane[8] = {};
 		Fn<void (*)(float*, const float*, const float*)>(Addr::kNiPlaneCtor)(plane, nrm, pt);
 
+		// v0.2.135 - THE STEP-2 FAULT: BSScrapArray's capacity is PADDED to 8
+		// bytes, so size lives at +0x18 - the v0.2.133/134 struct packed it at
+		// +0x14 and the visitor read its element count from stack garbage past
+		// the struct (wild binary-insert range -> AV). The verify-2 report even
+		// said "the renderer reads param_1+0x18 (count)"; the clue was there.
 		struct ScrapArray
 		{
-			void*           heap;
-			std::uintptr_t* data;
-			std::uint32_t   cap;
-			std::uint32_t   size;
+			void*           heap;   // +0x00 ScrapHeap* (null ok)
+			std::uintptr_t* data;   // +0x08
+			std::uint32_t   cap;    // +0x10
+			std::uint32_t   pad14;  // +0x14 (capacity padding)
+			std::uint32_t   size;   // +0x18 - the field the visitor/renderer read
+			std::uint32_t   pad1c;  // +0x1c
 		};
+		static_assert(offsetof(ScrapArray, size) == 0x18);
 		struct VisitCtx
 		{
 			void* plane;
 			void* list;
 			int*  counter;
 		};
-		ScrapArray list{ nullptr, s_buf, s_cap, 0 };
+		ScrapArray list{ nullptr, s_buf, s_cap, 0, 0, 0 };
 		int        batches = 0;
 		VisitCtx   vc{ plane, &list, &batches };
 		g_decalStep.store(1);  // plane built
