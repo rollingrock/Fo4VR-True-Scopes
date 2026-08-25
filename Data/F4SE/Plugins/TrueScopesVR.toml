@@ -162,7 +162,8 @@ parallaxDepthUnits = 6.0
 parallaxMaxShift = 0.08
 parallaxSmoothing = 0.3
 parallaxMinEyeRelief = 4.0
-reticleParallaxFraction = 0.0
+# Real-scope verdict 2026-08-25: reticle moves 1:1 with the image.
+reticleParallaxFraction = 1.0
 
 # ONE EURO CAMERA DAMPING (v0.2.124) - kills magnified hand tremor without
 # lagging deliberate pans (speed-adaptive). Filters ONLY the scope render
@@ -176,7 +177,10 @@ reticleParallaxFraction = 0.0
 # 3) snap-turn/teleport must adopt instantly (camSmoothSnapDegrees).
 # NOTE: right after a snap turn smoothing is briefly reduced (the filter
 # seeds its speed estimate from the jump) - expected, not a bug.
-camSmoothEnabled = true
+# Field 2026-08-25: no visible difference at this tuning, and the right shape
+# may be FRIK-side hand dampening instead - OFF pending more testing. The
+# knobs stay live for DevBench A/B (see the tuning ladder above).
+camSmoothEnabled = false
 camSmoothMinCutoffHz = 1.0
 camSmoothBeta = 0.5
 camSmoothDCutoffHz = 1.0

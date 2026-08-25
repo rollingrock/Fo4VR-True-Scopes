@@ -349,8 +349,10 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.08);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxSmoothing, 0.3);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMinEyeRelief, 4.0);
-	// 0 = reticle anchored to the rim (second-focal-plane cue); 1 = moves with image.
-	MAKE_SETTING(fSetting, "TrueScopesVR", reticleParallaxFraction, 0.0);
+	// Field-judged against a REAL scope 2026-08-25: the reticle moves 1:1 WITH
+	// the image (a scope parallax-adjusted at distance has coincident planes).
+	// 0 = rim-anchored (the old default) for anyone who prefers it.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reticleParallaxFraction, 1.0);
 	// NV phosphor scanlines, 0..1. Judged in the headset 2026-08-24 at 0.8
 	// ("that looks really nice") — ships ON at that value.
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvScanlines, 0.8);
