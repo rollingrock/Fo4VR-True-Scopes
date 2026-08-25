@@ -156,10 +156,30 @@ namespace TrueScopes::Addr
 	inline constexpr std::uintptr_t kResolveDecalG6CallSite = 0x27ffa27;
 	inline constexpr std::uintptr_t kAccumDrawDecalGroup5 = 0x281d220;
 	inline constexpr std::uintptr_t kAccumDrawDecalGroup6 = 0x281d380;
-	// NOTE: bullet holes are NOT passes at all - BSDFDecal objects (SSN+0x218)
-	// drawn by the dedicated DrawWorld stage FUN_142845cc0 our render never
-	// runs. That stage's plugin invocation is designed and under adversarial
-	// re-verification; groups 5/6 above only cover geometry/placed decals.
+	// Bullet holes are NOT passes at all - BSDFDecal objects (SSN+0x218, count
+	// +0x228, spin lock +0x230) drawn by the dedicated DrawWorld stage
+	// FUN_142845cc0 (compute dispatch + instanced box draws, renderer+4-aware:
+	// under our bracket every RT id remaps to the scope G-buffer set). The
+	// v0.2.133 plugin invocation was adversarially verified twice; ordering
+	// proof: vanilla's build->render->list-free is fully contained in
+	// FUN_14284e9e0 (DrawWorld+0xd87b52, drain-wait before the free), which
+	// strictly precedes our fill site 0xd87ca4 on the same thread - our flag
+	// rebuild on the shared BSDFDecal bytes (+0xca batch head, +0xcb near
+	// straddle) can never corrupt the vanilla job.
+	inline constexpr std::uintptr_t kDeferredDecalRender = 0x2845cc0;
+	// Per-decal cull/sort/insert visitor (FUN_142846b10). Ctx layout VERIFIED:
+	// {+0 NiPlane* (near plane), +8 BSScrapArray<BSDFDecal*>*, +0x10 int*
+	// batch counter}. Mutates ONLY decal+0xca/+0xcb and appends to the list.
+	inline constexpr std::uintptr_t kDecalCullVisitor = 0x2846b10;
+	// NiPlane::NiPlane(dst, &normal, &point).
+	inline constexpr std::uintptr_t kNiPlaneCtor = 0x1c2a3a0;
+	// The ShadowSceneNode that owns the decal array (DrawWorld's SSN global;
+	// Ghidra shows it label-shifted, RVA verified from code bytes).
+	inline constexpr std::uintptr_t kSSNDecalOwnerPtr = 0x6885d40;
+	// DrawWorld camera global - FUN_142845cc0's draw-ctx builder and camera-
+	// rect write read the camera from here; bracketed to our scope camera
+	// around the call.
+	inline constexpr std::uintptr_t kDrawWorldCameraPtr = 0x6885c80;
 
 	// --- render target indices (logical, via RenderTargetManager remap table) ---
 

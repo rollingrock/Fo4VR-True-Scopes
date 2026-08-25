@@ -145,6 +145,13 @@ namespace TrueScopes::ScopeRender
 		// (and on the fault path) so a stale closure can never be invoked on a later frame.
 		std::function<void()> g_pendingSunExec;
 		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
+		// v0.2.133 - the deferred-decal stage (bullet holes). Armed per render,
+		// fired once from ResolveAccumBind0Hook BEFORE the accum bind (G-buffer
+		// still bound - the stage reads AND writes it).
+		std::atomic_bool g_pendingDecalStage{ false };
+		std::uintptr_t   g_decalStageCam = 0;
+		std::uint32_t    g_diagDecalN = 0;
+		std::uint32_t    g_diagDecalBatches = 0;
 
 		// Fault forensics: which step the render was in when the SEH guard fired.
 		volatile long g_lastStep = 0;
@@ -2871,10 +2878,15 @@ namespace TrueScopes::ScopeRender
 			}
 			g_diagLightsClamp = clampLights ? lightsMax : -1;
 
+			// v0.2.133: arm the decal stage for this resolve (fired by the bind
+			// hook, before the accum bind, while the G-buffer is still current).
+			g_decalStageCam = cam;
+			g_pendingDecalStage.store(accumSetup && *Settings::decalStageEnabled);
 			g_inOwnResolve.store(accumSetup);
 			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 			g_pendingSunExec = nullptr;  // never let a stale closure outlive this frame
+			g_pendingDecalStage.store(false);
 
 			if (clampLights) {
 				*lightCountA = savedLightsA;
@@ -3912,6 +3924,181 @@ namespace TrueScopes::ScopeRender
 	// the G-buffer geometry has been drawn (which is the entire point; see the note at
 	// the capture site) and before the resolve's own light volumes. One-shot: the slot
 	// is cleared before invoking, so a re-entrant or repeated bind cannot draw twice.
+	// v0.2.133 - THE BULLET-HOLE STAGE (field defect 2026-08-25: shot decals in
+	// the main scene, absent from the lens). Screen-space decals are BSDFDecal
+	// objects at SSN+0x218, drawn in vanilla by the dedicated DrawWorld stage
+	// FUN_142845cc0 our render never ran - the sun situation over again, and
+	// with zero pass-lifetime exposure (no BSRenderPass involved). Design was
+	// adversarially verified twice; the corrections are all here:
+	//  - REBUILD the visible list ourselves with the engine's own visitor under
+	//    the SSN spin lock (the engine's global list is consumed and freed
+	//    before our fill site runs - ordering-proven), into a plugin-owned
+	//    BSScrapArray-shaped list with capacity pre-reserved >= the SSN count
+	//    so the visitor's growth path provably never fires (growth on a foreign
+	//    buffer would scrap-free plugin memory).
+	//  - param 2 of the renderer is the TEXTURE-BATCH count from the visitor's
+	//    counter, snapshotted before unlock - NOT the decal count (an overcount
+	//    reads past the instance-count array).
+	//  - the DrawWorld camera global is bracketed to our scope camera (the
+	//    stage's draw-ctx builder and camera-rect write read it).
+	//  - pipe-state sandwich: the resolve pokes pending state right before the
+	//    hooked bind; the stage's teardown clobbers sctx+0xd0 (2 -> 1). Save
+	//    and re-poke {0xa8,0xac,0xb4,0xbc,0xc8,0xd0} with the sun-exec dirty
+	//    bits (|4 depth-stencil, |8 0xbc group, |0x10 blend).
+	//  - decal refcounts (+8) held across the call (AddDecal parity), engine
+	//    release on exit (dec; 0 -> vfunc vtable+8).
+	//  - NO MRT restore: the stage's exit binding is bitwise the G-buffer set
+	//    the resolve left bound, and the resolve's accum binds only touch
+	//    slots 0/1 (+unbind 2) afterward - verified from disassembly.
+	// The near plane uses our known scopeNearClip rather than walking the VR
+	// camera's +0x1a0 frustum pointer (layout differs from flatrim).
+	void DecalStageImpl(std::uint32_t& a_n, std::uint32_t& a_batches) noexcept
+	{
+		const auto base = REL::Module::get().base();
+		const auto cam = g_decalStageCam;
+		if (!cam) {
+			return;
+		}
+		const auto ssn = *reinterpret_cast<std::uintptr_t*>(base + Addr::kSSNDecalOwnerPtr);
+		if (!ssn) {
+			return;
+		}
+		static std::uintptr_t* s_buf = nullptr;
+		static std::uint32_t   s_cap = 0;
+
+		float        nrm[3] = { *reinterpret_cast<const float*>(cam + 0x70),
+			                    *reinterpret_cast<const float*>(cam + 0x74),
+			                    *reinterpret_cast<const float*>(cam + 0x78) };
+		const float  nearD = (std::max)(0.1f, static_cast<float>(*Settings::scopeNearClip));
+		const float* cp = reinterpret_cast<const float*>(cam + 0xa0);
+		float        pt[3] = { cp[0] + nrm[0] * nearD, cp[1] + nrm[1] * nearD, cp[2] + nrm[2] * nearD };
+		alignas(16) float plane[8] = {};
+		Fn<void (*)(float*, const float*, const float*)>(Addr::kNiPlaneCtor)(plane, nrm, pt);
+
+		auto* lock = reinterpret_cast<volatile long*>(ssn + 0x230);
+		int   spins = 0;
+		while (_InterlockedExchange(lock, 1) != 0) {
+			if (++spins > 10000) {
+				::Sleep(1);
+			} else {
+				::Sleep(0);
+			}
+		}
+		const auto arrData = *reinterpret_cast<std::uintptr_t*>(ssn + 0x218);
+		const auto arrCnt = *reinterpret_cast<std::uint32_t*>(ssn + 0x228);
+		if (!arrData || !arrCnt) {
+			_InterlockedExchange(lock, 0);
+			return;
+		}
+		if (arrCnt > s_cap) {
+			std::free(s_buf);
+			s_cap = arrCnt + 32;
+			s_buf = static_cast<std::uintptr_t*>(std::malloc(sizeof(std::uintptr_t) * s_cap));
+			if (!s_buf) {
+				s_cap = 0;
+				_InterlockedExchange(lock, 0);
+				return;
+			}
+		}
+		struct ScrapArray
+		{
+			void*           heap;
+			std::uintptr_t* data;
+			std::uint32_t   cap;
+			std::uint32_t   size;
+		};
+		struct VisitCtx
+		{
+			void* plane;
+			void* list;
+			int*  counter;
+		};
+		ScrapArray list{ nullptr, s_buf, s_cap, 0 };
+		int        batches = 0;
+		VisitCtx   vc{ plane, &list, &batches };
+		for (std::uint32_t i = 0; i < arrCnt; ++i) {
+			if (const auto d = *reinterpret_cast<std::uintptr_t*>(arrData + 8ull * i)) {
+				Fn<int (*)(void*, std::uintptr_t)>(Addr::kDecalCullVisitor)(&vc, d);
+			}
+		}
+		for (std::uint32_t i = 0; i < list.size; ++i) {
+			_InterlockedIncrement(reinterpret_cast<volatile long*>(list.data[i] + 8));
+		}
+		const int batchCount = batches;
+		_InterlockedExchange(lock, 0);
+
+		a_n = list.size;
+		a_batches = batchCount > 0 ? static_cast<std::uint32_t>(batchCount) : 0u;
+		if (list.size != 0 && batchCount > 0) {
+			const auto    ctxA = g_ctxPtrA ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrA) : 0;
+			const auto    ctxB = g_ctxPtrB ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrB) : 0;
+			const auto    sctx = (ctxA ? ctxA : ctxB) + 0x1ee0;
+			const bool    haveSctx = sctx != 0x1ee0;
+			std::uint32_t saved[6] = {};
+			static constexpr std::uintptr_t kOffs[6] = { 0xa8, 0xac, 0xb4, 0xbc, 0xc8, 0xd0 };
+			static constexpr std::uint32_t  kBits[6] = { 4, 4, 4, 8, 0x10, 0x10 };
+			if (haveSctx) {
+				for (int i = 0; i < 6; ++i) {
+					saved[i] = *reinterpret_cast<const std::uint32_t*>(sctx + kOffs[i]);
+				}
+			}
+			auto*      camGlobal = reinterpret_cast<std::uintptr_t*>(base + Addr::kDrawWorldCameraPtr);
+			const auto savedCam = *camGlobal;
+			*camGlobal = cam;
+			Fn<void (*)(void*, std::uint32_t, std::uint32_t)>(Addr::kDeferredDecalRender)(
+				&list, static_cast<std::uint32_t>(batchCount), 0);
+			*camGlobal = savedCam;
+			if (haveSctx) {
+				auto* dirty = reinterpret_cast<std::uint32_t*>(sctx);
+				for (int i = 0; i < 6; ++i) {
+					auto* f = reinterpret_cast<std::uint32_t*>(sctx + kOffs[i]);
+					if (*f != saved[i]) {
+						*f = saved[i];
+						*dirty |= kBits[i];
+					}
+				}
+			}
+		}
+		for (std::uint32_t i = 0; i < list.size; ++i) {
+			const auto d = list.data[i];
+			if (_InterlockedDecrement(reinterpret_cast<volatile long*>(d + 8)) == 0) {
+				const auto vt = *reinterpret_cast<std::uintptr_t*>(d);
+				reinterpret_cast<void (*)(std::uintptr_t)>(
+					*reinterpret_cast<std::uintptr_t*>(vt + 8))(d);
+			}
+		}
+	}
+
+	void RunPendingDecalStage() noexcept
+	{
+		if (!g_pendingDecalStage.exchange(false)) {
+			return;
+		}
+		static bool s_dead = false;
+		if (s_dead) {
+			return;
+		}
+		std::uint32_t n = 0, b = 0;
+		bool          faulted = false;
+		__try {
+			DecalStageImpl(n, b);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			faulted = true;
+		}
+		g_diagDecalN = n;
+		g_diagDecalBatches = b;
+		if (faulted) {
+			s_dead = true;
+			logger::warn("DECAL STAGE faulted - disabled for this session"sv);
+			return;
+		}
+		static bool s_first = true;
+		if (s_first && n > 0) {
+			s_first = false;
+			logger::info(FMT_STRING("DECAL STAGE: first run drew {} decal(s) in {} batch(es)"), n, b);
+		}
+	}
+
 	void RunPendingSunExec() noexcept
 	{
 		if (!g_pendingSunExec) {

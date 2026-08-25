@@ -24,6 +24,9 @@ namespace TrueScopes::ScopeRender
 	// v0.2.78: invoked by ResolveAccumBind0Hook to run the sun pass INSIDE the resolve,
 	// after the G-buffer geometry exists for it to shade. No-op unless a render deferred one.
 	void RunPendingSunExec() noexcept;
+	// v0.2.133: the deferred-decal (bullet-hole) stage - fired once per own
+	// resolve from ResolveAccumBind0Hook, before the accum bind.
+	void RunPendingDecalStage() noexcept;
 
 	// Hooks::Install reports whether the two resolve bind sites were hooked; the sun
 	// pre-draw is skipped when they are not (it would just be cleared again).

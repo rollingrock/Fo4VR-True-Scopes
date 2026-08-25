@@ -166,6 +166,10 @@ eyeBoxResidualAdapt = 4.0
 # accumulator group 5) AFTER the opaque walls in our resolve, instead of the
 # engine's order which paints walls over them in a resolve-only render.
 decalGroup5Reorder = true
+# Bullet holes / shot impacts in the lens (v0.2.133): runs the engine's own
+# deferred-decal stage inside our render with the scope camera. Log marker on
+# first draw: "DECAL STAGE: first run drew N decal(s)".
+decalStageEnabled = true
 # Hardening: drop group 0x17 (sun glare) from our render - same stale-pass
 # class as the v0.2.11 fault.
 dropSunGlareGroup = true

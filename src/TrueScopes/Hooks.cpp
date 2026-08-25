@@ -663,6 +663,12 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk(std::uintptr_t a_rtm, std::uint32_t a_slot, std::int32_t a_rt, std::uint32_t a_mode)
 			{
+				// v0.2.133: the decal stage runs BEFORE the accum bind - the
+				// G-buffer set is still bound (the stage reads AND writes it),
+				// and its exit binding is bitwise what the resolve expects here.
+				if (ScopeRender::InOwnResolve()) {
+					ScopeRender::RunPendingDecalStage();
+				}
 				func(a_rtm, a_slot, a_rt, ScopeRender::InOwnResolve() ? 3 : a_mode);
 				// v0.2.78: this is the moment the resolve binds the light-accumulation
 				// buffer -- AFTER the G-buffer geometry is drawn and BEFORE the light

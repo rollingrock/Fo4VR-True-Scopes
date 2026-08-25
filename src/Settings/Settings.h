@@ -359,6 +359,10 @@ namespace Settings
 	// in our resolve (the engine's own order paints walls over placed decals in
 	// a resolve-only render). Off = vanilla resolve order.
 	MAKE_SETTING(bSetting, "TrueScopesVR", decalGroup5Reorder, true);
+	// v0.2.133 - run the engine's deferred-decal stage (bullet holes, screen-
+	// space impacts) inside our render, against our scope camera. Twice-
+	// adversarially-verified; off = pre-.133 (no shot impacts in the lens).
+	MAKE_SETTING(bSetting, "TrueScopesVR", decalStageEnabled, true);
 	// v0.2.132 - also drop accumulator group 0x17 (sun glare) from our render:
 	// same stale-pass exposure as the v0.2.11 fault class, drawn by the resolve
 	// tail. Hardening; off restores pre-.132 behavior.
@@ -836,6 +840,7 @@ namespace Settings
 		LOAD(eyeBoxResidual);
 		LOAD(eyeBoxResidualAdapt);
 		LOAD(decalGroup5Reorder);
+		LOAD(decalStageEnabled);
 		LOAD(dropSunGlareGroup);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
