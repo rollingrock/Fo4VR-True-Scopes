@@ -338,9 +338,14 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", sheenFresnel, 0.04);
 	MAKE_SETTING(fSetting, "TrueScopesVR", sheenSmudge, 0.35);
 	MAKE_SETTING(fSetting, "TrueScopesVR", sheenSmudgeScale, 9.0);
+	// v0.2.126 — dark-adaptive glass: multiply the sheen term by up to (1+this)
+	// as the composed picture darkens. 0 = off. The field verdict behind it:
+	// a black lens reads as a dead screen; real glass keeps surface life.
+	MAKE_SETTING(fSetting, "TrueScopesVR", sheenDarkBoost, 3.0);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
-	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 3.0);
+	// Field-judged 2026-08-25: 6 "honestly looked right" (was 3).
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 6.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.08);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxSmoothing, 0.3);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMinEyeRelief, 4.0);
@@ -799,6 +804,7 @@ namespace Settings
 		LOAD(sheenFresnel);
 		LOAD(sheenSmudge);
 		LOAD(sheenSmudgeScale);
+		LOAD(sheenDarkBoost);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
 		LOAD(parallaxSmoothing);

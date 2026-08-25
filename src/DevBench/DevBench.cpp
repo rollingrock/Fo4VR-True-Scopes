@@ -320,6 +320,7 @@ namespace DevBench
 				{ "sheenFresnel", Kind::Float, &sheenFresnel },
 				{ "sheenSmudge", Kind::Float, &sheenSmudge },
 				{ "sheenSmudgeScale", Kind::Float, &sheenSmudgeScale },
+				{ "sheenDarkBoost", Kind::Float, &sheenDarkBoost },
 				{ "parallaxDepthUnits", Kind::Float, &parallaxDepthUnits },
 				{ "parallaxMaxShift", Kind::Float, &parallaxMaxShift },
 				{ "parallaxSmoothing", Kind::Float, &parallaxSmoothing },

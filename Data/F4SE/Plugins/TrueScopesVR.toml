@@ -144,14 +144,21 @@ sheenTravel = 0.9
 sheenFresnel = 0.04
 sheenSmudge = 0.35
 sheenSmudgeScale = 9.0
+# Dark-adaptive glass (v0.2.126): sheen term multiplied by up to (1+this) as
+# the picture darkens - a black (eye-box-clipped / frozen) lens keeps glass
+# surface life instead of reading as a dead screen. 0 = off. Tune 0-6.
+sheenDarkBoost = 3.0
 
 # PARALLAX DEPTH - the picture shifts against the eye so the image plane
 # reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the
 # classic looking-through-a-tube depth cue). Uses live eye relief, so a
 # pistol at arm's length naturally shows less than a shouldered rifle.
 # Sweep 0/3/6/10 live to taste; 0 = off. reticleParallaxFraction 0 keeps the
-# reticle rim-anchored (a second-focal-plane cue); 1 moves it with the image.
-parallaxDepthUnits = 3.0
+# reticle rim-anchored; 1 moves it WITH the image - which is what a real scope
+# parallax-adjusted at distance does (image and reticle planes coincide).
+# REAL-SCOPE COMPARISON PENDING (2026-08-25): A/B this with /config/set.
+# Field-judged 2026-08-25: 6 looked right (3 too subtle).
+parallaxDepthUnits = 6.0
 parallaxMaxShift = 0.08
 parallaxSmoothing = 0.3
 parallaxMinEyeRelief = 4.0

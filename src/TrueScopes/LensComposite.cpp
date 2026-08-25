@@ -54,7 +54,7 @@ cbuffer Params : register(b0)
     float4 flags;     // x reticle alpha (0 = off), y screen mode (1 = electro-optical), z nv strength, w recon strength
     float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w unused
     float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w unused
-    float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w unused
+    float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w sheen dark boost
     // v0.2.123 glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
     float4 pose;      // xy RAW eye lateral offset (disc units, UN-gained); zw smoothed parallax UV shift
     float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
@@ -223,7 +223,15 @@ float4 PSMain(VSOut i) : SV_Target
             smu = max(0.0, 1.0 - sheen.w * (0.5 - 0.33 * n));
         }
         float fr = sheen.z * pow(saturate(r), 3.0) * (0.35 + 0.65 * saturate(length(eo)));
-        c += float3(0.92, 1.0, 0.97) * (sheen.x * gl * smu + fr);
+        // v0.2.126 DARK-ADAPTIVE (field 2026-08-25: "the overall screen when
+        // showing black just looks like a screen and not glass"): real glass
+        // shows its surface reflections against a DARK scene and loses them
+        // against a bright one. Boost the whole glass term as the composed
+        // picture darkens - the eye-box clip and frozen dim stop reading as a
+        // dead LCD. fx.w = 0 keeps this off (Dim constraint).
+        float lum = dot(c, float3(0.299, 0.587, 0.114));
+        float dk  = 1.0 + fx.w * saturate(1.0 - lum * 2.0);
+        c += float3(0.92, 1.0, 0.97) * (sheen.x * gl * smu + fr) * dk;
     }
     return float4(c, 1.0);
 }
@@ -947,6 +955,7 @@ float4 PSMain(VSOut i) : SV_Target
 			p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
 			p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);
 			p.fx[2] = static_cast<float>(*Settings::caStrength) * 0.02f;
+			p.fx[3] = (std::max)(0.0f, static_cast<float>(*Settings::sheenDarkBoost));
 		}
 
 		Execute(d3d, lens, reticleSRV, p, a_in);
