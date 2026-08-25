@@ -344,9 +344,13 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", sheenDarkBoost, 3.0);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
-	// Field-judged 2026-08-25: 6 "honestly looked right" (was 3).
-	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 6.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.08);
+	// Field-judged 2026-08-25 against a REAL scope: "way more parallax than we
+	// got" - physically right, the image through a distance-focused scope sits
+	// near optical INFINITY (D/(L+D) -> 1). 20 gives ~0.83 at rifle relief.
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 20.0);
+	// Raised 0.08 -> 0.15 with the depth bump (2026-08-25); watch the shifted
+	// edge for a dark smear band - if seen, this cap is the first knob down.
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.15);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxSmoothing, 0.3);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMinEyeRelief, 4.0);
 	// Field-judged against a REAL scope 2026-08-25: the reticle moves 1:1 WITH

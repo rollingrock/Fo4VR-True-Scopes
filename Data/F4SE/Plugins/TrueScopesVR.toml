@@ -157,9 +157,12 @@ sheenDarkBoost = 3.0
 # reticle rim-anchored; 1 moves it WITH the image - which is what a real scope
 # parallax-adjusted at distance does (image and reticle planes coincide).
 # REAL-SCOPE COMPARISON PENDING (2026-08-25): A/B this with /config/set.
-# Field-judged 2026-08-25: 6 looked right (3 too subtle).
-parallaxDepthUnits = 6.0
-parallaxMaxShift = 0.08
+# Real-scope verdict 2026-08-25: "way more" - the image through a scope sits
+# near optical infinity, so the factor should approach 1. Sweep 10/20/40.
+parallaxDepthUnits = 20.0
+# Raised with the depth bump; if a dark smear band appears at the shifted
+# edge while swaying hard, lower this first.
+parallaxMaxShift = 0.15
 parallaxSmoothing = 0.3
 parallaxMinEyeRelief = 4.0
 # Real-scope verdict 2026-08-25: reticle moves 1:1 with the image.

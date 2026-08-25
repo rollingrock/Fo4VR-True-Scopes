@@ -3710,6 +3710,7 @@ namespace TrueScopes::ScopeRender
 		constexpr std::uint32_t kRetryFrames = 30;  // ~1/3 s at 90 fps
 		constexpr std::uint32_t kMaxTries = 8;      // ~2.7 s worst case, then latch
 		static bool          s_done = false;
+		static bool          s_track = false;  // v0.2.128: census landed -> track per frame
 		static std::uint32_t s_tries = 0;
 		static std::uint32_t s_cooldown = 0;
 		bool                 warnExhausted = false;
@@ -3731,6 +3732,7 @@ namespace TrueScopes::ScopeRender
 			if (!stillOurs) {
 				// the engine rewrote ScopeParent = an equip happened
 				s_done = false;
+				s_track = false;
 				s_tries = 0;
 				s_cooldown = 0;
 				g_lensPrimeNeeded.store(true, std::memory_order_relaxed);
@@ -3738,6 +3740,18 @@ namespace TrueScopes::ScopeRender
 			}
 			ScopeIdent::RunIfRequested(player);
 			if (s_done || ScopeIdent::ProbePending()) {
+				// v0.2.128 - THE HIP-LAG FIX (field screenshot 2026-08-25): the
+				// disc hangs off PrimaryUIAttachNode, NOT the weapon, so its
+				// correct local offset changes every frame the gun moves. The
+				// live path recomputes census placement per frame; presence
+				// applied ONCE and went quiet, so at hip the frozen disc
+				// trailed the moving gun. Once a census placement has landed,
+				// keep tracking it per frame - the census target is pure weapon
+				// geometry (eye-independent), so it is hip-safe by construction,
+				// and the write early-out keeps unchanged frames free.
+				if (s_done && s_track) {
+					ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
+				}
 				return;
 			}
 			if (s_cooldown > 0) {
@@ -3754,12 +3768,14 @@ namespace TrueScopes::ScopeRender
 			                        *Settings::widgetAutoPlace;
 			if (outcome == FitOutcome::kPlacedCensus || !wantCensus) {
 				s_done = true;
+				s_track = (outcome == FitOutcome::kPlacedCensus);
 				s_tries = 0;
 				return;
 			}
 			if (++s_tries >= kMaxTries) {
 				warnExhausted = true;
 				s_done = true;
+				s_track = false;
 				s_tries = 0;
 				return;
 			}
