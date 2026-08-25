@@ -359,10 +359,12 @@ namespace Settings
 	// in our resolve (the engine's own order paints walls over placed decals in
 	// a resolve-only render). Off = vanilla resolve order.
 	MAKE_SETTING(bSetting, "TrueScopesVR", decalGroup5Reorder, true);
-	// v0.2.133 - run the engine's deferred-decal stage (bullet holes, screen-
-	// space impacts) inside our render, against our scope camera. Twice-
-	// adversarially-verified; off = pre-.133 (no shot impacts in the lens).
-	MAKE_SETTING(bSetting, "TrueScopesVR", decalStageEnabled, true);
+	// v0.2.133 - run the engine's deferred-decal stage (bullet holes) inside
+	// our render. v0.2.134: DEFAULT OFF - the first field run FAULTED mid-stage
+	// (step attribution now logged) and v0.2.133's fault path orphaned the SSN
+	// decal spin lock, freezing the game on the next shot (fixed: __finally).
+	// Do not enable until the underlying fault is root-caused.
+	MAKE_SETTING(bSetting, "TrueScopesVR", decalStageEnabled, false);
 	// v0.2.132 - also drop accumulator group 0x17 (sun glare) from our render:
 	// same stale-pass exposure as the v0.2.11 fault class, drawn by the resolve
 	// tail. Hardening; off restores pre-.132 behavior.

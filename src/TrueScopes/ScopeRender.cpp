@@ -152,6 +152,10 @@ namespace TrueScopes::ScopeRender
 		std::uintptr_t   g_decalStageCam = 0;
 		std::uint32_t    g_diagDecalN = 0;
 		std::uint32_t    g_diagDecalBatches = 0;
+		// v0.2.134: fault attribution - advanced through DecalStageImpl so the
+		// warn names the dying step. 0=entry 1=plane 2=locked 3=visited
+		// 4=refs-held 5=render-call 6=rendered 7=refs-released.
+		std::atomic<std::uint32_t> g_decalStep{ 0 };
 
 		// Fault forensics: which step the render was in when the SEH guard fired.
 		volatile long g_lastStep = 0;
@@ -3975,31 +3979,6 @@ namespace TrueScopes::ScopeRender
 		alignas(16) float plane[8] = {};
 		Fn<void (*)(float*, const float*, const float*)>(Addr::kNiPlaneCtor)(plane, nrm, pt);
 
-		auto* lock = reinterpret_cast<volatile long*>(ssn + 0x230);
-		int   spins = 0;
-		while (_InterlockedExchange(lock, 1) != 0) {
-			if (++spins > 10000) {
-				::Sleep(1);
-			} else {
-				::Sleep(0);
-			}
-		}
-		const auto arrData = *reinterpret_cast<std::uintptr_t*>(ssn + 0x218);
-		const auto arrCnt = *reinterpret_cast<std::uint32_t*>(ssn + 0x228);
-		if (!arrData || !arrCnt) {
-			_InterlockedExchange(lock, 0);
-			return;
-		}
-		if (arrCnt > s_cap) {
-			std::free(s_buf);
-			s_cap = arrCnt + 32;
-			s_buf = static_cast<std::uintptr_t*>(std::malloc(sizeof(std::uintptr_t) * s_cap));
-			if (!s_buf) {
-				s_cap = 0;
-				_InterlockedExchange(lock, 0);
-				return;
-			}
-		}
 		struct ScrapArray
 		{
 			void*           heap;
@@ -4016,16 +3995,56 @@ namespace TrueScopes::ScopeRender
 		ScrapArray list{ nullptr, s_buf, s_cap, 0 };
 		int        batches = 0;
 		VisitCtx   vc{ plane, &list, &batches };
-		for (std::uint32_t i = 0; i < arrCnt; ++i) {
-			if (const auto d = *reinterpret_cast<std::uintptr_t*>(arrData + 8ull * i)) {
-				Fn<int (*)(void*, std::uintptr_t)>(Addr::kDecalCullVisitor)(&vc, d);
+		g_decalStep.store(1);  // plane built
+
+		// v0.2.134 - THE LOCK CAN NEVER BE ORPHANED AGAIN. The v0.2.133 field
+		// freeze: the stage faulted while holding this lock, the SEH latch in
+		// the wrapper swallowed the exception, the lock stayed set, and the
+		// next shot's AddDecal spun forever on the game thread (freeze with no
+		// Buffout dump - the tell). __finally releases on EVERY exit path,
+		// fault included; the wrapper's __except still latches the stage off.
+		auto* lock = reinterpret_cast<volatile long*>(ssn + 0x230);
+		int   spins = 0;
+		while (_InterlockedExchange(lock, 1) != 0) {
+			if (++spins > 10000) {
+				::Sleep(1);
+			} else {
+				::Sleep(0);
 			}
 		}
-		for (std::uint32_t i = 0; i < list.size; ++i) {
-			_InterlockedIncrement(reinterpret_cast<volatile long*>(list.data[i] + 8));
+		int batchCount = 0;
+		__try {
+			g_decalStep.store(2);  // locked
+			const auto arrData = *reinterpret_cast<std::uintptr_t*>(ssn + 0x218);
+			const auto arrCnt = *reinterpret_cast<std::uint32_t*>(ssn + 0x228);
+			if (arrData && arrCnt) {
+				if (arrCnt > s_cap) {
+					std::free(s_buf);
+					s_cap = arrCnt + 32;
+					s_buf = static_cast<std::uintptr_t*>(std::malloc(sizeof(std::uintptr_t) * s_cap));
+					if (!s_buf) {
+						s_cap = 0;
+					}
+					list.data = s_buf;
+					list.cap = s_cap;
+				}
+				if (list.data) {
+					for (std::uint32_t i = 0; i < arrCnt; ++i) {
+						if (const auto d = *reinterpret_cast<std::uintptr_t*>(arrData + 8ull * i)) {
+							Fn<int (*)(void*, std::uintptr_t)>(Addr::kDecalCullVisitor)(&vc, d);
+						}
+					}
+					g_decalStep.store(3);  // visited
+					for (std::uint32_t i = 0; i < list.size; ++i) {
+						_InterlockedIncrement(reinterpret_cast<volatile long*>(list.data[i] + 8));
+					}
+					g_decalStep.store(4);  // refs held
+					batchCount = batches;
+				}
+			}
+		} __finally {
+			_InterlockedExchange(lock, 0);
 		}
-		const int batchCount = batches;
-		_InterlockedExchange(lock, 0);
 
 		a_n = list.size;
 		a_batches = batchCount > 0 ? static_cast<std::uint32_t>(batchCount) : 0u;
@@ -4045,8 +4064,10 @@ namespace TrueScopes::ScopeRender
 			auto*      camGlobal = reinterpret_cast<std::uintptr_t*>(base + Addr::kDrawWorldCameraPtr);
 			const auto savedCam = *camGlobal;
 			*camGlobal = cam;
+			g_decalStep.store(5);  // render call
 			Fn<void (*)(void*, std::uint32_t, std::uint32_t)>(Addr::kDeferredDecalRender)(
 				&list, static_cast<std::uint32_t>(batchCount), 0);
+			g_decalStep.store(6);  // rendered
 			*camGlobal = savedCam;
 			if (haveSctx) {
 				auto* dirty = reinterpret_cast<std::uint32_t*>(sctx);
@@ -4067,6 +4088,7 @@ namespace TrueScopes::ScopeRender
 					*reinterpret_cast<std::uintptr_t*>(vt + 8))(d);
 			}
 		}
+		g_decalStep.store(7);  // refs released
 	}
 
 	void RunPendingDecalStage() noexcept
@@ -4080,6 +4102,7 @@ namespace TrueScopes::ScopeRender
 		}
 		std::uint32_t n = 0, b = 0;
 		bool          faulted = false;
+		g_decalStep.store(0);
 		__try {
 			DecalStageImpl(n, b);
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -4089,7 +4112,10 @@ namespace TrueScopes::ScopeRender
 		g_diagDecalBatches = b;
 		if (faulted) {
 			s_dead = true;
-			logger::warn("DECAL STAGE faulted - disabled for this session"sv);
+			logger::warn(FMT_STRING("DECAL STAGE faulted at step {} (0=entry 1=plane 2=locked "
+			                        "3=visited 4=refs 5=render 6=rendered 7=released) - "
+			                        "disabled for this session"),
+				g_decalStep.load());
 			return;
 		}
 		static bool s_first = true;

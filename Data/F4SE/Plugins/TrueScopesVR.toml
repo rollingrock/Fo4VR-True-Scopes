@@ -166,10 +166,12 @@ eyeBoxResidualAdapt = 4.0
 # accumulator group 5) AFTER the opaque walls in our resolve, instead of the
 # engine's order which paints walls over them in a resolve-only render.
 decalGroup5Reorder = true
-# Bullet holes / shot impacts in the lens (v0.2.133): runs the engine's own
-# deferred-decal stage inside our render with the scope camera. Log marker on
-# first draw: "DECAL STAGE: first run drew N decal(s)".
-decalStageEnabled = true
+# Bullet holes in the lens (v0.2.133) - KNOWN-FAULTING, leave OFF. The first
+# field run faulted mid-stage and (pre-.134) orphaned the engine's decal lock,
+# freezing the game on the next shot. v0.2.134 makes a fault harmless (the
+# lock always releases; the stage self-disables with a step-numbered warn) but
+# the root cause is not yet fixed. Enable only for a controlled diagnosis run.
+decalStageEnabled = false
 # Hardening: drop group 0x17 (sun glare) from our render - same stale-pass
 # class as the v0.2.11 fault.
 dropSunGlareGroup = true
