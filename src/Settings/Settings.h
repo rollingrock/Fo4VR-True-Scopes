@@ -355,6 +355,14 @@ namespace Settings
 	// at night so the eye-box never reads as a lit screen in the dark. 0 =
 	// constant residual (v0.2.130 behavior).
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidualAdapt, 4.0);
+	// v0.2.132 - draw deferred-decal group 5 AFTER the opaque G-buffer groups
+	// in our resolve (the engine's own order paints walls over placed decals in
+	// a resolve-only render). Off = vanilla resolve order.
+	MAKE_SETTING(bSetting, "TrueScopesVR", decalGroup5Reorder, true);
+	// v0.2.132 - also drop accumulator group 0x17 (sun glare) from our render:
+	// same stale-pass exposure as the v0.2.11 fault class, drawn by the resolve
+	// tail. Hardening; off restores pre-.132 behavior.
+	MAKE_SETTING(bSetting, "TrueScopesVR", dropSunGlareGroup, true);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
 	// Field-judged 2026-08-25 against a REAL scope: "way more parallax than we
@@ -827,6 +835,8 @@ namespace Settings
 		LOAD(reticleEyeBoxFollow);
 		LOAD(eyeBoxResidual);
 		LOAD(eyeBoxResidualAdapt);
+		LOAD(decalGroup5Reorder);
+		LOAD(dropSunGlareGroup);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
 		LOAD(parallaxSmoothing);

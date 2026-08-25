@@ -139,6 +139,28 @@ namespace TrueScopes::Addr
 	// [GHIDRA] original bytes: E8 49 38 D9 FF (verified 2026-08-24)
 	inline constexpr std::uintptr_t kHousingShowCallSite = 0xefaaf2;
 
+	// --- deferred-decal ground truth (Ghidra deep-dive 2026-08-25) ---
+	// LORE CORRECTION: v0.2.11's "decal group" label was WRONG - group 0x11 is
+	// SKY (BSSkyShaderProperty files 0x11 dome/sun/moons, 0x12 clouds, 0x17 sun
+	// glare). The real deferred-decal accumulator groups are 5 (non-skinned:
+	// placed grime/posters and geometry decals on statics) and 6 (skinned:
+	// blood on actors). The resolve draws group 5 at +0x27ff9b4 BEFORE the
+	// opaque G-buffer groups 2/1/3/4 and group 6 at +0x27ffa27 AFTER them - in
+	// a resolve-only render (ours) that order paints wall decals first and the
+	// walls over them. v0.2.132 call-site hooks both sites and, while
+	// g_inOwnResolve, defers group 5 until the group-6 site. Both helpers take
+	// (accum, ctx) verbatim.
+	// [GHIDRA] G5 site bytes: E8 67 D8 01 00; G6 site bytes: E8 54 D9 01 00
+	// (both byte-verified 2026-08-25).
+	inline constexpr std::uintptr_t kResolveDecalG5CallSite = 0x27ff9b4;
+	inline constexpr std::uintptr_t kResolveDecalG6CallSite = 0x27ffa27;
+	inline constexpr std::uintptr_t kAccumDrawDecalGroup5 = 0x281d220;
+	inline constexpr std::uintptr_t kAccumDrawDecalGroup6 = 0x281d380;
+	// NOTE: bullet holes are NOT passes at all - BSDFDecal objects (SSN+0x218)
+	// drawn by the dedicated DrawWorld stage FUN_142845cc0 our render never
+	// runs. That stage's plugin invocation is designed and under adversarial
+	// re-verification; groups 5/6 above only cover geometry/placed decals.
+
 	// --- render target indices (logical, via RenderTargetManager remap table) ---
 
 	// Double-wide stereo frame color target (what gets submitted to OpenVR).

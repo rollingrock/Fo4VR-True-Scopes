@@ -376,6 +376,45 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
 
+		// v0.2.132 - DECAL GROUP ORDER FIX (Ghidra 2026-08-25; see Addresses.h).
+		// The resolve draws deferred-decal group 5 (non-skinned: grime, posters,
+		// geometry decals) BEFORE the opaque G-buffer groups, so in our
+		// resolve-only render the opaque walls paint straight over them. While
+		// g_inOwnResolve (and the reorder setting is on) the G5 site defers and
+		// the G6 site replays group 5 first - decals land ON the walls, exactly
+		// where vanilla's frame ordering effectively puts them. Engine frames
+		// pass through untouched. The deferred flag is ASSIGNED (not
+		// accumulated) at the G5 site each entry, so a live toggle or an
+		// aborted resolve can never leak a stale replay into a later frame.
+		std::atomic_bool g_decalG5Deferred{ false };
+
+		struct DecalG5SiteHook
+		{
+			static void thunk(std::uintptr_t a_accum, std::uintptr_t a_ctx)
+			{
+				const bool defer = ScopeRender::InOwnResolve() && *Settings::decalGroup5Reorder;
+				g_decalG5Deferred.store(defer, std::memory_order_relaxed);
+				if (!defer) {
+					func(a_accum, a_ctx);
+				}
+			}
+			static inline REL::Relocation<void (*)(std::uintptr_t, std::uintptr_t)> func;
+		};
+		struct DecalG6SiteHook
+		{
+			static void thunk(std::uintptr_t a_accum, std::uintptr_t a_ctx)
+			{
+				if (g_decalG5Deferred.exchange(false, std::memory_order_relaxed)) {
+					static REL::Relocation<void (*)(std::uintptr_t, std::uintptr_t)> g5{
+						REL::Offset(Addr::kAccumDrawDecalGroup5)
+					};
+					g5(a_accum, a_ctx);
+				}
+				func(a_accum, a_ctx);
+			}
+			static inline REL::Relocation<void (*)(std::uintptr_t, std::uintptr_t)> func;
+		};
+
 		// Replaces the WHOLE renderer+4 reader FUN_141d947d0 (5 bytes, movzx+ret):
 		// scoped mode is answered only to our render thread while our bracket is
 		// live. Every other thread — including engine jobs racing our mid-frame
@@ -721,6 +760,23 @@ namespace TrueScopes::Hooks
 				logger::info("housing-show filter installed"sv);
 			} else {
 				logger::warn("housing-show filter NOT installed (byte mismatch) — arm edges may re-show housing flags (zero-scale still holds)"sv);
+			}
+		}
+
+		// v0.2.132: decal group-order hooks (see the structs). Non-fatal: without
+		// them placed decals stay overwritten in the lens, nothing else changes.
+		{
+			REL::Relocation<std::uintptr_t> g5site{ REL::Offset(Addr::kResolveDecalG5CallSite) };
+			REL::Relocation<std::uintptr_t> g6site{ REL::Offset(Addr::kResolveDecalG6CallSite) };
+			static constexpr std::uint8_t   kG5Orig[] = { 0xE8, 0x67, 0xD8, 0x01, 0x00 };
+			static constexpr std::uint8_t   kG6Orig[] = { 0xE8, 0x54, 0xD9, 0x01, 0x00 };
+			if (VerifyBytes(g5site, { kG5Orig, 5 }, "resolve decal G5 site"sv) &&
+				VerifyBytes(g6site, { kG6Orig, 5 }, "resolve decal G6 site"sv)) {
+				pstl::write_thunk_call<DecalG5SiteHook>(g5site.address());
+				pstl::write_thunk_call<DecalG6SiteHook>(g6site.address());
+				logger::info("decal group-order hooks installed (G5 deferred past opaque in own resolve)"sv);
+			} else {
+				logger::warn("decal group-order hooks NOT installed (byte mismatch)"sv);
 			}
 		}
 

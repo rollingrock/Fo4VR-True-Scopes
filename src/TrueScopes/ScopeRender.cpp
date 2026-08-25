@@ -2347,15 +2347,22 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
 
-			// Drop the deferred-decal groups from our accumulator. The main view drew
-			// and released this frame's decal passes already; re-accumulating the same
-			// geometry hands back dangling pass objects (v0.2.11 forensics: garbage
-			// vtable call in FUN_14281e500(accum, 0x11, 9, ...) — the decal group draw
-			// at resolve+0x17b6). FUN_14281ecb0 is the engine's own per-group clear.
+			// Drop stale pass-list groups from our accumulator: their passes can be
+			// freed back to the pool by their owning property's ClearRenderPasses at
+			// any time (the v0.2.11 dangling-pass fault; mechanism finally decoded
+			// 2026-08-25 - see the decal deep-dive). LORE CORRECTION (2026-08-25):
+			// group 0x11 is SKY, not decals (v0.2.11's label was wrong); the real
+			// decal groups are 5/6, which the resolve draws itself (order fixed by
+			// the v0.2.132 call-site hooks). 0x17 = sun glare, drawn by the resolve
+			// tail with the same stale-pass exposure - added to the drop list as
+			// hardening (gated: dropSunGlareGroup).
 			RENDER_STEP(10);
 			using ClearGroup_t = void (*)(std::uintptr_t);
 			for (const std::uint32_t g : { 9u, 0x11u, 0x12u, 0x13u }) {
 				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678);
+			}
+			if (*Settings::dropSunGlareGroup) {
+				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + 0x17u * 0x678);
 			}
 
 			// Sun diagnostics: shadowed light 0 (accessor FUN_1427ec150) — the resolve

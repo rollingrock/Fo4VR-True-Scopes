@@ -324,6 +324,8 @@ namespace DevBench
 				{ "reticleEyeBoxFollow", Kind::Float, &reticleEyeBoxFollow },
 				{ "eyeBoxResidual", Kind::Float, &eyeBoxResidual },
 				{ "eyeBoxResidualAdapt", Kind::Float, &eyeBoxResidualAdapt },
+				{ "decalGroup5Reorder", Kind::Bool, &decalGroup5Reorder },
+				{ "dropSunGlareGroup", Kind::Bool, &dropSunGlareGroup },
 				{ "parallaxDepthUnits", Kind::Float, &parallaxDepthUnits },
 				{ "parallaxMaxShift", Kind::Float, &parallaxMaxShift },
 				{ "parallaxSmoothing", Kind::Float, &parallaxSmoothing },

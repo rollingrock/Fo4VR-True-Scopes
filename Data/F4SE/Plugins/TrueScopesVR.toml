@@ -162,6 +162,14 @@ eyeBoxResidual = 0.07
 # NIGHT TEST PENDING.
 eyeBoxResidualAdapt = 4.0
 
+# Scene parity (v0.2.132): draw placed/geometry decals (grime, posters -
+# accumulator group 5) AFTER the opaque walls in our resolve, instead of the
+# engine's order which paints walls over them in a resolve-only render.
+decalGroup5Reorder = true
+# Hardening: drop group 0x17 (sun glare) from our render - same stale-pass
+# class as the v0.2.11 fault.
+dropSunGlareGroup = true
+
 # PARALLAX DEPTH - the picture shifts against the eye so the image plane
 # reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the
 # classic looking-through-a-tube depth cue). Uses live eye relief, so a
