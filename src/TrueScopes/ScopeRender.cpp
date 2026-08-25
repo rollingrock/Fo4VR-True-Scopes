@@ -3650,6 +3650,25 @@ namespace TrueScopes::ScopeRender
 		g_camSmoothResetReq.store(true);
 	}
 
+	// v0.2.125 — LENS PRIMING. The 21:07 field run proved the placement chain
+	// converges 314 ms after load with no aim — but the lens PICTURE only
+	// exists after the first pose-gate activation (LensComposite init stamped
+	// 33 s after load, at the first scope-in), so the correctly-placed disc
+	// sat black the whole time ("didn't see the lens start"). This flag asks
+	// the fill hook for one presence-time fill; set on every equip rebaseline
+	// so a weapon swap re-primes with the new scope's view.
+	std::atomic_bool g_lensPrimeNeeded{ true };
+
+	bool LensPrimeNeeded() noexcept
+	{
+		return g_lensPrimeNeeded.load(std::memory_order_relaxed);
+	}
+
+	void LensPrimeDone() noexcept
+	{
+		g_lensPrimeNeeded.store(false, std::memory_order_relaxed);
+	}
+
 	bool WidgetPresentable()
 	{
 		// v0.2.119: may plugin-owned presence show the widget? True once the fit
@@ -3714,6 +3733,7 @@ namespace TrueScopes::ScopeRender
 				s_done = false;
 				s_tries = 0;
 				s_cooldown = 0;
+				g_lensPrimeNeeded.store(true, std::memory_order_relaxed);
 				ScopeIdent::Request();
 			}
 			ScopeIdent::RunIfRequested(player);

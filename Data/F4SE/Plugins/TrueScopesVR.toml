@@ -179,6 +179,15 @@ camSmoothResetMs = 250
 camSmoothSnapDegrees = 30.0
 camSmoothMaxLagDegrees = 2.0
 
+# LENS PRIMING (v0.2.125): fill the lens once when the widget comes up (per
+# equip), so the disc never sits black before the first aim. The primed
+# picture is dimmed like a frozen one and shows no reticle (the reticle
+# arrives with the sighted state - correct). poseIdleRefreshSeconds > 0
+# re-fills the frozen lens every N seconds (one frame hitch per refresh;
+# try 2.0 in the A/B session if the frozen picture reads too stale).
+lensPrimeOnPresence = true
+poseIdleRefreshSeconds = 0.0
+
 # --- Pose-based activation (v0.2.116) ----------------------------------------
 # Replace the vanilla eye-proximity gate's verdict with the plugin's own pose
 # test. Vanilla activates only inside 38 units (~54 cm) of the eye, so a pistol

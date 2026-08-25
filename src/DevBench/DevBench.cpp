@@ -332,6 +332,8 @@ namespace DevBench
 				{ "camSmoothDCutoffHz", Kind::Float, &camSmoothDCutoffHz },
 				{ "camSmoothSnapDegrees", Kind::Float, &camSmoothSnapDegrees },
 				{ "camSmoothMaxLagDegrees", Kind::Float, &camSmoothMaxLagDegrees },
+				{ "lensPrimeOnPresence", Kind::Bool, &lensPrimeOnPresence },
+				{ "poseIdleRefreshSeconds", Kind::Float, &poseIdleRefreshSeconds },
 				{ "poseGateEnabled", Kind::Bool, &poseGateEnabled },
 				{ "poseMaxDistance", Kind::Float, &poseMaxDistance },
 				{ "poseExitDistance", Kind::Float, &poseExitDistance },

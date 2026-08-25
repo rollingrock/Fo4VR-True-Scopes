@@ -514,6 +514,8 @@ namespace TrueScopes::Hooks
 					// black (post-composite path), RED = eye-gate paused the fill,
 					// BLACK = some third party cleared the lens RT.
 					static std::uint32_t sinceFill = 1000;
+					// v0.2.125: last time anything filled the lens (live or prime).
+					static std::uint64_t s_lastLensFillTick = 0;
 					// v0.2.116 — POSE FREEZE. While the widget is up but the pose
 					// says the eye is not at the tube, the lens FREEZES: no fill,
 					// RT 0x62 persists, so the last live picture stays. A one-shot
@@ -541,6 +543,9 @@ namespace TrueScopes::Hooks
 							if (!rendered && *Settings::lensMode != 0) {
 								ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
 							}
+							// v0.2.125: a live fill supersedes any pending prime.
+							ScopeRender::LensPrimeDone();
+							s_lastLensFillTick = ::GetTickCount64();
 						} else if (*Settings::diagPauseTint && sinceFill < 300) {
 							++sinceFill;
 							// Cadence-skipped frame -> GREEN lens.
@@ -550,6 +555,43 @@ namespace TrueScopes::Hooks
 					           (g_presenceShown.load(std::memory_order_relaxed) && *Settings::poseWidgetAlways)) {
 						// widget up (armed, or presence-kept after the pose
 						// off-edge dropped the arm — v0.2.118) -> frozen
+						//
+						// v0.2.125 — LENS PRIMING + IDLE REFRESH. Field 21:07: the
+						// placement chain converged 314 ms after load, but nothing
+						// ever fills RT 0x62 until the first pose activation, so
+						// the disc sat BLACK for 33 s ("didn't see the lens
+						// start"). Prime = one fill when presence is up and the
+						// lens has no live picture (per equip baseline), then dim
+						// to the frozen look so it reads as a frozen picture, not
+						// a live one. Idle refresh (default off) re-fills the
+						// frozen lens every N seconds — costs one render-length
+						// frame hitch per refresh, so it is an opt-in A/B knob.
+						// Render() is scope-state independent (verified: no
+						// g_scopeActive reads in ScopeRender.cpp); SiteStale keeps
+						// this out of menus/holster beyond the ~1 s grace.
+						if (!g_scopeActive.load() && *Settings::lensMode >= 2 &&
+							!PoseGate::SiteStale(90) && ScopeRender::WidgetPresentable() &&
+							ScopeRender::Available()) {
+							const bool primeWanted =
+								*Settings::lensPrimeOnPresence && ScopeRender::LensPrimeNeeded();
+							const auto  idleS = static_cast<float>(*Settings::poseIdleRefreshSeconds);
+							const bool idleWanted =
+								idleS > 0.05f &&
+								(::GetTickCount64() - s_lastLensFillTick) >
+									static_cast<std::uint64_t>(idleS * 1000.0f);
+							if ((primeWanted || idleWanted) && ScopeRender::Render()) {
+								ScopeRender::LensPrimeDone();
+								s_lastLensFillTick = ::GetTickCount64();
+								const auto dim = std::clamp(
+									static_cast<float>(*Settings::poseFrozenDim), 0.0f, 1.0f);
+								if (dim < 0.999f) {
+									ScopeRender::DimFrozenLens(dim);
+								}
+								if (primeWanted) {
+									logger::info("lens primed (presence fill before first aim)"sv);
+								}
+							}
+						}
 						if (s_dimPending) {
 							s_dimPending = false;
 							const auto dim = static_cast<float>(*Settings::poseFrozenDim);

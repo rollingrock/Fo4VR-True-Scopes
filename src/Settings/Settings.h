@@ -73,6 +73,14 @@ namespace Settings
 	MAKE_SETTING(iSetting, "TrueScopesVR", camSmoothResetMs, std::int64_t(250));
 	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothSnapDegrees, 30.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", camSmoothMaxLagDegrees, 2.0);
+	// v0.2.125 — fill the lens ONCE when the widget comes up (per equip), so the
+	// disc never sits black before the first aim (field 2026-08-24 21:07: the
+	// placement converged in 314 ms but the picture waited 33 s for a scope-in).
+	MAKE_SETTING(bSetting, "TrueScopesVR", lensPrimeOnPresence, true);
+	// Re-fill the FROZEN lens every N seconds while the widget is up (0 = off).
+	// Each refresh costs one render-length frame hitch — an A/B knob, not a
+	// shipping default.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseIdleRefreshSeconds, 0.0);
 	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
 	// WARNING (2026-08-08): currently CRASHES on scope-in (ScopeMenu/input-layer
 	// null-deref, crash-2026-08-08-17-07-51) — needs rework before use.
@@ -730,6 +738,8 @@ namespace Settings
 		LOAD(camSmoothResetMs);
 		LOAD(camSmoothSnapDegrees);
 		LOAD(camSmoothMaxLagDegrees);
+		LOAD(lensPrimeOnPresence);
+		LOAD(poseIdleRefreshSeconds);
 		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
