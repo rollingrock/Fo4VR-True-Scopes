@@ -323,6 +323,7 @@ namespace DevBench
 				{ "sheenDarkBoost", Kind::Float, &sheenDarkBoost },
 				{ "reticleEyeBoxFollow", Kind::Float, &reticleEyeBoxFollow },
 				{ "eyeBoxResidual", Kind::Float, &eyeBoxResidual },
+				{ "eyeBoxResidualAdapt", Kind::Float, &eyeBoxResidualAdapt },
 				{ "parallaxDepthUnits", Kind::Float, &parallaxDepthUnits },
 				{ "parallaxMaxShift", Kind::Float, &parallaxMaxShift },
 				{ "parallaxSmoothing", Kind::Float, &parallaxSmoothing },

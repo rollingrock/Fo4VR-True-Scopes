@@ -60,6 +60,7 @@ cbuffer Params : register(b0)
     float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
     float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
     float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
+    float4 glass2;    // x residual brightness-adapt scale, yzw reserved
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -179,11 +180,24 @@ float4 PSMain(VSOut i) : SV_Target
         ebMul = lerp(1.0, vis, saturate(eyebox.z));
     }
     // v0.2.130: the clip bottoms out at a faint FLAT scatter (eyebox.w), not
-    // pure black - scene-independent (a constant, never the world), which is
-    // what a dark reticle silhouettes against in a real tube. v0.2.129's
-    // follow knob was invisible in the field because black reticle lines over
-    // a 0.0 background are unconditionally black at every alpha.
-    c = c * ebMul + float3(0.92, 1.0, 0.97) * (eyebox.w * (1.0 - ebMul));
+    // pure black - what a dark reticle silhouettes against in a real tube.
+    // v0.2.131: the scatter ADAPTS to scene brightness (field concern: a
+    // constant glow at night reads as a screen again). Residual scatter IS
+    // scene light diffused in the tube, so scale it by the picture's average
+    // luminance - five FIXED taps, identical for every pixel, so no scene
+    // structure can leak into the glow; it only breathes with overall
+    // brightness. glass2.x = 0 restores the constant v0.2.130 behavior.
+    float resid = eyebox.w;
+    if (resid > 0.0 && glass2.x > 0.0 && ebMul < 0.999) {
+        float3 lw = float3(0.299, 0.587, 0.114);
+        float  al = (dot(picture.Sample(smp, float2(0.50, 0.50)).rgb, lw)
+                   + dot(picture.Sample(smp, float2(0.32, 0.32)).rgb, lw)
+                   + dot(picture.Sample(smp, float2(0.68, 0.32)).rgb, lw)
+                   + dot(picture.Sample(smp, float2(0.32, 0.68)).rgb, lw)
+                   + dot(picture.Sample(smp, float2(0.68, 0.68)).rgb, lw)) * 0.2;
+        resid *= saturate(al * glass2.x);
+    }
+    c = c * ebMul + float3(0.92, 1.0, 0.97) * (resid * (1.0 - ebMul));
 
     if (flags.x > 0.0) {
         float2 ruv = (i.uv + pose.zw * sheen2.z - 0.5) * reticle.xy + 0.5 + reticle.zw;
@@ -261,6 +275,7 @@ float4 PSMain(VSOut i) : SV_Target
 			float rim[4];
 			float sheen[4];
 			float sheen2[4];
+			float glass2[4];
 		};
 
 		// --- eye-box pose (v0.2.113) ------------------------------------------
@@ -904,6 +919,7 @@ float4 PSMain(VSOut i) : SV_Target
 				p.eyebox[1] = ey * gain;
 				p.eyebox[2] = strength;
 				p.eyebox[3] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidual));
+				p.glass2[0] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidualAdapt));
 			}
 			if (havePose) {
 				p.pose[0] = ex;

@@ -349,7 +349,12 @@ namespace Settings
 	// v0.2.130 — the eye-box clip bottoms out at this flat scatter level
 	// instead of pure black (scene-independent: a constant, never the world).
 	// This is what makes the dark reticle visible in the black at all.
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidual, 0.05);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidual, 0.07);
+	// v0.2.131 — the residual adapts to scene brightness (avg picture luminance
+	// x this scale, saturated): full glow in daylight, fading toward true black
+	// at night so the eye-box never reads as a lit screen in the dark. 0 =
+	// constant residual (v0.2.130 behavior).
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidualAdapt, 4.0);
 	// PARALLAX DEPTH — picture UV shifts against the eye so the image plane
 	// reads D game-units BEHIND the lens (1 unit ~ 1.43 cm). 0 = off.
 	// Field-judged 2026-08-25 against a REAL scope: "way more parallax than we
@@ -821,6 +826,7 @@ namespace Settings
 		LOAD(sheenDarkBoost);
 		LOAD(reticleEyeBoxFollow);
 		LOAD(eyeBoxResidual);
+		LOAD(eyeBoxResidualAdapt);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
 		LOAD(parallaxSmoothing);

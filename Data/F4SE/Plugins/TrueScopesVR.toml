@@ -154,8 +154,13 @@ sheenDarkBoost = 3.0
 reticleEyeBoxFollow = 0.35
 # The eye-box black bottoms out at this flat scatter level (0 = true black,
 # which makes the reticle invisible regardless of the follow knob - field
-# lesson 2026-08-25). Scene-independent; tune 0.03-0.10.
-eyeBoxResidual = 0.05
+# lesson 2026-08-25; "between 0.05 and 0.1" judged same day).
+eyeBoxResidual = 0.07
+# The scatter adapts to scene brightness (avg picture luminance x this,
+# saturated): full glow in daylight, fades toward black at night so the
+# eye-box never reads as a lit screen in the dark. 0 = constant glow.
+# NIGHT TEST PENDING.
+eyeBoxResidualAdapt = 4.0
 
 # PARALLAX DEPTH - the picture shifts against the eye so the image plane
 # reads parallaxDepthUnits game-units BEHIND the lens (1 unit ~ 1.43 cm; the
