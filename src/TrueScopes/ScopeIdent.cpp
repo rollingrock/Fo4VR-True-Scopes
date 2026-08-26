@@ -1,5 +1,7 @@
 #include "TrueScopes/ScopeIdent.h"
 
+#include "TrueScopes/Addresses.h"
+
 #include "Settings/Settings.h"
 
 namespace TrueScopes::ScopeIdent
@@ -1058,7 +1060,7 @@ namespace TrueScopes::ScopeIdent
 	{
 		AttachOutcome r{};
 		const auto base = REL::Module::get().base();
-		constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;            // g_player (live-verified)
+		constexpr std::uintptr_t kPlayerGlobal = Addr::kPlayerGlobal;  // hoisted v0.2.140
 		constexpr std::uintptr_t kModifyInventoryItemMod = 0x1488a00;  // GameScript::ModifyInventoryItemMod
 		constexpr std::uintptr_t kGetInventoryObjectCount = 0x3e3750;  // TESObjectREFR::GetInventoryObjectCount(ref, form)
 		using ModifyInvMod_t = bool (*)(void*, std::uint32_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, bool);
@@ -1208,6 +1210,35 @@ namespace TrueScopes::ScopeIdent
 		return (g_info.probed && g_info.fovMult > 0.0f) ? g_info.fovMult : 1.0f;
 	}
 
+	// v0.3 hardening (review finding): OcularFaceWorld's live node re-read runs
+	// per placement on the game thread, OUTSIDE the probe's SEH. A freed node can
+	// fault between the name re-check and the transform reads. POD frame only; a
+	// fault reads as "face unavailable" and the caller declines the placement.
+	static bool ReadFaceLive(std::uintptr_t a_node, const char* a_want,
+		float (&a_world)[3], float (&a_rot)[9], float& a_scale) noexcept
+	{
+		__try {
+			char live[kNameLen] = {};
+			if (!NodeName(a_node, live) || std::strcmp(live, a_want) != 0) {
+				return false;
+			}
+			const auto* w = reinterpret_cast<const float*>(a_node + kWorldTranslate);
+			const auto* m = reinterpret_cast<const float*>(a_node + kWorldTransform);
+			a_scale = *reinterpret_cast<const float*>(a_node + kWorldScale);
+			for (std::size_t k = 0; k < 3; ++k) {
+				a_world[k] = w[k];
+			}
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					a_rot[r * 3 + c] = m[c * kMatrixRowStride + r];  // transposed on read
+				}
+			}
+			return true;
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+	}
+
 	bool OcularFaceWorld(float (&a_world)[3])
 	{
 		const std::scoped_lock lock(g_lock);
@@ -1237,20 +1268,8 @@ namespace TrueScopes::ScopeIdent
 			float       scale = g.scale;
 			std::memcpy(rot, g.rot, sizeof(rot));
 			if (g.node) {
-				char live[kNameLen] = {};
-				if (!NodeName(g.node, live) || std::strcmp(live, g.name) != 0) {
-					return false;
-				}
-				const auto* w = reinterpret_cast<const float*>(g.node + kWorldTranslate);
-				const auto* m = reinterpret_cast<const float*>(g.node + kWorldTransform);
-				scale = *reinterpret_cast<const float*>(g.node + kWorldScale);
-				for (std::size_t k = 0; k < 3; ++k) {
-					world[k] = w[k];
-				}
-				for (std::size_t r = 0; r < 3; ++r) {
-					for (std::size_t c = 0; c < 3; ++c) {
-						rot[r * 3 + c] = m[c * kMatrixRowStride + r];  // transposed on read
-					}
+				if (!ReadFaceLive(g.node, g.name, world, rot, scale)) {
+					return false;  // freed/renamed node OR a faulting read (v0.3: SEH-guarded)
 				}
 			}
 

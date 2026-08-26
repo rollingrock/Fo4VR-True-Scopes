@@ -100,6 +100,9 @@ namespace TrueScopes::Addr
 	// --- data ---
 
 
+	// g_player value cell (live-verified; previously duplicated in four files).
+	inline constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;
+
 	// BSGraphics::Renderer instance. Flag bytes: +1 stereo, +2 alt-render,
 	// +3 scope-armed (must stay 0), +4 scope-pass-active, +5 skip-accumulation. [LIVE]
 	inline constexpr std::uintptr_t kRendererInstance = 0x6239340;

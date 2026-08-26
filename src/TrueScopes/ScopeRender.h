@@ -65,7 +65,7 @@ namespace TrueScopes::ScopeRender
 	// Clear the fault latch so the next Render() attempts the own render again.
 	// Called on scope-in (after the TOML reload) when retryAfterFault is set —
 	// lets the user bisect a faulting config live instead of restarting the game.
-	void RetryAfterFault();
+	bool RetryAfterFault();  // true = a latch was actually cleared
 
 	// --- DevBench surface (v0.2.65) -----------------------------------------
 	// Everything below exists so the query server can answer questions that

@@ -570,7 +570,10 @@ float4 PSMain(VSOut i) : SV_Target
 			if (!arr || count == 0 || count > 64) {
 				return -1;
 			}
-			const auto& want = *Settings::reticleRendererName;
+			// v0.3 hardening: snapshot ONCE. load() reassigns the std::string on
+			// every scope-in while this runs on the render thread - a narrow but
+			// real UAF. Changing reticleRendererName now requires a restart.
+			static const std::string want = *Settings::reticleRendererName;
 			static bool loggedList = false;
 			for (std::uint32_t i = 0; i < count; ++i) {
 				const auto rdr = *reinterpret_cast<const std::uintptr_t*>(arr + static_cast<std::uintptr_t>(i) * 8);
@@ -848,6 +851,12 @@ float4 PSMain(VSOut i) : SV_Target
 			reticleSRV = rt.srv;
 			if (reticleSRV) {
 				HideReticleQuad(a_in.scopeParent);
+			} else if (g_hiddenQuad) {
+				// v0.3 hardening (review finding): if the ScopeMenu RT stops resolving
+				// AFTER the vanilla quad was hidden, no reticle would composite AND the
+				// vanilla quad would stay invisible. Restore it so the tester keeps a
+				// reticle either way.
+				RestoreReticleQuad();
 			}
 		} else if (g_hiddenQuad) {
 			RestoreReticleQuad();

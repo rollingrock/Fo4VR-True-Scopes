@@ -68,7 +68,15 @@ namespace TrueScopes::Hooks
 						// resolves against the freshly parsed [Scopes] overrides.
 						ScopeIdent::Request();
 						if (*Settings::retryAfterFault) {
-							ScopeRender::RetryAfterFault();
+							// v0.3 hardening: cap retries per session - a DETERMINISTIC fault
+							// would otherwise re-fault inside the engine on every scope-in
+							// forever. Three tries separates transient from structural.
+							static std::uint32_t s_faultRetries = 0;
+							if (s_faultRetries < 3 && ScopeRender::RetryAfterFault()) {
+								if (++s_faultRetries == 3) {
+									logger::warn("fault-retry cap (3) reached - the latch will hold for the rest of the session"sv);
+								}
+							}
 						}
 					}
 				} else if (g_gateRaw.exchange(false)) {
@@ -492,7 +500,7 @@ namespace TrueScopes::Hooks
 				if (g_installed && g_presenceShown.load(std::memory_order_relaxed) &&
 					PoseGate::SiteStale(90)) {
 					const auto player = *reinterpret_cast<std::uintptr_t*>(
-						REL::Module::get().base() + 0x5b043f0);
+						REL::Module::get().base() + Addr::kPlayerGlobal);
 					SetWidgetNodesHidden(player, true);
 					logger::info("widget presence -> hidden (verdict stale)"sv);
 				}
@@ -511,7 +519,7 @@ namespace TrueScopes::Hooks
 				// scope raise: additem + equipitem + /scope?probe=1.
 				if (g_installed) {
 					if (const auto player = *reinterpret_cast<std::uintptr_t*>(
-							REL::Module::get().base() + 0x5b043f0)) {
+							REL::Module::get().base() + Addr::kPlayerGlobal)) {
 						ScopeIdent::RunIfRequested(player);
 					}
 				}

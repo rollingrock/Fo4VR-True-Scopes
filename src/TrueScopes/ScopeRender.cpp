@@ -112,7 +112,7 @@ namespace TrueScopes::ScopeRender
 		}
 
 		// --- data (fixed, byte/live-verified this session) ---
-		constexpr std::uintptr_t kPlayerGlobal = 0x5b043f0;      // g_player (F4SEVR, live-verified)
+		constexpr std::uintptr_t kPlayerGlobal = Addr::kPlayerGlobal;  // hoisted v0.2.140
 		constexpr std::uintptr_t kRTManager = 0x38ac010;         // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
 		constexpr std::uintptr_t kRendererRVA = 0x6239340;       // BSGraphics::Renderer (live-verified)
 		constexpr std::uintptr_t kIsmInstanceRVA = 0x68789e8;    // ImageSpaceManager::pInstance (RIP-decoded from FUN_1427b08c0 +0x63)
@@ -122,6 +122,66 @@ namespace TrueScopes::ScopeRender
 		std::uintptr_t g_ssnArray = 0;    // BSShaderManager SSN slot array (slot 0 = world); anchor: lea in SetShadowSceneNode
 		std::uintptr_t g_fovMode738 = 0;  // byte: force symmetric-FOV frusta in SetCameraFOV (vanilla scope pass forces 1)
 		std::uintptr_t g_fovMode750 = 0;  // dword: which view gets symmetric FOV; 2 = all (vanilla scope pass forces 2)
+
+		// v0.3 hardening (INV §8.6): engine-global brackets armed while RenderImpl
+		// holds an engine global in a modified state. Inline restores disarm; on the
+		// SEH fault path Render() calls RestoreArmedEngineState() so a fault cannot
+		// leave previs disabled engine-wide, the fov mode forced, the light counts
+		// clamped, or the ISM selector held.
+		struct ArmedRestore
+		{
+			std::uint8_t*          fov738 = nullptr;
+			std::uint8_t           fov738Saved = 0;
+			std::int32_t*          fov750 = nullptr;
+			std::int32_t           fov750Saved = 0;
+			volatile std::uint8_t* previs = nullptr;
+			std::uint8_t           previsSaved = 0;
+			std::int16_t*          lightsA = nullptr;
+			std::int16_t           lightsASaved = 0;
+			std::int16_t*          lightsB = nullptr;
+			std::int16_t           lightsBSaved = 0;
+			std::uint8_t*          ismBusy = nullptr;
+			std::uint8_t           ismBusySaved = 0;
+		};
+		ArmedRestore g_armed;
+
+		void RestoreArmedEngineState()
+		{
+			bool any = false;
+			if (g_armed.fov738) {
+				*g_armed.fov738 = g_armed.fov738Saved;
+				g_armed.fov738 = nullptr;
+				any = true;
+			}
+			if (g_armed.fov750) {
+				*g_armed.fov750 = g_armed.fov750Saved;
+				g_armed.fov750 = nullptr;
+				any = true;
+			}
+			if (g_armed.previs) {
+				*g_armed.previs = g_armed.previsSaved;
+				g_armed.previs = nullptr;
+				any = true;
+			}
+			if (g_armed.lightsA) {
+				*g_armed.lightsA = g_armed.lightsASaved;
+				g_armed.lightsA = nullptr;
+				any = true;
+			}
+			if (g_armed.lightsB) {
+				*g_armed.lightsB = g_armed.lightsBSaved;
+				g_armed.lightsB = nullptr;
+				any = true;
+			}
+			if (g_armed.ismBusy) {
+				*g_armed.ismBusy = g_armed.ismBusySaved;
+				g_armed.ismBusy = nullptr;
+				any = true;
+			}
+			if (any) {
+				logger::warn("fault path restored armed engine globals"sv);
+			}
+		}
 		std::uintptr_t g_ctxPtrA = 0;     // &deferred-context ptr (DAT_146235ac8); anchor in FUN_141db9f80
 		std::uintptr_t g_ctxPtrB = 0;     // &immediate-context ptr (DAT_146235ac0); anchor in FUN_141db9f80
 		std::uintptr_t g_sunConfig = 0;   // persistent sun BSDFLightDir pass config (Ghidra DAT_146886758); anchor: lea in job FUN_142849990
@@ -1583,6 +1643,10 @@ namespace TrueScopes::ScopeRender
 			const auto saved750 = *mode750;
 			*mode738 = 1;
 			*mode750 = 2;
+			g_armed.fov738 = mode738;
+			g_armed.fov738Saved = saved738;
+			g_armed.fov750 = mode750;
+			g_armed.fov750Saved = saved750;
 			// v0.2.36 THE DEPTH-INVERSION FIX: params 3/4 are (FAR, NEAR) — NOT
 			// (near, far). Static proof: SetCameraFOV stores param_4 into frustum
 			// near-slot / param_3 into far-slot, and every vanilla caller passes the
@@ -1599,6 +1663,8 @@ namespace TrueScopes::ScopeRender
 				static_cast<float>(*Settings::scopeNearClip));
 			*mode738 = saved738;
 			*mode750 = saved750;
+			g_armed.fov738 = nullptr;
+			g_armed.fov750 = nullptr;
 
 			// v0.2.124: damp the scope camera's orientation HERE — the Update
 			// above just derived a fresh world pose; everything downstream
@@ -1806,6 +1872,8 @@ namespace TrueScopes::ScopeRender
 			if (bypassPrevis) {
 				savedPrevis = *reinterpret_cast<volatile std::uint8_t*>(previsTempDisable);
 				*reinterpret_cast<volatile std::uint8_t*>(previsTempDisable) = 1;
+				g_armed.previs = reinterpret_cast<volatile std::uint8_t*>(previsTempDisable);
+				g_armed.previsSaved = savedPrevis;
 			}
 
 			RENDER_STEP(8);
@@ -1817,6 +1885,7 @@ namespace TrueScopes::ScopeRender
 			// more work, never wrong output.
 			if (bypassPrevis) {
 				*reinterpret_cast<volatile std::uint8_t*>(previsTempDisable) = savedPrevis;
+				g_armed.previs = nullptr;
 			}
 			TimerMark(3);  // end "accum" (AccumulateScene — CPU pass-list building)
 			// =====================================================================
@@ -2172,6 +2241,10 @@ namespace TrueScopes::ScopeRender
 			if (clampLights) {
 				savedLightsA = *lightCountA;
 				savedLightsB = *lightCountB;
+				g_armed.lightsA = lightCountA;
+				g_armed.lightsASaved = savedLightsA;
+				g_armed.lightsB = lightCountB;
+				g_armed.lightsBSaved = savedLightsB;
 				const auto cap = static_cast<std::int16_t>(lightsMax);
 				if (*lightCountA > cap) {
 					*lightCountA = cap;
@@ -2195,6 +2268,8 @@ namespace TrueScopes::ScopeRender
 			if (clampLights) {
 				*lightCountA = savedLightsA;
 				*lightCountB = savedLightsB;
+				g_armed.lightsA = nullptr;
+				g_armed.lightsB = nullptr;
 			}
 			TimerMark(5);  // end "resolve" (G-buffer draw + light volumes + composite)
 
@@ -2409,6 +2484,8 @@ namespace TrueScopes::ScopeRender
 			if (ismMgr) {
 				savedIsmBusy = *reinterpret_cast<std::uint8_t*>(ismMgr + 0x60);
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = 0;
+				g_armed.ismBusy = reinterpret_cast<std::uint8_t*>(ismMgr + 0x60);
+				g_armed.ismBusySaved = savedIsmBusy;
 			}
 			// v0.2.67 CRESCENT (§3.2) — unbind the depth-stencil across the delivery.
 			// Step 16 above restores DS logical 1, and the DS translation table at
@@ -2481,6 +2558,7 @@ namespace TrueScopes::ScopeRender
 			}
 			if (ismMgr) {
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
+				g_armed.ismBusy = nullptr;
 			}
 			// Mark 7 — end "deliver" (step 16's unbind/FinishAccum + the tonemap copy
 			// into the lens). Taken BEFORE the diagnostic dumps and readbacks below,
@@ -2629,6 +2707,7 @@ namespace TrueScopes::ScopeRender
 		Fn<RendererFn_t>(0x1d95240)(renderer);  // clear prev-cam cache (vanilla does)
 
 		if (!ok) {
+			RestoreArmedEngineState();  // v0.3 hardening: undo any bracket the fault skipped
 			g_available = false;
 			g_faulted = true;
 			static constexpr std::string_view kSteps[] = {
@@ -2924,13 +3003,15 @@ namespace TrueScopes::ScopeRender
 	}
 
 
-	void RetryAfterFault()
+	bool RetryAfterFault()
 	{
 		if (g_faulted && !g_available) {
 			g_faulted = false;
 			g_available = true;
 			logger::info("ScopeRender: fault latch cleared — retrying own render (retryAfterFault)"sv);
+			return true;  // v0.3: report the clear so the caller's retry cap counts real retries only
 		}
+		return false;
 	}
 
 	bool InOwnResolve()
@@ -3087,31 +3168,39 @@ namespace TrueScopes::ScopeRender
 			auto*      camGlobal = reinterpret_cast<std::uintptr_t*>(base + Addr::kDrawWorldCameraPtr);
 			const auto savedCam = *camGlobal;
 			*camGlobal = cam;
-			g_decalStep.store(5);  // render call
-			Fn<void (*)(void*, std::uint32_t, std::uint32_t)>(Addr::kDeferredDecalRender)(
-				&list, static_cast<std::uint32_t>(batchCount), 0);
-			g_decalStep.store(6);  // rendered
-			*camGlobal = savedCam;
-			if (haveSctx) {
-				auto* dirty = reinterpret_cast<std::uint32_t*>(sctx);
-				for (int i = 0; i < 6; ++i) {
-					auto* f = reinterpret_cast<std::uint32_t*>(sctx + kOffs[i]);
-					if (*f != saved[i]) {
-						*f = saved[i];
-						*dirty |= kBits[i];
+			// v0.3 hardening (INV §8.5): the render call is the fault suspect, and a
+			// fault here used to skip BOTH the camera-global restore (leaving the
+			// engine's DrawWorld camera pointed at our scope camera) and the decal
+			// refcount release (leaking every visited decal). __finally runs them on
+			// every exit; the wrapper's __except still latches the stage off.
+			__try {
+				g_decalStep.store(5);  // render call
+				Fn<void (*)(void*, std::uint32_t, std::uint32_t)>(Addr::kDeferredDecalRender)(
+					&list, static_cast<std::uint32_t>(batchCount), 0);
+				g_decalStep.store(6);  // rendered
+			} __finally {
+				*camGlobal = savedCam;
+				if (haveSctx) {
+					auto* dirty = reinterpret_cast<std::uint32_t*>(sctx);
+					for (int i = 0; i < 6; ++i) {
+						auto* f = reinterpret_cast<std::uint32_t*>(sctx + kOffs[i]);
+						if (*f != saved[i]) {
+							*f = saved[i];
+							*dirty |= kBits[i];
+						}
 					}
 				}
+				for (std::uint32_t i = 0; i < list.size; ++i) {
+					const auto d = list.data[i];
+					if (_InterlockedDecrement(reinterpret_cast<volatile long*>(d + 8)) == 0) {
+						const auto vt = *reinterpret_cast<std::uintptr_t*>(d);
+						reinterpret_cast<void (*)(std::uintptr_t)>(
+							*reinterpret_cast<std::uintptr_t*>(vt + 8))(d);
+					}
+				}
+				g_decalStep.store(7);  // refs released
 			}
 		}
-		for (std::uint32_t i = 0; i < list.size; ++i) {
-			const auto d = list.data[i];
-			if (_InterlockedDecrement(reinterpret_cast<volatile long*>(d + 8)) == 0) {
-				const auto vt = *reinterpret_cast<std::uintptr_t*>(d);
-				reinterpret_cast<void (*)(std::uintptr_t)>(
-					*reinterpret_cast<std::uintptr_t*>(vt + 8))(d);
-			}
-		}
-		g_decalStep.store(7);  // refs released
 	}
 
 	void RunPendingDecalStage() noexcept

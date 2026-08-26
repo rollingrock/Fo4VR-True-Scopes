@@ -7,6 +7,11 @@
 void InitializeLog()
 {
 	auto path = logger::log_directory();
+	if (!path) {
+		// Broken install (no Documents redirection?): run without a log file
+		// rather than CTD before logging exists (v0.3 hardening).
+		return;
+	}
 	const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
 	if (!path.value().generic_string().ends_with(gamepath)) {
 		// handle bug where game directory is missing
@@ -49,6 +54,14 @@ void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 	// after kPostLoad for exactly this second-phase handshake and does not depend on the
 	// order. A no-op if devbench is absent.
 	if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
+		// Named coexistence refusal (v0.3 hardening): True Scopes REPLACES Better
+		// Scopes - both patch the same scope pipeline and cannot coexist. The
+		// byte-verify hooks already fail soft on the conflict; this names the cause.
+		if (::GetModuleHandleW(L"BetterScopesVR.dll")) {
+			logger::critical(
+				"BetterScopesVR.dll is loaded - True Scopes REPLACES Better Scopes and they "
+				"cannot coexist. Disable one of them. Expect scope hooks to have declined."sv);
+		}
 		DevBenchClient::Register();
 	}
 }
@@ -57,7 +70,14 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface* a
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = Version::PROJECT.data();
-	a_info->version = Version::MAJOR;
+	// Pack MAJOR.MINOR.PATCH decimally (0.2.140 -> 2140) so Buffout/crash logs
+	// name the real build instead of 0 (v0.3 hardening).
+	a_info->version = Version::MAJOR * 1000000 + Version::MINOR * 1000 + Version::PATCH;
+
+	if (!REL::Module::IsVR()) {
+		logger::critical("True Scopes VR requires Fallout 4 VR - unsupported binary, plugin disabled itself"sv);
+		return false;
+	}
 
 	if (a_f4se->IsEditor()) {
 		logger::critical("Loaded in editor, marking as incompatible"sv);

@@ -2,6 +2,16 @@
 
 namespace Settings
 {
+	// Every declared key, for load()'s unknown-key warning (v0.3 hardening: a
+	// misspelled TOML key used to be silently ignored - the top support-ticket
+	// generator for hand-edited files). A free function, deliberately: a static
+	// member would give each Setting<T> instantiation its own private list.
+	[[nodiscard]] inline std::vector<std::string_view>& KnownKeys()
+	{
+		static std::vector<std::string_view> keys;
+		return keys;
+	}
+
 	template <class T>
 	class Setting
 	{
@@ -11,11 +21,13 @@ namespace Settings
 		Setting(
 			std::string_view a_group,
 			std::string_view a_key,
-			value_type a_default) noexcept :
+			value_type a_default) :
 			_group(a_group),
 			_key(a_key),
 			_value(a_default)
-		{}
+		{
+			Settings::KnownKeys().emplace_back(a_key);
+		}
 
 		[[nodiscard]] auto group() const noexcept -> std::string_view { return this->_group; }
 		[[nodiscard]] auto key() const noexcept -> std::string_view { return this->_key; }
@@ -648,11 +660,18 @@ namespace Settings
 			return;
 		}
 
-#define LOAD(a_setting)                                                              \
-	if (const auto tweak = config[a_setting.group()][a_setting.key()]; tweak) {      \
-		if (const auto value = tweak.as<decltype(a_setting)::value_type>(); value) { \
-			*a_setting = value->get();                                               \
-		}                                                                            \
+// v0.3 hardening: value<T>() instead of as<T>() so an integer literal fills a
+// float setting (nvGain = 2 used to be silently ignored), and a genuinely wrong
+// type warns instead of no-oping.
+#define LOAD(a_setting)                                                               \
+	if (const auto tweak = config[a_setting.group()][a_setting.key()]; tweak) {     \
+		if (const auto value = tweak.value<decltype(a_setting)::value_type>(); value) {  \
+			*a_setting = *value;                                                          \
+		} else {                                                                      \
+			logger::warn(                                                                 \
+				FMT_STRING("TrueScopesVR.toml: '{}' has the wrong type - keeping default"),  \
+				a_setting.key());                                                             \
+		}                                                                             \
 	}
 
 		LOAD(fillEnabled);
@@ -677,6 +696,15 @@ namespace Settings
 		LOAD(scopeFovDegrees);
 		LOAD(scopeNearClip);
 		LOAD(scopeFarClip);
+		// v0.3 hardening: near==far builds a NaN projection = eternally black lens
+		// (documented at the setting). Refuse the pair rather than render nothing.
+		if (!(*scopeFarClip > *scopeNearClip) || *scopeNearClip <= 0.0) {
+			logger::warn(
+				FMT_STRING("TrueScopesVR.toml: scopeNearClip {} / scopeFarClip {} invalid - using 15/250000"),
+				*scopeNearClip, *scopeFarClip);
+			*scopeNearClip = 15.0;
+			*scopeFarClip = 250000.0;
+		}
 		LOAD(scopeCamOffsetX);
 		LOAD(scopeCamOffsetY);
 		LOAD(scopeCamOffsetZ);
@@ -764,6 +792,21 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(suppressScopeImods);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
+		// v0.3 hardening: name every unrecognized key once, so a typo is a log
+		// line instead of a silent no-op. disableScopeBlackout is the known alias.
+		if (const auto* tbl = config["TrueScopesVR"].as_table(); tbl) {
+			for (const auto& [key, node] : *tbl) {
+				const std::string_view k = key.str();
+				if (k == "disableScopeBlackout"sv) {
+					continue;
+				}
+				const auto& known = KnownKeys();
+				if (std::find(known.begin(), known.end(), k) == known.end()) {
+					logger::warn(FMT_STRING("TrueScopesVR.toml: unknown key '{}' ignored"), k);
+				}
+			}
+		}
+
 		if (const auto legacy = config["TrueScopesVR"]["disableScopeBlackout"]; legacy) {
 			if (const auto value = legacy.as<bool>(); value) {
 				*suppressScopeImods = value->get();
