@@ -177,39 +177,29 @@ namespace TrueScopes::Hooks
 		// clone is never rebuilt — nothing can restore a zeroed scale. The flag
 		// hide stays as belt-and-suspenders and covers the frames before the next
 		// world-transform propagation.
-		// v0.3.3/4 - THE HOLD-BREATH PILL, found by live scene walk 2026-08-26: a
-		// HUDGlassFlat:0 text quad (+ HUDShadowFlat:0, both instanced from
-		// Interface/Objects/HUDGlassFlat.nif) under an OrderedRenderingNode on a
-		// point node (named "Point002" in the shipped rig) attached DIRECTLY to
-		// PrimaryUIAttachNode (player+0x700) - a SIBLING of ScopeParent, which is
-		// why neither the ScopeMenu movie work (v0.3.1/2) nor the widget housing
-		// hide ever touched it. Matched structurally (subtree contains
-		// HUDGlassFlat:0), NOT by the generic point name; the wrist HUD and menu
-		// wands instance the same glass mesh, so every known sibling is skipped by
-		// name first. Flags-only cull per eligible frame; cleared when the knob
-		// goes off (live A/B like the housing). Left culled on scope-off by
-		// design: the pill is scope-context UI, invisible unscoped either way.
+		// THE HOLD-BREATH PILL - the full 2026-08-26 arc, compressed:
+		// v0.3.3 latched a HUDGlassFlat quad on 'Point002' in the wand rack
+		// (player+0x700) but its walk faulted on leaf children and silently found
+		// nothing. v0.3.4 fixed the walk with engine ground truth (children base
+		// +0x168, bound u16 +0x172 slot high-water/null holes legal per decompiled
+		// NiNode::GetObjectByName 0x141c18500; recursion gate = vtable slot +0x188
+		// == NiNode's impl, the exact ScopeIdent::IsNiNode test) - node FOUND,
+		// culled: pill unchanged. v0.3.5 added epsilon local scale: propagated to
+		// world (census read 0.0001) - pill STILL unchanged. v0.3.6's scene census
+		// then settled it by POSITION: the visible pill is a node literally named
+		// 'world_projectedHintBar.nif' - the ScopeMenu's PROJECTED BUTTON-HINT BAR
+		// (which is why the v0.3.1 SetUpButtonBar nop changed its color), hanging
+		// under PlayerWorldNode ~23 units from ScopeParent with its HUDGlassFlat
+		// display quads 5.8 units out - NOT under the wand rack at all. The rack
+		// quad the earlier versions killed was some other hint surface.
 		//
-		// v0.3.4 - WHY v0.3.3 NEVER FOUND IT, and the engine ground truth. The
-		// walk read the NiNode children fields off EVERY child; on a BSTriShape
-		// leaf those offsets are garbage, the read faulted, and the function-level
-		// __except silently aborted the WHOLE search - every frame, with no log
-		// (the only field signal was the found-line's ABSENCE). Ground truth from
-		// NiNode::GetObjectByName (0x141c18500) itself:
-		//   - children base +0x168, loop bound u16 +0x172 (slot high-water mark;
-		//     NULL HOLES ARE LEGAL and the engine null-skips them. +0x174 is the
-		//     non-null element count - what v0.3.3 read - which UNDERCOUNTS across
-		//     holes, and this rack is exactly where holes appear: quickLoot and
-		//     favorites attach/detach at runtime);
-		//   - per-child dispatch through vtable slot +0x188, i.e. the engine's
-		//     own recursion gate IS the ScopeIdent::IsNiNode test (exact per the
-		//     2026-08-26 sweep: all 20 NiNode-family classes share the slot,
-		//     nothing overrides it).
-		// So v0.3.4 recurses only into real NiNodes, uses the engine's bound,
-		// SEH-isolates each candidate scan (one bad subtree costs one sibling,
-		// never the search), and LOGS a persistent miss or fault one-shot -
-		// silence is no longer an outcome.
+		// v0.3.7: find the hint bar BY NAME from the empirically-climbed scene
+		// root (PillGuessParent - a candidate qword is the parent iff its children
+		// array contains the node), cache it, and suppress per pillKillMode:
+		// 1 = cull flag + epsilon local scale, 2 = parent-slot HOLE (the engine's
+		// own hide idiom; ordering- and render-path-proof). Every outcome logs.
 		std::uintptr_t g_pillNode = 0;
+		std::uintptr_t g_pillParent = 0;  // the hint bar's parent node (for mode 2)
 		std::uint32_t  g_pillMissScans = 0;   // consecutive find-loop misses; reset on find
 		bool           g_pillMissLogged = false;
 		float          g_pillSavedScale = 0.0f;  // engine-authored local scale (+0x6c), captured once
@@ -221,46 +211,6 @@ namespace TrueScopes::Hooks
 		std::uint16_t  g_pillRackSlot = 0;
 		bool           g_pillHoled = false;
 		bool           g_pillCensusDone = false;
-
-		bool SubtreeHasHudGlass(std::uintptr_t a_node, int a_depth)
-		{
-			if (!a_node || a_depth > 2) {
-				return false;
-			}
-			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
-			if (entry >= 0x10000 &&
-				std::strcmp(reinterpret_cast<const char*>(entry + 0x18), "HUDGlassFlat:0") == 0) {
-				return true;
-			}
-			if (!ScopeIdent::IsNiNode(a_node)) {
-				// leaf (BSTriShape etc.): +0x168/+0x172 are not children fields
-				// here - reading them was the v0.3.3 fault
-				return false;
-			}
-			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
-			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x172);
-			for (std::uint16_t i = 0; kids && i < cnt && i < 32; ++i) {
-				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
-				if (c && SubtreeHasHudGlass(c, a_depth + 1)) {
-					return true;
-				}
-			}
-			return false;
-		}
-
-		// SEH isolation per candidate: one surprising subtree must cost ONE
-		// sibling's scan, never the whole search (v0.3.3's function-level handler
-		// turned a single bad read into a silent permanent miss). Tri-state so a
-		// faulting subtree is DISTINGUISHABLE from a genuinely glass-free one in
-		// the rack diagnostics: 1 = carries the glass, 0 = does not, -1 = FAULTED.
-		int SubtreeHasHudGlassSafe(std::uintptr_t a_node)
-		{
-			__try {
-				return SubtreeHasHudGlass(a_node, 0) ? 1 : 0;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return -1;
-			}
-		}
 
 		// --- v0.3.6 pill census (diagnostic; Settings::pillCensus) ---------------
 		// Both v0.3.4 (cull flag) and v0.3.5 (epsilon local scale) left the pill
@@ -447,113 +397,127 @@ namespace TrueScopes::Hooks
 			}
 		}
 
+		// v0.3.7 - is this node the projected hint bar? Bounded name read (the
+		// %.48s lesson): an unterminated engine name must never fault the test.
+		bool PillNameIsHintBar(std::uintptr_t a_node)
+		{
+			if (!a_node) {
+				return false;
+			}
+			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+			if (entry < 0x10000) {
+				return false;
+			}
+			char nb[49];
+			PillCopyName(reinterpret_cast<const char*>(entry + 0x18), nb);
+			return std::strncmp(nb, "world_projectedHintBar", 22) == 0;
+		}
+
+		std::uintptr_t PillFindHintBar(std::uintptr_t a_node, int a_depth, std::uint32_t& a_visited)
+		{
+			if (!a_node || a_depth > 16 || a_visited >= 6000) {
+				return 0;
+			}
+			++a_visited;
+			if (PillNameIsHintBar(a_node)) {
+				return a_node;
+			}
+			if (!ScopeIdent::IsNiNode(a_node)) {
+				return 0;
+			}
+			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
+			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x172);
+			if (cnt > 512) {
+				return 0;
+			}
+			for (std::uint16_t i = 0; kids && i < cnt; ++i) {
+				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
+				if (c) {
+					if (const auto r = PillFindHintBar(c, a_depth + 1, a_visited)) {
+						return r;
+					}
+				}
+			}
+			return 0;
+		}
+
 		void SetHoldBreathPillHidden(std::uintptr_t a_player, bool a_hidden)
 		{
 			__try {
-				const auto nameOf = [](std::uintptr_t a_node) -> const char* {
-					if (!a_node) {
-						return nullptr;
-					}
-					const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
-					return entry >= 0x10000 ? reinterpret_cast<const char*>(entry + 0x18) : nullptr;
-				};
 				const auto rig = a_player ? *reinterpret_cast<std::uintptr_t*>(a_player + 0x700) : 0;
 				if (!rig) {
 					g_pillNode = 0;
 					return;
 				}
-				// cache is valid only while the node still carries the HUD glass subtree
-				if (g_pillNode && SubtreeHasHudGlassSafe(g_pillNode) != 1) {
+				// cache is valid only while the pointer still names the hint bar
+				// (the LensComposite reticle-quad discipline: a stale pointer that
+				// still reads as memory must never be trusted to be the same object)
+				if (g_pillNode && !PillNameIsHintBar(g_pillNode)) {
 					if (g_pillHoled) {
 						// the node died while detached: restoring a dead pointer
-						// into the rack is worse than leaking one small node
+						// is worse than leaking one small node
 						g_pillHoled = false;
-						logger::warn("pill node invalidated while holed - restore abandoned (one rack node leaked)"sv);
+						logger::warn("pill node invalidated while holed - restore abandoned (one node leaked)"sv);
 					}
 					g_pillNode = 0;
+					g_pillParent = 0;
 				}
 				if (!g_pillNode) {
-					// rack snapshot for the miss log: 'name'(verdict) per sibling.
-					// %.48s BOUNDS THE READ (C11 7.21.6.1: a precision stops the
-					// scan even with no NUL) - an unterminated engine name that
-					// passes the head checks must not let the DIAGNOSTIC re-create
-					// the v0.3.3 whole-search abort. Truncation is marked, never
-					// silent: a partial rack that looks complete misleads exactly
-					// the investigation this log exists to serve.
-					char rack[384];
-					int  rackLen = 0;
-					bool rackFull = false;
-					const auto note = [&rack, &rackLen, &rackFull](const char* a_name, const char* a_verdict) {
-						if (rackFull) {
-							return;
-						}
-						const int n = std::snprintf(rack + rackLen, sizeof(rack) - rackLen,
-							"'%.48s'(%s) ", a_name, a_verdict);
-						if (n > 0 && rackLen + n < static_cast<int>(sizeof(rack))) {
-							rackLen += n;
-						} else {
-							rackFull = true;
-						}
-					};
-					const auto kids = *reinterpret_cast<std::uintptr_t*>(rig + 0x168);
-					const auto cnt = *reinterpret_cast<std::uint16_t*>(rig + 0x172);
-					for (std::uint16_t i = 0; kids && i < cnt && i < 32; ++i) {
-						const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
-						if (!c) {
-							continue;  // null hole - legal, the engine null-skips too
-						}
-						const char* cn = nameOf(c);
-						if (!cn) {
-							note("(unnamed)", "?");
-							continue;
-						}
-						// the wrist HUD and menu wands instance the same glass
-						// mesh - skip every known sibling by name and only then
-						// match structurally
-						if (std::strcmp(cn, "ScopeParent") == 0 ||
-							std::strcmp(cn, "world_primaryWand.nif") == 0 ||
-							std::strncmp(cn, "favorites", 9) == 0 ||
-							std::strncmp(cn, "ws_", 3) == 0 ||
-							std::strncmp(cn, "world_", 6) == 0) {
-							note(cn, "skip");
-							continue;
-						}
-						const int v = SubtreeHasHudGlassSafe(c);
-						if (v == 1) {
-							g_pillNode = c;
-							g_pillRackKids = kids;  // for pillKillMode 2 (re-validated per poke)
-							g_pillRackSlot = i;
-							g_pillMissScans = 0;  // the counter measures CONSECUTIVE misses
-							static bool s_foundLogged = false;
-							if (!s_foundLogged) {
-								s_foundLogged = true;
-								logger::info(FMT_STRING("hold-breath pill node found: '{}' (slot {} of {}) under PrimaryUIAttachNode"), cn, i, cnt);
-							}
+					// climb to the scene root (parent found empirically per hop),
+					// then find the hint bar by name anywhere in the tree - the
+					// v0.3.6 census proved it hangs under PlayerWorldNode, not the
+					// wand rack the earlier versions searched
+					std::uintptr_t root = rig;
+					for (int hop = 0; hop < 24; ++hop) {
+						const auto p = PillGuessParent(root);
+						if (!p) {
 							break;
 						}
-						if (v < 0) {
-							// a per-candidate fault is the v0.3.3 failure class -
-							// isolated now, but it must never masquerade as a
-							// benign "no-glass" verdict in the diagnostics
-							static bool s_candFaultLogged = false;
-							if (!s_candFaultLogged) {
-								s_candFaultLogged = true;
-								logger::warn(FMT_STRING("pill scan: subtree of '{}' faults (isolated; sibling skipped)"), cn);
+						root = p;
+					}
+					std::uint32_t visited = 0;
+					const auto bar = PillFindHintBar(root, 0, visited);
+					if (bar) {
+						const auto par = PillGuessParent(bar);
+						std::uintptr_t barKids = 0;
+						std::uint16_t  barSlot = 0;
+						if (par) {
+							const auto pk = *reinterpret_cast<std::uintptr_t*>(par + 0x168);
+							const auto pc = *reinterpret_cast<std::uint16_t*>(par + 0x172);
+							for (std::uint16_t i = 0; pk && i < pc && i < 512; ++i) {
+								if (*reinterpret_cast<std::uintptr_t*>(pk + 8ull * i) == bar) {
+									barKids = pk;
+									barSlot = i;
+									break;
+								}
 							}
 						}
-						note(cn, v < 0 ? "FAULT" : "no-glass");
-					}
-					if (!g_pillNode) {
-						// a persistent miss must be VISIBLE: v0.3.3's only field
-						// signal was an absent log line. ~120 CONSECUTIVE eligible
-						// frames is a scoped session well past rack construction
-						// (transient pre-attach misses reset on every find).
-						if (a_hidden && !g_pillMissLogged && ++g_pillMissScans >= 120) {
-							g_pillMissLogged = true;
-							rack[rackLen] = '\0';
-							logger::warn(FMT_STRING("hold-breath pill NOT found after {} scans; PrimaryUIAttachNode rack ({} slots{}): {}{}"),
-								g_pillMissScans, cnt, cnt > 32 ? ", scan capped at 32" : "", rack, rackFull ? "...(truncated)" : "");
+						g_pillNode = bar;
+						g_pillParent = par;
+						g_pillRackKids = barKids;  // 0 = mode 2 unavailable (no slot found)
+						g_pillRackSlot = barSlot;
+						g_pillMissScans = 0;
+						static bool s_foundLogged = false;
+						if (!s_foundLogged) {
+							s_foundLogged = true;
+							char pn[49];
+							pn[0] = '\0';
+							if (par) {
+								const auto pe = *reinterpret_cast<std::uintptr_t*>(par + 0x10);
+								if (pe >= 0x10000) {
+									PillCopyName(reinterpret_cast<const char*>(pe + 0x18), pn);
+								}
+							}
+							logger::info(FMT_STRING("hold-breath pill node found: 'world_projectedHintBar' parent='{}' slot {} (visited {})"),
+								pn[0] ? pn : "(none)", barSlot, visited);
 						}
+					} else if (a_hidden && !g_pillMissLogged && ++g_pillMissScans >= 120) {
+						// a persistent miss must be VISIBLE: v0.3.3's only field
+						// signal was an absent log line (~120 CONSECUTIVE eligible
+						// frames; transient pre-attach misses reset on every find)
+						g_pillMissLogged = true;
+						logger::warn(FMT_STRING("projected hint bar NOT found after {} scans (root=0x{:x}, visited {})"),
+							g_pillMissScans, root, visited);
 					}
 				}
 				if (g_pillNode) {
@@ -564,8 +528,8 @@ namespace TrueScopes::Hooks
 					// could not be. The slot is only ever poked when the live array
 					// still matches what the find recorded; restore only into a slot
 					// that is still null. Live-settable for the in-headset A/B.
-					const bool wantHole = a_hidden && *Settings::pillKillMode == 2;
-					const auto liveKids = *reinterpret_cast<std::uintptr_t*>(rig + 0x168);
+					const bool wantHole = a_hidden && *Settings::pillKillMode == 2 && g_pillRackKids != 0;
+					const auto liveKids = g_pillParent ? *reinterpret_cast<std::uintptr_t*>(g_pillParent + 0x168) : 0;
 					if (g_pillHoled && !wantHole) {
 						if (liveKids == g_pillRackKids &&
 							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) == 0) {
