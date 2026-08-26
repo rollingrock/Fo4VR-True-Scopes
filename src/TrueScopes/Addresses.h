@@ -130,6 +130,22 @@ namespace TrueScopes::Addr
 	// which is what makes the v0.2.121 zero-scale housing hide permanent. [LIVE]
 	inline constexpr std::uintptr_t kWidgetModelSingleton = 0x5acbf58;
 
+	// v0.3.9 - THE HOLD-BREATH PILL's real owner: WSPrimaryWandHUDModel, the
+	// primary-wand HUD singleton (same static-singleton block as WSScopeModel
+	// above; dtor 0x140c8d9f0 zeroes it, create-if-null accessors read/write it,
+	// TS_Player_ScopedModeArmSwitch reads it). Layout (from Func2 0x140c8d280,
+	// the per-update placement writer): +0x10 = the touchpad hint NODE
+	// (NiPointer - 'Point002 < PrimaryWandTouchpad', census 2026-08-26),
+	// +0x19 = hint-active flag gating the update.
+	inline constexpr std::uintptr_t kWandHUDModelSingleton = 0x5acbc80;
+	// The float Func2 writes into the hint node's LOCAL SCALE (+0x6c, abs-masked)
+	// on EVERY update before calling NiAVObject::Update - the reason every
+	// cull/scale poke on the node itself lost (v0.3.4-8): the engine stomps the
+	// whole local transform per frame and re-propagates. Func2 is this global's
+	// ONLY reader, so zeroing it while scoped makes the ENGINE write the pill
+	// invisible - no ordering fight can exist.
+	inline constexpr std::uintptr_t kWandHintScaleGlobal = 0x37bbfc8;
+
 	// The ONE call site in the whole binary that un-hides the widget housing:
 	// inside the enable switch FUN_140efaa60 (TS_Player_ScopedModeArmSwitch),
 	// edge-gated on the arm state, calling FUN_140c8e340

@@ -207,6 +207,10 @@ namespace TrueScopes::Hooks
 		// v0.3.6 - rack-slot hole state (pillKillMode 2). The children array and
 		// slot index the carrier was found at; both re-validated against live
 		// memory before every poke (the array can be reallocated by the engine).
+		// v0.3.9 - source-kill state (pillKillMode 1): the engine-authored value
+		// of the wand-hint scale global, captured once with sanity bounds.
+		float g_pillSrcSaved = 0.0f;
+		bool  g_pillSrcCaptured = false;
 		std::uintptr_t g_pillRackKids = 0;
 		std::uint16_t  g_pillRackSlot = 0;
 		bool           g_pillHoled = false;
@@ -477,6 +481,49 @@ namespace TrueScopes::Hooks
 				if (!rig) {
 					g_pillNode = 0;
 					return;
+				}
+				// v0.3.9 - THE SOURCE KILL (pillKillMode 1, the ship path). The
+				// engine's own WSPrimaryWandHUDModel::Func2 stomps the touchpad
+				// hint node's whole local transform EVERY update - scale included,
+				// copied from one float global it alone reads - then re-propagates
+				// via NiAVObject::Update. That is why every node poke of v0.3.4-8
+				// lost. So stop racing: own the SOURCE. While this runs (scoped,
+				// eligible), the global reads 0 and the ENGINE writes the pill
+				// invisible; the per-frame restore check in the fill hook puts the
+				// captured value back the moment we stop (other contexts may show
+				// other hints on the same quad). Belt: the node (model+0x10,
+				// straight off the singleton - no tree walk) also gets the cull
+				// bit + epsilon scale for any already-stomped frame.
+				if (*Settings::pillKillMode == 1) {
+					auto* scaleSrc = reinterpret_cast<float*>(REL::Module::get().base() + Addr::kWandHintScaleGlobal);
+					const auto model = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + Addr::kWandHUDModelSingleton);
+					const auto node = model ? *reinterpret_cast<std::uintptr_t*>(model + 0x10) : 0;
+					if (a_hidden) {
+						if (!g_pillSrcCaptured) {
+							const float sv = *scaleSrc;
+							if (sv > 0.0009f && sv < 100.0f) {
+								g_pillSrcSaved = sv;
+								g_pillSrcCaptured = true;
+								logger::info(FMT_STRING("hold-breath pill source kill armed: scale global {:.4f} -> 0 (model=0x{:x} node=0x{:x} active={})"),
+									sv, model, node, model ? *reinterpret_cast<std::uint8_t*>(model + 0x19) : 0);
+							}
+						}
+						if (g_pillSrcCaptured) {
+							*scaleSrc = 0.0f;
+						}
+						if (node) {
+							*reinterpret_cast<std::uint8_t*>(node + 0x108) |= 1;
+							*reinterpret_cast<float*>(node + 0x6c) = kHousingHiddenScale;
+						}
+					} else {
+						if (g_pillSrcCaptured && *scaleSrc == 0.0f) {
+							*scaleSrc = g_pillSrcSaved;
+						}
+						if (node) {
+							*reinterpret_cast<std::uint8_t*>(node + 0x108) &= static_cast<std::uint8_t>(~1u);
+						}
+					}
+					return;  // mode 1 needs no finder, no cache, no walk
 				}
 				// cache is valid only while the pointer still names the hint bar
 				// (the LensComposite reticle-quad discipline: a stale pointer that
@@ -1048,6 +1095,20 @@ namespace TrueScopes::Hooks
 					ScopeRender::PresenceFit();
 				}
 
+
+				// v0.3.9 - source-kill hygiene: the wand-hint scale global must not
+				// stay zeroed outside scoped eligibility (the same quad can carry
+				// other contexts' hints). This runs every presentable frame, so the
+				// engine value returns within a frame of the scope dropping or the
+				// knob going off. Writing module .data - no SEH needed.
+				if (g_pillSrcCaptured &&
+					!(*Settings::hideHoldBreathHint && *Settings::pillKillMode == 1 &&
+						g_scopeActive.load(std::memory_order_relaxed))) {
+					auto* scaleSrc = reinterpret_cast<float*>(REL::Module::get().base() + Addr::kWandHintScaleGlobal);
+					if (*scaleSrc == 0.0f) {
+						*scaleSrc = g_pillSrcSaved;
+					}
+				}
 
 				if (g_installed && *Settings::fillEnabled) {
 					// v0.2.125: last time anything filled the lens (live or prime).
