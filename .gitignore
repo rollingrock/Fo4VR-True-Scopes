@@ -2,3 +2,4 @@ build*/
 /.vs
 /CMakeUserPresets.json
 dist/
+swfwork/
