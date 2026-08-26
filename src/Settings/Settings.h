@@ -81,12 +81,6 @@ namespace Settings
 	// Each refresh costs one render-length frame hitch — an A/B knob, not a
 	// shipping default.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseIdleRefreshSeconds, 0.0);
-	// Write 2 (always-on) into the iScopeEnabled:VR value cell after game load.
-	// WARNING (2026-08-08): currently CRASHES on scope-in (ScopeMenu/input-layer
-	// null-deref, crash-2026-08-08-17-07-51) — needs rework before use.
-	// Optional: with the edge-triggered state hooks, the vanilla default (1, eye-gated)
-	// works correctly — this just keeps the widget/fill on at all times.
-	MAKE_SETTING(bSetting, "TrueScopesVR", forceAlwaysOn, false);
 	// What fills the lens while scoped: 1 = copy of the main frame (phase-1 placeholder),
 	// 2 = real mono world render from the scope camera (falls back to 1 on init failure
 	// or a render fault).
@@ -163,7 +157,7 @@ namespace Settings
 	// both wrong. Measure the stages, then fix the one that is expensive.
 	// Cost when on: 8 timestamp queries per render, collected 2-3 renders later
 	// without ever blocking. Not free, but far below the noise floor of a VR frame.
-	MAKE_SETTING(bSetting, "TrueScopesVR", perfTimers, true);
+	MAKE_SETTING(bSetting, "TrueScopesVR", perfTimers, false);
 	// LEVER 1 — render resolution. Scales the scope camera's viewport to the
 	// top-left sub-rectangle of the (engine-allocated, fixed 1024^2) scope G-buffer:
 	// 0.5 = render at 512x512, quarter the pixels. Applied AFTER SetCameraFOV, which
@@ -197,10 +191,6 @@ namespace Settings
 	// Doubles as a diagnostic: if lowering this does not dim the lens, the overbright
 	// artifact is not coming through the light color path.
 	MAKE_SETTING(fSetting, "TrueScopesVR", sunBrightnessScale, 1.0);
-	// Let the sun pass write the specular accumulation target. Its spec output is
-	// currently garbage (world-pos reconstruction constants — under investigation);
-	// off = sun contributes diffuse only and spec stays cleared. Turn on to re-test.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunSpecEnabled, false);
 	// Tone bisect (v0.2.36): the accum pre-clear is the ambient base light level.
 	// Vanilla lazily clears to the fog RGB with alpha 1; the lens reads paler/cooler
 	// than the world (17:58 outdoor A/B), suspect ambient double-count through this
@@ -247,7 +237,7 @@ namespace Settings
 	// apply the glass look. Everything below is live-tunable via DevBench.
 	// v0.2.109: controller verdict chords (grip+A yes / grip+B no / grip+trigger
 	// skip) for guided test passes; read passively off OpenVR, haptic ack.
-	MAKE_SETTING(bSetting, "TrueScopesVR", verdictInputEnabled, true);
+	MAKE_SETTING(bSetting, "TrueScopesVR", verdictInputEnabled, false);
 	// v0.2.111 DEBUG: arm the scope render directly, bypassing the vanilla
 	// raise detection. For HEADLESS lens verification (null driver + /dump/now):
 	// the widget rig never exists, but the render + composite + delivery all run
@@ -553,37 +543,7 @@ namespace Settings
 	// runs before the resolve that draws the G-buffer geometry — so it may be shading an
 	// empty one, which computes exactly zero. Default ON: cheap, and the ordering
 	// question is the live one.
-	MAKE_SETTING(bSetting, "TrueScopesVR", diagSunOrderProbe, true);
-	// v0.2.78 — THE §3.1 FIX. Run the sun BSDFLightDir exec from inside the resolve
-	// (at the light-accum bind) instead of before it. Proven necessary v0.2.77: at the
-	// old call site the G-buffer is still the black clear (albedo 0xFF000000, normals
-	// 0x00000000), so the light had nothing to shade and computed exactly zero.
-	// Default FALSE for one build so the A/B is a single live flag against the measured
-	// baseline (0x6a meanLum 155.0); flip to true and watch that number move.
-	// ✅ DEFAULT TRUE since v0.2.83 — this IS the fix, not an experiment.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecInResolve, true);
-	// v0.2.79 — re-write staging+0x1d0 (the inverse projection the sun pass reconstructs
-	// position with) immediately before the exec.
-	// ❌ NEGATIVE RESULT, DEFAULT FALSE (2026-08-09). The hypothesis was that the resolve
-	// commits its own camera state between our pre-resolve write and the deferred exec,
-	// leaving a stale/zeroed (but FINITE, hence undetected) inverse projection. It does
-	// not. The value logged at the exec is already correct —
-	//     row0=[0.021905374 0 0 ~0]  row3=[0 0 -0.06666266 0.06666666]
-	// — and a controlled A/B in one spot reads 0x6a NaN 80.2% / meanLum 88.9 with this
-	// ON and OFF and ON again, identical. It is a no-op; kept only so the negative is
-	// re-testable without a rebuild. Do not spend time here again.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunReapplyInvProj, false);
-	// v0.2.82 — bind + COMMIT the light-accumulation MRT immediately before the deferred
-	// sun exec. Measured (v0.2.81 ProbeBoundResources) at the two call sites:
-	//   pre-resolve (old) : PS SRV [0,1,5,6,7],   RTs bound = 1
-	//   in-resolve  (new) : PS SRV [0,1,2,3,5,8], RTs bound = 4
-	// Four render targets is the G-BUFFER MRT, still bound: the RT manager STAGES binds
-	// and commits them later, and ResolveAccumBind0Hook sits on the slot-0 staging call,
-	// before slot 1 is staged and before the commit. The sun was therefore drawing into
-	// the G-buffer, corrupting albedo/normals, and the resolve's light volumes read NaN
-	// normals afterwards -- which is why the NaN was exactly the geometry pixels and the
-	// sky stayed clean.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunResolveRebindAccum, true);
+	MAKE_SETTING(bSetting, "TrueScopesVR", diagSunOrderProbe, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -778,7 +738,6 @@ namespace Settings
 		LOAD(camSmoothMaxLagDegrees);
 		LOAD(lensPrimeOnPresence);
 		LOAD(poseIdleRefreshSeconds);
-		LOAD(forceAlwaysOn);
 		LOAD(lensMode);
 		LOAD(scopeFovDegrees);
 		LOAD(scopeNearClip);
@@ -792,7 +751,6 @@ namespace Settings
 		LOAD(perfLightsMax);
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
-		LOAD(sunSpecEnabled);
 		LOAD(accumClearScale);
 		LOAD(accumClearAlpha);
 		LOAD(skyEnabled);
@@ -878,9 +836,6 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(sunCtxAccumTarget);
 		LOAD(diagSunOrderProbe);
-		LOAD(sunExecInResolve);
-		LOAD(sunReapplyInvProj);
-		LOAD(sunResolveRebindAccum);
 		LOAD(suppressScopeImods);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
 		if (const auto legacy = config["TrueScopesVR"]["disableScopeBlackout"]; legacy) {
@@ -989,8 +944,8 @@ namespace Settings
 		}
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} forceAlwaysOn={} lensMode={} scopeFovDegrees={} sunEnabled={} suppressScopeImods={} disableApproachFade={}"),
-			*fillEnabled, *fillEveryNFrames, *forceAlwaysOn, *lensMode, *scopeFovDegrees, *sunEnabled, *suppressScopeImods, *disableApproachFade);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} lensMode={} scopeFovDegrees={} sunEnabled={} suppressScopeImods={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *lensMode, *scopeFovDegrees, *sunEnabled, *suppressScopeImods, *disableApproachFade);
 
 		if (postLoadHook) {
 			postLoadHook();

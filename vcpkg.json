@@ -6,12 +6,12 @@
   "license": "GPL-3.0",
   "dependencies": [
     "boost-stl-interfaces",
+    "xbyak",
     "robin-hood-hashing",
     "rsm-binary-io",
     "rsm-mmio",
     "srell",
     "spdlog",
-    "xbyak",
     "args",
     "frozen",
     "tomlplusplus",

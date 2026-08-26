@@ -99,18 +99,11 @@ namespace TrueScopes::Addr
 
 	// --- data ---
 
-	// Value cell of the 3-state INI setting iScopeEnabled:VR (0=off, 1=eye-gated,
-	// 2=always-on). Read in exactly ONE place: the enable switch. [LIVE]
-	inline constexpr std::uintptr_t kIScopeEnabledValue = 0x37d02d8;
 
 	// BSGraphics::Renderer instance. Flag bytes: +1 stereo, +2 alt-render,
 	// +3 scope-armed (must stay 0), +4 scope-pass-active, +5 skip-accumulation. [LIVE]
 	inline constexpr std::uintptr_t kRendererInstance = 0x6239340;
 
-	// Scope-widget shader property cache. Set by the enable switch; compared per-draw
-	// inside FUN_1428cf8c0 @ +0x28d1558: if (pass->property == this) bind RT 0x62's SRV
-	// to texture slot 6. The bind is UNCONDITIONAL apart from this pointer equality. [LIVE]
-	inline constexpr std::uintptr_t kWidgetMaterialCache = 0x689b440;
 
 	// WSScopeModel singleton pointer cell (DAT_145acbf58; ctor FUN_140c8da70 stores
 	// it). Field map (Ghidra 2026-08-24, TS_WSScopeModel_InitShapes 0x140c8ddb0):
@@ -155,7 +148,6 @@ namespace TrueScopes::Addr
 	inline constexpr std::uintptr_t kResolveDecalG5CallSite = 0x27ff9b4;
 	inline constexpr std::uintptr_t kResolveDecalG6CallSite = 0x27ffa27;
 	inline constexpr std::uintptr_t kAccumDrawDecalGroup5 = 0x281d220;
-	inline constexpr std::uintptr_t kAccumDrawDecalGroup6 = 0x281d380;
 	// Bullet holes are NOT passes at all - BSDFDecal objects (SSN+0x218, count
 	// +0x228, spin lock +0x230) drawn by the dedicated DrawWorld stage
 	// FUN_142845cc0 (compute dispatch + instanced box draws, renderer+4-aware:

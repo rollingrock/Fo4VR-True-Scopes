@@ -2479,7 +2479,7 @@ namespace TrueScopes::ScopeRender
 					// which the composite reads as "no sun specular" (correct-looking
 					// minus highlights).
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, *Settings::sunSpecEnabled ? 0x6b : -1, 3);
+					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
@@ -2533,7 +2533,7 @@ namespace TrueScopes::ScopeRender
 					// the stages before its sun stage (call #22), then resolves (#24); OUR
 					// G-buffer geometry is drawn INSIDE the resolve, which we call below.
 					//
-					// So the body is captured here and, when sunExecInResolve is set, invoked
+					// So the body is captured here and invoked
 					// from ResolveAccumBind0Hook -- the moment the resolve binds the light-accum
 					// buffer, which is after the G-buffer geometry and before the light volumes.
 					const auto runSunExec = [&]() {
@@ -2666,35 +2666,8 @@ namespace TrueScopes::ScopeRender
 							}
 						}
 
-						// v0.2.79 — the inverse projection, RE-APPLIED AT THE POINT OF USE.
-						// staging+0x1d0 is the inverse-projection constant this pass consumes
-						// for position reconstruction, and the engine's camera-state commit
-						// never writes it (finding #15) — we do, in the pre-resolve block.
-						// But with sunExecInResolve the exec now runs AFTER the resolve has
-						// committed its own camera state, so the staging block in effect here
-						// need not be the one we wrote. A stale or zeroed inverse projection
-						// is FINITE, so camDataBad/invProjRejects both read clean (they did:
-						// 0 and 0) while every reconstructed position divides by zero — which
-						// is exactly the measurement: inputs healthy, 0x6a clean before the
-						// draw and 100% NaN after it, every frame (sunPreNaN=0 sunPostNaN=347).
-						// Cheap, validated, and skips itself on a singular source.
-						if (*Settings::sunReapplyInvProj) {
-							static std::uint32_t invLogs = 0;
-							if (invLogs < 6) {
-								++invLogs;
-								const auto ctxI = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
-								const auto ctxJ = ctxI ? ctxI : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
-								if (const auto stg = ctxJ ? *reinterpret_cast<std::uintptr_t*>(ctxJ + 0x25d0) : 0) {
-									const auto* m = reinterpret_cast<const float*>(stg + 0x1d0);
-									logger::info(
-										FMT_STRING("INVPROJ at exec (before re-apply): staging={:016X} row0=[{} {} {} {}] row3=[{} {} {} {}]"),
-										stg, m[0], m[1], m[2], m[3], m[12], m[13], m[14], m[15]);
-								}
-							}
-							WriteInverseProj(g_gfxState, cam);
-						}
 
-						ProbeBoundResources(*Settings::sunExecInResolve ? "in-resolve (new)"sv : "pre-resolve (old, control)"sv);
+						ProbeBoundResources("in-resolve"sv);
 
 						// v0.2.82 — THE FIX. Measured at the deferred call site:
 						//   pre-resolve (old) : SRV [0,1,5,6,7], RTs bound = 1
@@ -2709,9 +2682,9 @@ namespace TrueScopes::ScopeRender
 						//
 						// Bind the accumulation MRT and COMMIT it ourselves, the same way the
 						// pre-resolve path does, so the draw lands where it is supposed to.
-						if (*Settings::sunResolveRebindAccum && *Settings::sunExecInResolve) {
+						{  // v0.2.82 accum rebind - always on (knobs removed v0.2.137)
 							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, *Settings::sunSpecEnabled ? 0x6b : -1, 3);
+							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 							Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 							ProbeBoundResources("in-resolve AFTER rebind"sv);
 						}
@@ -2810,11 +2783,7 @@ namespace TrueScopes::ScopeRender
 					}
 					};  // end runSunExec
 
-					if (*Settings::sunExecInResolve) {
-						g_pendingSunExec = runSunExec;  // fired from inside the resolve
-					} else {
-						runSunExec();                   // pre-v0.2.78 placement, kept for the A/B
-					}
+					g_pendingSunExec = runSunExec;  // fired from inside the resolve
 				} else {
 					g_diagSunPass = 0;
 				}

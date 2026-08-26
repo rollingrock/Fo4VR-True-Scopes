@@ -869,15 +869,6 @@ namespace TrueScopes::Hooks
 			return;
 		}
 
-		// Optional: force iScopeEnabled to 2 (always-on). With the edge-triggered state
-		// hooks this is a convenience, not a requirement — the vanilla default (1,
-		// eye-gated) now works correctly.
-		if (*Settings::forceAlwaysOn) {
-			REL::Relocation<std::uint32_t*> scopeEnabled{ REL::Offset(Addr::kIScopeEnabledValue) };
-			*scopeEnabled.get() = 2;
-			logger::info("iScopeEnabled forced to 2 (always-on)"sv);
-		}
-
 		REL::Relocation<std::uint8_t*> renderer{ REL::Offset(Addr::kRendererInstance) };
 		logger::info(
 			FMT_STRING("renderer flags on load: +1={} +2={} +3={} +4={} +5={}"),
