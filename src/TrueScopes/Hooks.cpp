@@ -214,6 +214,13 @@ namespace TrueScopes::Hooks
 		bool           g_pillMissLogged = false;
 		float          g_pillSavedScale = 0.0f;  // engine-authored local scale (+0x6c), captured once
 		bool           g_pillScaleCaptured = false;
+		// v0.3.6 - rack-slot hole state (pillKillMode 2). The children array and
+		// slot index the carrier was found at; both re-validated against live
+		// memory before every poke (the array can be reallocated by the engine).
+		std::uintptr_t g_pillRackKids = 0;
+		std::uint16_t  g_pillRackSlot = 0;
+		bool           g_pillHoled = false;
+		bool           g_pillCensusDone = false;
 
 		bool SubtreeHasHudGlass(std::uintptr_t a_node, int a_depth)
 		{
@@ -255,6 +262,191 @@ namespace TrueScopes::Hooks
 			}
 		}
 
+		// --- v0.3.6 pill census (diagnostic; Settings::pillCensus) ---------------
+		// Both v0.3.4 (cull flag) and v0.3.5 (epsilon local scale) left the pill
+		// rendering, so either the carrier's world transform is engine-written per
+		// frame (parent scale moot) or the latched node is not the pill at all.
+		// This one-shot walk settles WHERE the pill actually is: climb from the
+		// wand rack to the scene root, then sweep the whole tree logging every
+		// HUD/Hint/Glass/Breath/Button-named node with world position, world scale
+		// and distance to ScopeParent. A floating quad next to the scope cannot
+		// hide from a position sweep, whichever subtree it hangs in.
+
+		// bounded copy of a raw engine name: never walks past kMax (the review's
+		// %.48s lesson - an unterminated name must not fault the instrument)
+		void PillCopyName(const char* a_src, char (&a_out)[49])
+		{
+			int k = 0;
+			for (; k < 48; ++k) {
+				const char ch = a_src[k];
+				if (!ch) {
+					break;
+				}
+				a_out[k] = ch;
+			}
+			a_out[k] = '\0';
+		}
+
+		bool PillNameMatches(const char* a_boundedName)
+		{
+			static constexpr const char* kWords[] = { "hud", "hint", "glass", "breath", "hold", "button" };
+			for (const char* w : kWords) {
+				for (const char* p = a_boundedName; *p; ++p) {
+					const char* a = p;
+					const char* b = w;
+					while (*a && *b) {
+						const char lc = (*a >= 'A' && *a <= 'Z') ? static_cast<char>(*a + 32) : *a;
+						if (lc != *b) {
+							break;
+						}
+						++a;
+						++b;
+					}
+					if (!*b) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		// is a_p a node whose children array contains a_node? SEH-isolated so one
+		// garbage candidate costs one probe, never the climb.
+		bool PillIsParentOf(std::uintptr_t a_p, std::uintptr_t a_node)
+		{
+			__try {
+				if (!a_p || a_p < 0x10000 || (a_p & 7) != 0 || !ScopeIdent::IsNiNode(a_p)) {
+					return false;
+				}
+				const auto kids = *reinterpret_cast<std::uintptr_t*>(a_p + 0x168);
+				const auto cnt = *reinterpret_cast<std::uint16_t*>(a_p + 0x172);
+				for (std::uint16_t i = 0; kids && i < cnt && i < 512; ++i) {
+					if (*reinterpret_cast<std::uintptr_t*>(kids + 8ull * i) == a_node) {
+						return true;
+					}
+				}
+				return false;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		// EMPIRICAL parent discovery: the VR NiAVObject parent offset is not
+		// pinned ground truth, so instead of trusting one, a candidate qword IS
+		// the parent iff its children array contains this node - self-validating
+		// per use, no new static assumption.
+		std::uintptr_t PillGuessParent(std::uintptr_t a_node)
+		{
+			static constexpr std::uintptr_t kTries[] = { 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50 };
+			for (const auto off : kTries) {
+				std::uintptr_t p = 0;
+				__try {
+					p = *reinterpret_cast<std::uintptr_t*>(a_node + off);
+				} __except (EXCEPTION_EXECUTE_HANDLER) {
+					p = 0;
+				}
+				if (p && PillIsParentOf(p, a_node)) {
+					return p;
+				}
+			}
+			return 0;
+		}
+
+		void PillCensusWalk(std::uintptr_t a_node, int a_depth, std::uint32_t& a_visited,
+			std::uint32_t& a_hits, const float (&a_scope)[3], bool a_haveScope)
+		{
+			if (!a_node || a_depth > 16 || a_visited >= 6000 || a_hits >= 40) {
+				return;
+			}
+			++a_visited;
+			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+			if (entry >= 0x10000) {
+				char nb[49];
+				PillCopyName(reinterpret_cast<const char*>(entry + 0x18), nb);
+				if (nb[0] && PillNameMatches(nb)) {
+					++a_hits;
+					const float x = *reinterpret_cast<float*>(a_node + 0xa0);
+					const float y = *reinterpret_cast<float*>(a_node + 0xa4);
+					const float z = *reinterpret_cast<float*>(a_node + 0xa8);
+					const float ws = *reinterpret_cast<float*>(a_node + 0xac);
+					float d = -1.0f;
+					if (a_haveScope) {
+						const float dx = x - a_scope[0], dy = y - a_scope[1], dz = z - a_scope[2];
+						d = std::sqrt(dx * dx + dy * dy + dz * dz);
+					}
+					logger::info(FMT_STRING("pillcensus: '{}' node=0x{:x} wpos=({:.1f},{:.1f},{:.1f}) wscale={:.4f} d2scope={:.1f}"),
+						nb, a_node, x, y, z, ws, d);
+				}
+			}
+			if (!ScopeIdent::IsNiNode(a_node)) {
+				return;
+			}
+			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
+			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x172);
+			if (cnt > 512) {
+				return;
+			}
+			for (std::uint16_t i = 0; kids && i < cnt; ++i) {
+				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
+				if (c) {
+					PillCensusWalk(c, a_depth + 1, a_visited, a_hits, a_scope, a_haveScope);
+				}
+			}
+		}
+
+		void PillCensusRun(std::uintptr_t a_player)
+		{
+			if (g_pillCensusDone) {
+				return;
+			}
+			g_pillCensusDone = true;
+			__try {
+				const auto rig = a_player ? *reinterpret_cast<std::uintptr_t*>(a_player + 0x700) : 0;
+				if (!rig) {
+					logger::warn("pillcensus: no rig - aborted"sv);
+					return;
+				}
+				float scope[3] = {};
+				bool  haveScope = false;
+				const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0);
+				if (sp) {
+					scope[0] = *reinterpret_cast<float*>(sp + 0xa0);
+					scope[1] = *reinterpret_cast<float*>(sp + 0xa4);
+					scope[2] = *reinterpret_cast<float*>(sp + 0xa8);
+					haveScope = true;
+				}
+				std::uintptr_t root = rig;
+				char           chain[384];
+				int            cl = 0;
+				int            hops = 0;
+				for (; hops < 24; ++hops) {
+					const auto p = PillGuessParent(root);
+					if (!p) {
+						break;
+					}
+					root = p;
+					const auto pe = *reinterpret_cast<std::uintptr_t*>(p + 0x10);
+					char nb[49];
+					nb[0] = '\0';
+					if (pe >= 0x10000) {
+						PillCopyName(reinterpret_cast<const char*>(pe + 0x18), nb);
+					}
+					const int n = std::snprintf(chain + cl, sizeof(chain) - cl, " <- '%s'", nb[0] ? nb : "(unnamed)");
+					if (n > 0 && cl + n < static_cast<int>(sizeof(chain))) {
+						cl += n;
+					}
+				}
+				chain[cl] = '\0';
+				logger::info(FMT_STRING("pillcensus: root=0x{:x} after {} hops: rig{}"), root, hops, chain);
+				std::uint32_t visited = 0, hits = 0;
+				PillCensusWalk(root, 0, visited, hits, scope, haveScope);
+				logger::info(FMT_STRING("pillcensus: done visited={} hits={} scope=({:.1f},{:.1f},{:.1f})"),
+					visited, hits, scope[0], scope[1], scope[2]);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				logger::warn("pillcensus: FAULTED (any output above is partial)"sv);
+			}
+		}
+
 		void SetHoldBreathPillHidden(std::uintptr_t a_player, bool a_hidden)
 		{
 			__try {
@@ -272,6 +464,12 @@ namespace TrueScopes::Hooks
 				}
 				// cache is valid only while the node still carries the HUD glass subtree
 				if (g_pillNode && SubtreeHasHudGlassSafe(g_pillNode) != 1) {
+					if (g_pillHoled) {
+						// the node died while detached: restoring a dead pointer
+						// into the rack is worse than leaking one small node
+						g_pillHoled = false;
+						logger::warn("pill node invalidated while holed - restore abandoned (one rack node leaked)"sv);
+					}
 					g_pillNode = 0;
 				}
 				if (!g_pillNode) {
@@ -323,6 +521,8 @@ namespace TrueScopes::Hooks
 						const int v = SubtreeHasHudGlassSafe(c);
 						if (v == 1) {
 							g_pillNode = c;
+							g_pillRackKids = kids;  // for pillKillMode 2 (re-validated per poke)
+							g_pillRackSlot = i;
 							g_pillMissScans = 0;  // the counter measures CONSECUTIVE misses
 							static bool s_foundLogged = false;
 							if (!s_foundLogged) {
@@ -357,6 +557,37 @@ namespace TrueScopes::Hooks
 					}
 				}
 				if (g_pillNode) {
+					// v0.3.6 - pillKillMode 2: RACK-SLOT HOLE, the engine's own hide
+					// idiom for wand-rack UI (null holes are legal per the decompiled
+					// NiNode::GetObjectByName). A node not in the tree cannot draw,
+					// whoever owns its transform - the discriminator flags and scale
+					// could not be. The slot is only ever poked when the live array
+					// still matches what the find recorded; restore only into a slot
+					// that is still null. Live-settable for the in-headset A/B.
+					const bool wantHole = a_hidden && *Settings::pillKillMode == 2;
+					const auto liveKids = *reinterpret_cast<std::uintptr_t*>(rig + 0x168);
+					if (g_pillHoled && !wantHole) {
+						if (liveKids == g_pillRackKids &&
+							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) == 0) {
+							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) = g_pillNode;
+							g_pillHoled = false;
+							logger::info("pill rack slot restored"sv);
+						} else {
+							g_pillHoled = false;
+							logger::warn("pill rack slot changed while holed - restore abandoned"sv);
+						}
+					} else if (wantHole && !g_pillHoled) {
+						if (liveKids == g_pillRackKids &&
+							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) == g_pillNode) {
+							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) = 0;
+							g_pillHoled = true;
+							static bool s_holeLogged = false;
+							if (!s_holeLogged) {
+								s_holeLogged = true;
+								logger::info(FMT_STRING("pill rack slot {} holed (pillKillMode 2)"), g_pillRackSlot);
+							}
+						}
+					}
 					auto* flags = reinterpret_cast<std::uint8_t*>(g_pillNode + 0x108);
 					auto* scale = reinterpret_cast<float*>(g_pillNode + 0x6c);
 					if (a_hidden) {
@@ -563,6 +794,11 @@ namespace TrueScopes::Hooks
 				// has-scope, and no blocking menu is open, so presence dies
 				// with eligibility (the stale poll hides the nodes ~1 s later).
 				SetHoldBreathPillHidden(player, *Settings::hideHoldBreathHint);
+				// v0.3.6 diagnostic: one-shot scene census once the scope is truly
+				// up (the pill exists by then; see Settings::pillCensus)
+				if (*Settings::pillCensus && g_scopeActive.load(std::memory_order_relaxed)) {
+					PillCensusRun(player);
+				}
 				if (*Settings::hideWidgetHousing) {
 					HideWidgetHousing(player);
 					if (!g_housingZeroLogged && g_housingZeroed.load(std::memory_order_relaxed)) {

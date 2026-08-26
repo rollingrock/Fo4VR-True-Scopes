@@ -513,6 +513,23 @@ namespace Settings
 	// SetUpButtonBar call, so the bar object is never created. LOAD-TIME PATCH:
 	// changing this requires a game restart.
 	MAKE_SETTING(bSetting, "TrueScopesVR", hideHoldBreathHint, true);
+	// v0.3.6 DIAGNOSTIC - how the found pill carrier is suppressed. 1 = cull flag
+	// + epsilon local scale (v0.3.4/5 - both field-proven INSUFFICIENT on their
+	// own 2026-08-26: the pill kept rendering, suggesting its world transform is
+	// engine-written per frame or the carrier is the wrong node). 2 = RACK-SLOT
+	// HOLE: null the carrier's slot in PrimaryUIAttachNode's children array -
+	// the engine's own hide idiom for rack UI (null holes are legal per
+	// NiNode::GetObjectByName), ordering- and render-path-proof: a node not in
+	// the tree cannot draw. Pointer saved; restored when the slot is still null.
+	// Live-settable (devbench scope tool 'set') - flips apply next eligible frame.
+	MAKE_SETTING(iSetting, "TrueScopesVR", pillKillMode, std::int64_t(1));
+	// v0.3.6 DIAGNOSTIC - one-shot scene census at scope-in: climb from the wand
+	// rack to the scene root (parent found EMPIRICALLY - a candidate is the
+	// parent iff its children array contains the node), then walk the whole tree
+	// logging every HUD/Hint/Glass/Breath-named node with world position, world
+	// scale and distance to ScopeParent. Wherever the real pill hangs, a floating
+	// quad next to the scope cannot hide from a position sweep.
+	MAKE_SETTING(bSetting, "TrueScopesVR", pillCensus, true);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, true);
 
@@ -793,6 +810,8 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(suppressScopeImods);
 		LOAD(hideHoldBreathHint);
+		LOAD(pillKillMode);
+		LOAD(pillCensus);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
 		// v0.3 hardening: name every unrecognized key once, so a typo is a log
 		// line instead of a silent no-op. disableScopeBlackout is the known alias.
