@@ -66,7 +66,7 @@ namespace Settings
 	// black lens frames in content-heavy scenes (user-bisected 2026-08-08:
 	// lensMode 1 never stutters, cadence 2 never stutters, cadence 1 does) —
 	// per-frame engine resource contention; root cause hunt deferred.
-	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(2));
+	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(1));
 	// Eye-gate OFF hysteresis in ms (v0.2.50): the vanilla gate flickers off in
 	// 200-900ms windows while aiming, and every off-edge plays the widget's
 	// fade-to-black over the lens (the "black bursts"). Off-edges are only
@@ -114,7 +114,7 @@ namespace Settings
 	// VR against it -- the derived figure is logged every heartbeat either way, so
 	// the comparison costs nothing and replacing a known-good calibration with an
 	// unverified formula costs a session.
-	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 2.4);
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 0.0);
 	// Frustum near/far planes for the scope camera. SetCameraFOV takes them as
 	// (FAR, NEAR) — the code passes them in that order (v0.2.36 depth-inversion fix;
 	// the swapped order reversed the projection → farthest-wins depth). near==far
@@ -127,7 +127,7 @@ namespace Settings
 	// tube so the render looks out of the glass, not at the tube interior. Y = forward
 	// along the barrel in weapon space. Tune live: the TOML reloads on every scope-in.
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetX, 0.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetY, 15.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetY, 55.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeCamOffsetZ, 0.0);
 	// v0.2.71 — THE PERF FIX (§3.7e). Cull the scope accumulation against the scope
 	// camera's own frustum instead of whatever was left in the camera's combined
@@ -288,7 +288,7 @@ namespace Settings
 	// look (2026-08-24) called the 0.85 floor out as "you can still make out
 	// the render".
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxStrength, 1.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 1.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 0.9);
 	// Interpupillary distance in GAME UNITS (1 unit ~ 1.43 cm; 64 mm ~ 4.5).
 	// The camera root is the HMD centre, so the aiming eye sits half of this
 	// off it; the eye-box tests both eyes and follows whichever is closer to
@@ -333,12 +333,12 @@ namespace Settings
 	// v0.2.130 — the eye-box clip bottoms out at this flat scatter level
 	// instead of pure black (scene-independent: a constant, never the world).
 	// This is what makes the dark reticle visible in the black at all.
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidual, 0.07);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidual, 0.0);
 	// v0.2.131 — the residual adapts to scene brightness (avg picture luminance
 	// x this scale, saturated): full glow in daylight, fading toward true black
 	// at night so the eye-box never reads as a lit screen in the dark. 0 =
 	// constant residual (v0.2.130 behavior).
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidualAdapt, 4.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxResidualAdapt, 20.0);
 	// v0.2.132 - draw deferred-decal group 5 AFTER the opaque G-buffer groups
 	// in our resolve (the engine's own order paints walls over placed decals in
 	// a resolve-only render). Off = vanilla resolve order.
@@ -348,7 +348,7 @@ namespace Settings
 	// (step attribution now logged) and v0.2.133's fault path orphaned the SSN
 	// decal spin lock, freezing the game on the next shot (fixed: __finally).
 	// Do not enable until the underlying fault is root-caused.
-	MAKE_SETTING(bSetting, "TrueScopesVR", decalStageEnabled, false);
+	MAKE_SETTING(bSetting, "TrueScopesVR", decalStageEnabled, true);
 	// v0.2.132 - also drop accumulator group 0x17 (sun glare) from our render:
 	// same stale-pass exposure as the v0.2.11 fault class, drawn by the resolve
 	// tail. Hardening; off restores pre-.132 behavior.
@@ -380,7 +380,7 @@ namespace Settings
 	// length, like real optics), and a head look cone. Each has an enter/exit
 	// pair for spatial hysteresis. DEFAULT OFF in code until judged in the
 	// headset; the deployed TOML turns it on for testing.
-	MAKE_SETTING(bSetting, "TrueScopesVR", poseGateEnabled, false);
+	MAKE_SETTING(bSetting, "TrueScopesVR", poseGateEnabled, true);
 	// Eye→ocular distance band, game units (1 ≈ 1.43 cm). 90 ≈ 1.3 m covers a
 	// pistol at full extension with margin; vanilla's cap was 38/40.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxDistance, 90.0);
@@ -424,7 +424,7 @@ namespace Settings
 	// through the middle of the widget.
 	// DEFAULT OFF: a wrong scale can make the lens vanish or swallow the view, and
 	// that is indistinguishable from a broken render. Flip it live via DevBench.
-	MAKE_SETTING(bSetting, "TrueScopesVR", widgetFitEnabled, false);
+	MAKE_SETTING(bSetting, "TrueScopesVR", widgetFitEnabled, true);
 	// Ocular aperture radius, in mesh units, for scopes the plugin does NOT
 	// recognise — modded optics, or a vanilla one whose node name is missing from
 	// the built-in table. Default is the hunting rifle's glass shape (measured
@@ -481,13 +481,9 @@ namespace Settings
 	// One fullscreen additive draw then makes the whole accumulation buffer NaN,
 	// which displays as BLACK while probing as LIT.
 	// Turning it off costs NOTHING visually: §6.7's tone bisect proved the pass
-	// contributes zero light today (brightness tracks accumClearScale linearly and
-	// scale 0 is pitch black WITH the exec running — the "sunlit" look was always
-	// fog-colored ambient). So this trades a defect for nothing until the pass is
-	// fixed. Remaining suspect for the NaN: the pass config is rebuilt on the
-	// engine's job-queue worker threads while we execute it on the render thread —
-	// our cfgClean/cfgBuilt test is a check-then-use race. Needs a live x64dbg read
-	// of the constant buffer at a NaN draw to confirm.
+	// ✅ Field A/B 2026-08-26: turning the exec OFF visibly darkens the lens —
+	// the pass CONTRIBUTES LIGHT (the old "contributes zero light" note predated
+	// the v0.2.78/82 ordering+bind fixes and is settled dead).
 	// ✅ DEFAULT TRUE since v0.2.83 — VR-CONFIRMED 2026-08-09 (screenshot 20260809161650).
 	// This was false from v0.2.62 because the pass wrote NaN and contributed no light.
 	// BOTH causes are now fixed: it ran before the G-buffer existed (v0.2.78) and then
@@ -513,7 +509,7 @@ namespace Settings
 	// off the zoom's imod identity. Old TOML key disableScopeBlackout still loads.
 	MAKE_SETTING(bSetting, "TrueScopesVR", suppressScopeImods, true);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
-	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, false);
+	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, true);
 
 #undef MAKE_SETTING
 

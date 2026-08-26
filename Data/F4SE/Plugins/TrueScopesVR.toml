@@ -172,7 +172,7 @@ decalGroup5Reorder = true
 # freezing the game on the next shot. v0.2.134 makes a fault harmless (the
 # lock always releases; the stage self-disables with a step-numbered warn) but
 # the root cause is not yet fixed. Enable only for a controlled diagnosis run.
-decalStageEnabled = false
+decalStageEnabled = true
 # Hardening: drop group 0x17 (sun glare) from our render - same stale-pass
 # class as the v0.2.11 fault.
 dropSunGlareGroup = true
@@ -196,30 +196,6 @@ parallaxMinEyeRelief = 4.0
 # Real-scope verdict 2026-08-25: reticle moves 1:1 with the image.
 reticleParallaxFraction = 1.0
 
-# ONE EURO CAMERA DAMPING (v0.2.124) - kills magnified hand tremor without
-# lagging deliberate pans (speed-adaptive). Filters ONLY the scope render
-# camera's orientation; hands/weapon/reticle relationships stay honest, and
-# the filtered-vs-true divergence is hard-capped at camSmoothMaxLagDegrees
-# (converges to zero at rest - precision shots see the true pose).
-# Code default is OFF; enabled here for the field-judgment session.
-# TUNING LADDER (DevBench, no rebuild): 1) camSmoothBeta=0, raise
-# camSmoothMinCutoffHz from 0.5 until at-rest tremor is gone (expect
-# 0.8-1.5). 2) raise camSmoothBeta from 0.1 until pans track without slew.
-# 3) snap-turn/teleport must adopt instantly (camSmoothSnapDegrees).
-# NOTE: right after a snap turn smoothing is briefly reduced (the filter
-# seeds its speed estimate from the jump) - expected, not a bug.
-# Field 2026-08-25: no visible difference at this tuning, and the right shape
-# may be FRIK-side hand dampening instead - OFF pending more testing. The
-# knobs stay live for DevBench A/B (see the tuning ladder above).
-camSmoothEnabled = false
-camSmoothMinCutoffHz = 1.0
-camSmoothBeta = 0.5
-camSmoothDCutoffHz = 1.0
-# Fill gap above this = adopt raw pose (freeze/thaw, menus). Keep well above
-# the fill interval (fillEveryNFrames * frame time) or every step resets.
-camSmoothResetMs = 250
-camSmoothSnapDegrees = 30.0
-camSmoothMaxLagDegrees = 2.0
 
 # LENS PRIMING (v0.2.125): fill the lens once when the widget comes up (per
 # equip), so the disc never sits black before the first aim. The primed
