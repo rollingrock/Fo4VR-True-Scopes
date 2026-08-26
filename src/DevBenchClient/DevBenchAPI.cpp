@@ -60,6 +60,23 @@ namespace DevBenchAPI
 		DevBenchMessage message;
 		messaging->Dispatch(DevBenchMessage::kMessage_GetInterface, &message,
 			sizeof(DevBenchMessage*), DevBenchPluginName);
+		if (!message.GetApiFunction) {
+#if defined(DEVBENCHAPI_GAME_FALLOUT4)
+			// FALLBACK (2026-08-26, FO4VR): the messaging handshake requires the
+			// provider's any-sender listener to be present in THIS plugin's
+			// listener slot, and F4SEVR's RegisterListener de-dupes by handle -
+			// a provider that loaded earlier can be unreachable by message
+			// forever (its kPostLoad re-register is a global no-op). The DLL
+			// export is load-order-proof; same GetApi either way.
+			if (const auto mod = ::GetModuleHandleW(L"devbench.dll")) {
+				if (const auto entry = reinterpret_cast<void* (*)()>(
+						::GetProcAddress(mod, "DevBench_GetApiFunction"))) {
+					message.GetApiFunction =
+						reinterpret_cast<decltype(message.GetApiFunction)>(entry());
+				}
+			}
+#endif
+		}
 		if (!message.GetApiFunction)
 			return nullptr;
 
