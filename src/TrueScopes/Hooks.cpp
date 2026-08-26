@@ -211,6 +211,99 @@ namespace TrueScopes::Hooks
 		// clone is never rebuilt — nothing can restore a zeroed scale. The flag
 		// hide stays as belt-and-suspenders and covers the frames before the next
 		// world-transform propagation.
+		// v0.3.3 - THE HOLD-BREATH PILL, found by live scene walk 2026-08-26: a
+		// HUDGlassFlat:0 text quad (+ HUDShadowFlat:0) under an OrderedRenderingNode
+		// on a point node (named "Point002" in the shipped rig) attached DIRECTLY to
+		// PrimaryUIAttachNode (player+0x700) - a SIBLING of ScopeParent, which is why
+		// neither the ScopeMenu movie work (v0.3.1/2) nor the widget housing hide
+		// ever touched it. Matched structurally (subtree contains HUDGlassFlat:0),
+		// NOT by the generic point name; wrist-HUD (world_primaryWand.nif) and every
+		// other sibling are skipped by name first. Flags-only cull per eligible
+		// frame; cleared when the knob goes off (live A/B like the housing).
+		std::uintptr_t g_pillNode = 0;
+
+		bool SubtreeHasHudGlass(std::uintptr_t a_node, int a_depth)
+		{
+			if (!a_node || a_depth > 2) {
+				return false;
+			}
+			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+			if (entry >= 0x10000 &&
+				std::strcmp(reinterpret_cast<const char*>(entry + 0x18), "HUDGlassFlat:0") == 0) {
+				return true;
+			}
+			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
+			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x174);
+			for (std::uint16_t i = 0; kids && i < cnt && i < 8; ++i) {
+				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
+				if (c && SubtreeHasHudGlass(c, a_depth + 1)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		void SetHoldBreathPillHidden(std::uintptr_t a_player, bool a_hidden)
+		{
+			__try {
+				const auto nameOf = [](std::uintptr_t a_node) -> const char* {
+					if (!a_node) {
+						return nullptr;
+					}
+					const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+					return entry >= 0x10000 ? reinterpret_cast<const char*>(entry + 0x18) : nullptr;
+				};
+				const auto rig = a_player ? *reinterpret_cast<std::uintptr_t*>(a_player + 0x700) : 0;
+				if (!rig) {
+					g_pillNode = 0;
+					return;
+				}
+				// cache is valid only while the node still carries the HUD glass subtree
+				if (g_pillNode && !SubtreeHasHudGlass(g_pillNode, 0)) {
+					g_pillNode = 0;
+				}
+				if (!g_pillNode) {
+					const auto kids = *reinterpret_cast<std::uintptr_t*>(rig + 0x168);
+					const auto cnt = *reinterpret_cast<std::uint16_t*>(rig + 0x174);
+					for (std::uint16_t i = 0; kids && i < cnt; ++i) {
+						const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
+						const char* cn = c ? nameOf(c) : nullptr;
+						if (!c || !cn) {
+							continue;
+						}
+						// the wrist HUD also carries HUD glass materials - skip every
+						// known sibling by name and only then match structurally
+						if (std::strcmp(cn, "ScopeParent") == 0 ||
+							std::strcmp(cn, "world_primaryWand.nif") == 0 ||
+							std::strncmp(cn, "favorites", 9) == 0 ||
+							std::strncmp(cn, "ws_", 3) == 0 ||
+							std::strncmp(cn, "world_", 6) == 0) {
+							continue;
+						}
+						if (SubtreeHasHudGlass(c, 0)) {
+							g_pillNode = c;
+							static bool logged = false;
+							if (!logged) {
+								logged = true;
+								logger::info(FMT_STRING("hold-breath pill node found: '{}' under PrimaryUIAttachNode"), cn);
+							}
+							break;
+						}
+					}
+				}
+				if (g_pillNode) {
+					auto* flags = reinterpret_cast<std::uint8_t*>(g_pillNode + 0x108);
+					if (a_hidden) {
+						*flags |= 1;
+					} else {
+						*flags &= static_cast<std::uint8_t>(~1u);
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				g_pillNode = 0;
+			}
+		}
+
 		void HideWidgetHousing(std::uintptr_t a_player)
 		{
 			auto& s_sp = g_housingSp;
@@ -361,6 +454,7 @@ namespace TrueScopes::Hooks
 				// This site only runs while the weapon is drawn, a gun,
 				// has-scope, and no blocking menu is open, so presence dies
 				// with eligibility (the stale poll hides the nodes ~1 s later).
+				SetHoldBreathPillHidden(player, *Settings::hideHoldBreathHint);
 				if (*Settings::hideWidgetHousing) {
 					HideWidgetHousing(player);
 					if (!g_housingZeroLogged && g_housingZeroed.load(std::memory_order_relaxed)) {
