@@ -12,11 +12,71 @@ namespace TrueScopes::Hooks
 {
 	namespace
 	{
-		// (v0.3.2's GFx _visible=false on the ScopeMenu movie was DELETED in
-		// v0.3.4: the pill is scene geometry - a HUDGlassFlat quad under
-		// PrimaryUIAttachNode, see SetHoldBreathPillHidden - and the movie path
-		// it sticky-set never carries it. The set "succeeded" and did nothing,
-		// field-proven 2026-08-26.)
+		// v0.3.10 - THE MOVIE-SIDE KILL, back with the RIGHT paths. Six scene-
+		// graph kills (cull, scale, world-verified epsilon, persistent detach,
+		// even zeroing the engine's own scale source) all left the pill
+		// rendering - because the pill is AUTHORED INTO the ScopeMenu movie and
+		// composited into RT 0x62 outside the lens delivery footprint; it has no
+		// dedicated scene node to kill. The one intervention that ever visibly
+		// changed it (v0.3.1's SetUpButtonBar nop, green -> white) is native
+		// STYLING of exactly this element. Ghidra: every native consumer fetches
+		// it as BSGFxObject::GetMember(root, "ButtonHintInstance") - a DIRECT
+		// child of the menu root - and FO4 menus are Scaleform AS3, whose paths
+		// root at "root." NOT AS2's "_root." (v0.3.2's paths - which is why its
+		// sticky set "succeeded" against nothing). Probe first, then set: the
+		// probe log names the real path even if the set fails. Re-armed on every
+		// scope-active edge - the menu can be recreated per scope-in.
+		std::uint32_t g_hintMovieTries = 0;
+		bool          g_hintMovieDone = false;
+
+		void TryHideHoldBreathMovieElement()
+		{
+			if (!g_hintMovieTries || g_hintMovieDone || !*Settings::hideHoldBreathHint) {
+				return;
+			}
+			--g_hintMovieTries;
+			const auto ui = RE::UI::GetSingleton();
+			if (!ui) {
+				return;
+			}
+			const auto menu = ui->GetMenu("ScopeMenu");
+			if (!menu || !menu->uiMovie) {
+				return;
+			}
+			static constexpr const char* kPaths[] = {
+				"root.ButtonHintInstance",
+				"root.Menu_mc.ButtonHintInstance",
+				"root.ScopeMenuInstance.ButtonHintInstance",
+				"root.ButtonBarHolder_mc.ButtonHintBar",
+			};
+			for (const char* path : kPaths) {
+				RE::Scaleform::GFx::Value v;
+				if (!menu->uiMovie->GetVariable(&v, path) || v.IsUndefined()) {
+					continue;
+				}
+				char buf[96];
+				std::snprintf(buf, sizeof(buf), "%s._visible", path);
+				const RE::Scaleform::GFx::Value off{ false };
+				const bool okVis = menu->uiMovie->SetVariable(buf, off);
+				std::snprintf(buf, sizeof(buf), "%s._alpha", path);
+				const RE::Scaleform::GFx::Value zero{ 0.0 };
+				const bool okAlpha = menu->uiMovie->SetVariable(buf, zero);
+				g_hintMovieDone = true;
+				static bool s_logged = false;
+				if (!s_logged) {
+					s_logged = true;
+					logger::info(FMT_STRING("hold-breath movie element FOUND at '{}' (_visible set {}, _alpha set {})"), path, okVis, okAlpha);
+				}
+				return;
+			}
+			if (!g_hintMovieTries) {
+				static bool s_missLogged = false;
+				if (!s_missLogged) {
+					s_missLogged = true;
+					logger::warn("hold-breath movie element at NO candidate path (retry window exhausted)"sv);
+				}
+			}
+		}
 
 		bool g_installed = false;
 		bool g_verdictHookInstalled = false;  // v0.2.116: pose gate owns the verdict feed
@@ -73,6 +133,8 @@ namespace TrueScopes::Hooks
 						// changed since we last looked. Ordered after load() so the probe
 						// resolves against the freshly parsed [Scopes] overrides.
 						ScopeIdent::Request();
+						g_hintMovieTries = 240;  // v0.3.10: re-kill the movie element per menu (re)open
+						g_hintMovieDone = false;
 						if (*Settings::retryAfterFault) {
 							// v0.3 hardening: cap retries per session - a DETERMINISTIC fault
 							// would otherwise re-fault inside the engine on every scope-in
@@ -88,6 +150,7 @@ namespace TrueScopes::Hooks
 				} else if (g_gateRaw.exchange(false)) {
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
 				}
+				TryHideHoldBreathMovieElement();
 				// deliberately NOT writing renderer+3
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
@@ -373,6 +436,43 @@ namespace TrueScopes::Hooks
 			}
 		}
 
+		// v0.3.10 - unfiltered subtree dump: name + local scale + world scale +
+		// cull bit for every node, bounded. Diagnostic only (census knob).
+		void PillDumpSubtree(std::uintptr_t a_node, int a_depth, std::uint32_t& a_count)
+		{
+			if (!a_node || a_depth > 4 || a_count >= 32) {
+				return;
+			}
+			++a_count;
+			char nb[49];
+			nb[0] = '?';
+			nb[1] = 0;
+			const auto entry = *reinterpret_cast<std::uintptr_t*>(a_node + 0x10);
+			if (entry >= 0x10000) {
+				PillCopyName(reinterpret_cast<const char*>(entry + 0x18), nb);
+			}
+			logger::info(FMT_STRING("pillscope: {}'{}' lscale={:.4f} wscale={:.4f} culled={}"),
+				a_depth == 0 ? "" : (a_depth == 1 ? "  " : (a_depth == 2 ? "    " : "      ")),
+				nb,
+				*reinterpret_cast<float*>(a_node + 0x6c),
+				*reinterpret_cast<float*>(a_node + 0xac),
+				(*reinterpret_cast<std::uint8_t*>(a_node + 0x108) & 1) != 0);
+			if (!ScopeIdent::IsNiNode(a_node)) {
+				return;
+			}
+			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
+			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x172);
+			if (cnt > 128) {
+				return;
+			}
+			for (std::uint16_t i = 0; kids && i < cnt; ++i) {
+				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
+				if (c) {
+					PillDumpSubtree(c, a_depth + 1, a_count);
+				}
+			}
+		}
+
 		void PillCensusRun(std::uintptr_t a_player)
 		{
 			if (g_pillCensusDone) {
@@ -421,6 +521,13 @@ namespace TrueScopes::Hooks
 				PillCensusWalk(root, 0, visited, hits, scope, haveScope);
 				logger::info(FMT_STRING("pillcensus: done visited={} hits={} scope=({:.1f},{:.1f},{:.1f})"),
 					visited, hits, scope[0], scope[1], scope[2]);
+				// v0.3.10 - dump EVERYTHING under ScopeParent unfiltered (the
+				// widget rig's shapes were never enumerated; if the pill is a
+				// widget-surface effect this is where its footprint lives)
+				if (sp) {
+					std::uint32_t dumped = 0;
+					PillDumpSubtree(sp, 0, dumped);
+				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				logger::warn("pillcensus: FAULTED (any output above is partial)"sv);
 			}
