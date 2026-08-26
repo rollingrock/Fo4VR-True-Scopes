@@ -9,9 +9,8 @@ namespace TrueScopes::VerdictInput
 	namespace
 	{
 		std::atomic_bool g_requested{ false };
-		// ---- IVRSystem_017 ABI (openvr 1.0.10; the version string inside FO4VR's
-		// shipped openvr_api.dll is exactly "IVRSystem_017") -----------------------
-		//
+		// IVRSystem_017 ABI (openvr 1.0.10; the version string inside FO4VR's
+		// shipped openvr_api.dll is exactly "IVRSystem_017").
 		// vtable slots counted from the header's declaration order:
 		//   18 GetTrackedDeviceIndexForControllerRole(role)  role: 1=left, 2=right
 		//   33 GetControllerState(index, state*, size)

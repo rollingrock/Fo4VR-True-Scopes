@@ -11,37 +11,29 @@
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/OneEuro.h"
 
-// Phase 2: mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62.
-//
-// v0.2.8 rewrite — the recipe now mirrors the engine's own deferred scene render,
-// decompiled end-to-end (see SESSION_2026-08-07_DEFERRED_DEEP_DIVE.md in the
-// investigation repo):
-//   * FUN_140c87320 / FUN_140b03d60 = the engine's two deferred scene renderers.
-//     Both use accumulator renderMode 0x19 (deferred). renderMode 0 routes every
-//     pass to the FORWARD buckets, which FUN_1427ff8b0 never draws — that is why
-//     v0.2.3..v0.2.7 resolved to a black lens no matter where the camera was.
-//   * renderer+4 (the scope-pass flag, reader FUN_141d947d0) is checked ~10x inside
-//     FUN_1427ff8b0 and reroutes light buffers 0x24/0x25 -> 0x6a/0x6b and DS 1 -> 0xC.
-//     We bracket the whole render with renderer+4 = 1 so our pass runs in the exact
-//     environment the vanilla scoped world render used (proven live in the Route A demo).
-//   * Bind modes (decoded from FUN_141dbd380 + the apply fn FUN_141d9b190):
-//     0 = clear-on-apply, 3 = no clear, 4 = CopyResource restore (the v0.2.6 smear).
-//     Engine G-buffer binds: slots 0-4 mode 0, slot 5 (0x23) mode 3, byte-verified.
-//   * Accumulation = ONE BSShaderUtil::AccumulateScene(cam, ssn, cull, 1) — for an
-//     SSN it adds every attached child. No portal lists, no manual subtrees. Lights
-//     run once per frame by the engine; we do NOT re-run ProcessQueuedLights.
-//   * BSShaderUtil::SetCameraFOV params 3/4 are the frustum FAR/NEAR planes — in
-//     that order (v0.2.36 static proof; every vanilla caller passes (far, near)).
-//     We passed 1,1 from v0.2.0 to v0.2.19: near==far -> NaN projection depth rows
-//     -> no geometry rasterized (the black/phantom lens era). Then v0.2.20-35
-//     passed (near, far) = swapped -> reversed projection under the engine's
-//     standard-Z LESS_EQUAL states -> farthest-fragment-wins depth inversion.
-//   * The resolve draws the G-buffer groups itself, then composites into out target
-//     (param_5) via the shader-6 quad. Its internal 0x61->0x62 copy is refraction-only;
-//     the per-frame lens delivery in vanilla is FUN_1427b08c0(0x61, 0x62, 0) from
-//     FUN_14284e370 — we keep doing that explicitly.
-// All raw offsets decoded from code bytes (Ghidra high-.data labels are unreliable;
-// code bytes are ground truth and match the live process).
+// Mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62,
+// mirroring the engine's own deferred scene renderers (FUN_140c87320 /
+// FUN_140b03d60):
+//   * accumulator renderMode 0x19 = deferred; mode 0 routes every pass to the
+//     forward buckets, which the resolve (FUN_1427ff8b0) never draws.
+//   * renderer+4 (scope-pass flag, reader FUN_141d947d0) is checked ~10x inside
+//     the resolve and reroutes light buffers 0x24/0x25 -> 0x6a/0x6b and DS
+//     1 -> 0xC. The whole render runs inside a renderer+4 = 1 bracket, the
+//     exact environment of the vanilla scoped world render.
+//   * RT bind modes (FUN_141dbd380 + apply fn FUN_141d9b190): 0 = clear-on-
+//     apply, 3 = no clear, 4 = CopyResource restore. Engine G-buffer binds:
+//     slots 0-4 mode 0, slot 5 (0x23) mode 3.
+//   * Accumulation = one BSShaderUtil::AccumulateScene(cam, ssn, cull, 1) —
+//     for an SSN it adds every attached child; no portal lists or manual
+//     subtrees.
+//   * BSShaderUtil::SetCameraFOV params 3/4 are the frustum far/near planes,
+//     in that order; every vanilla caller passes (far, near).
+//   * The resolve draws the G-buffer groups itself, then composites into the
+//     out target (param_5) via the shader-6 quad. Its internal 0x61->0x62 copy
+//     is refraction-only; the per-frame lens delivery in vanilla is
+//     FUN_1427b08c0(0x61, 0x62, 0) from FUN_14284e370, done explicitly here.
+// Raw offsets decoded from code bytes — Ghidra high-.data labels are
+// unreliable; code bytes are ground truth and match the live process.
 
 namespace TrueScopes::ScopeRender
 {
@@ -53,7 +45,7 @@ namespace TrueScopes::ScopeRender
 		using CullDtor_t = void (*)(void*);                                                            // 0x1d4d960  BSCullingProcess::dtor (Ghidra-mislabeled as ctor)
 		using CullSetAccum_t = void (*)(void*, void*);                                                 // 0x1d4d9c0  BSCullingProcess::SetAccumulator
 		using CullSetFrustum_t = void (*)(void*, const void*);                                         // 0x1c452b0  NiCullingProcess::SetFrustum(cull, NiFrustum*) — needs cull+0x18 (camera) set first; fills the 6 planes at cull+0x3c and the enable mask at cull+0x9c
-		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, FAR, NEAR) — param_3=far, param_4=near (v0.2.36 static proof; the v0.2.0-19 "1,1" bug was near==far → NaN projection)
+		using SetCameraFOV_t = void (*)(std::uintptr_t, float, float, float);                          // 0x2804a90  BSShaderUtil::SetCameraFOV(cam, fovDeg, far, near) — param_3 = far, param_4 = near; near==far builds a NaN projection
 		using ClearPrevCam_t = void (*)(std::uintptr_t);                                               // 0x1d95240  clear prev-frame camera cache(renderer); also used for 0x1d94990 ResetState
 		using AccumScene_t = void (*)(std::uintptr_t, std::uintptr_t, void*, std::uint32_t);           // 0x27ff370  BSShaderUtil::AccumulateScene(cam, node, cull, 1)
 		using DeferredResolve_t = void (*)(std::uintptr_t, void*, void*, std::uintptr_t,              // 0x27ff8b0  full deferred render: G-buffer group draws + lighting + composite
@@ -70,37 +62,26 @@ namespace TrueScopes::ScopeRender
 		using SetClearColor_t = void (*)(std::uintptr_t, float, float, float, float);                  // 0x1d8dc80  BSGraphics::Renderer::SetClearColor(renderer, r, g, b, a)
 		using ClearColorNow_t = void (*)(std::uintptr_t);                                              // 0x1d8dd80  BSGraphics::Renderer::ClearColor(renderer): immediate CRTV of current slot-0 target
 
-		// --- sun pass (v0.2.26) ---
+		// --- sun pass ---
 		// The sun is a BSDFLightShader "Dir" technique pass (flags 0x202|filter when
-		// shadowed, 0x201 unshadowed — namer FUN_142922370). It is drawn ONCE per frame
-		// into the light accum MRT by the pre-world stage (FUN_142846d60 builds/refreshes
-		// the persistent pass config, job FUN_142849990 executes it), NOT by the resolve —
-		// the resolve's ssn+0x1a8/+0x1c0 loops are point/spot volumes only (cone geometry,
-		// BSShaderUtil::GenerateCone in FUN_14286ffa0). That is why v0.2.25 had working
-		// local lights but no sun: nothing ever drew the sun into OUR 0x6a.
+		// shadowed, 0x201 unshadowed — namer FUN_142922370), drawn once per frame into
+		// the light accum MRT by the pre-world stage (FUN_142846d60 builds/refreshes
+		// the persistent pass config, job FUN_142849990 executes it) — not by the
+		// resolve, whose ssn+0x1a8/+0x1c0 loops are point/spot volumes only (cone
+		// geometry, BSShaderUtil::GenerateCone in FUN_14286ffa0).
 		using StateSetCamData_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);              // 0x1da8c40  BSGraphics::State: update camera-data block (state, cam, slotSel)
-		// 0x1da8bf0  BSGraphics::State::SetViewportFromCamera(state, cam, slotSel, minDepth, maxDepth)
-		// v0.2.64 SIGNATURE FIX. Args 4 and 5 are the D3D11 viewport MIN/MAX DEPTH, and arg 4
-		// is a FLOAT in XMM3 — not the uint8 this was declared as. Static proof:
-		//   0x141da8bf0  MOVAPS XMM6,XMM3 / ... / MOVAPS XMM3,XMM6   (passes XMM3 straight through)
-		//   0x141da9200  MOVSS [RCX+0x10],XMM2   -> camData rect[4] = MinDepth
-		//                MOVSS [RCX+0x14],XMM3   -> camData rect[5] = MaxDepth
-		//   0x141d8d480  param_2[0x28] = rect[4]; param_2[0x29] = rect[5]  (the D3D11_VIEWPORT)
-		// Every vanilla caller sets up exactly this pair, e.g. FUN_140b03d60:
-		//   XORPS XMM3,XMM3            -> minDepth 0.0   (arg 4, XMM3)
-		//   MOVSS [RSP+0x20],XMM7      -> maxDepth 1.0   (arg 5, stack; 0x142c7f640 == 1.0f, read live)
-		// Declaring arg 4 as uint8 sent our 0 to R9, which the callee never reads, leaving XMM3
-		// holding leftover garbage from earlier FP work. Field evidence: MinDepth = -4.7747655
-		// with MaxDepth = 1.0 (our stack arg landed correctly by luck). D3D11 requires
-		// 0 <= Min <= Max <= 1 and drops the whole RSSetViewports call otherwise, leaving the
-		// PREVIOUS viewport in effect for our entire scope render.
+		// 0x1da8bf0  BSGraphics::State::SetViewportFromCamera(state, cam, slotSel, minDepth, maxDepth).
+		// Args 4/5 are the D3D11 viewport min/max depth, and arg 4 is a float in
+		// XMM3 — declaring it as an integer type sends the value to R9, which the
+		// callee never reads, leaving XMM3 holding leftover FP garbage. D3D11
+		// requires 0 <= min <= max <= 1 and drops the whole RSSetViewports call
+		// otherwise, silently leaving the previous viewport in effect.
 		using StateSetViewport_t = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t, float, float);
 		using DepthMode_t = void (*)(std::uintptr_t, std::uint32_t);                                  // 0x1d8dd60 / 0x1d8de10: depth/texture mode setters the resolve runs before lighting
 		using CtxCtor_t = void* (*)(void*, std::uintptr_t, std::uintptr_t);                            // 0x2812be0  render-context ctor (ctx[0x2d0], camera, accumulator)
 		using FindCamBlock_t = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);       // 0x1daaf30  find CameraStateData block (state, camera, sel) in the state+0x140 array (stride 0x480); 0 if absent
-		// v0.2.76: RETURNS char, and it is not decorative — see the gate note at the call
-		// site. Declared void until now, so the one bit that says whether the sun pass
-		// actually drew was not merely unchecked, it was unrepresentable.
+		// Returns char: whether the draw actually happened — see the gate note at
+		// the call site.
 		using ExecPassConfig_t = char (*)(std::uintptr_t, std::uint8_t, void*);                        // 0x2891040  execute pass/pass-config (also takes the persistent sun config directly — FUN_142849990 does exactly that)
 		using NiAVObjectUpdate_t = void (*)(std::uintptr_t, void*);                                    // 0x1c22fb0  NiAVObject::Update(obj, NiUpdateData) — recomputes world transforms down the subtree
 		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
@@ -111,8 +92,8 @@ namespace TrueScopes::ScopeRender
 			return reinterpret_cast<T>(REL::Module::get().base() + a_rva);
 		}
 
-		// --- data (fixed, byte/live-verified this session) ---
-		constexpr std::uintptr_t kPlayerGlobal = Addr::kPlayerGlobal;  // hoisted v0.2.140
+		// --- data (fixed, byte/live-verified) ---
+		constexpr std::uintptr_t kPlayerGlobal = Addr::kPlayerGlobal;
 		constexpr std::uintptr_t kRTManager = 0x38ac010;         // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
 		constexpr std::uintptr_t kRendererRVA = 0x6239340;       // BSGraphics::Renderer (live-verified)
 		constexpr std::uintptr_t kIsmInstanceRVA = 0x68789e8;    // ImageSpaceManager::pInstance (RIP-decoded from FUN_1427b08c0 +0x63)
@@ -123,11 +104,11 @@ namespace TrueScopes::ScopeRender
 		std::uintptr_t g_fovMode738 = 0;  // byte: force symmetric-FOV frusta in SetCameraFOV (vanilla scope pass forces 1)
 		std::uintptr_t g_fovMode750 = 0;  // dword: which view gets symmetric FOV; 2 = all (vanilla scope pass forces 2)
 
-		// v0.3 hardening (INV §8.6): engine-global brackets armed while RenderImpl
-		// holds an engine global in a modified state. Inline restores disarm; on the
-		// SEH fault path Render() calls RestoreArmedEngineState() so a fault cannot
-		// leave previs disabled engine-wide, the fov mode forced, the light counts
-		// clamped, or the ISM selector held.
+		// Engine-global brackets armed while RenderImpl holds an engine global in a
+		// modified state. Inline restores disarm; on the SEH fault path Render()
+		// calls RestoreArmedEngineState() so a fault cannot leave previs disabled
+		// engine-wide, the fov mode forced, the light counts clamped, or the ISM
+		// selector held.
 		struct ArmedRestore
 		{
 			std::uint8_t*          fov738 = nullptr;
@@ -191,27 +172,27 @@ namespace TrueScopes::ScopeRender
 		bool g_available = false;
 		bool g_faulted = false;  // fault latch (vs never-initialized) — clearable via RetryAfterFault
 		std::atomic<std::uint32_t> g_renderTid{ 0 };  // thread id while our renderer+4 bracket is live (see Hooks::ScopePassReadHook)
-		// v0.2.65 DevBench surface: render counter promoted out of Render()'s local
-		// static, the per-render engine pointers, and the on-demand dump handshake.
+		// DevBench surface: render counter and the per-render engine pointers.
 		std::uint64_t              g_renders = 0;
 		std::uintptr_t             g_lastRtm = 0, g_lastRenderer = 0, g_lastCam = 0;
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
-		// v0.2.78: the sun exec, deferred to INSIDE the resolve. Holds a lambda that
-		// closes over Render()'s locals; Render() is on the stack for the whole resolve
-		// call, so those references stay valid. Cleared unconditionally after the resolve
-		// (and on the fault path) so a stale closure can never be invoked on a later frame.
+		// The sun exec, deferred to inside the resolve. Holds a lambda that closes
+		// over Render()'s locals; Render() is on the stack for the whole resolve
+		// call, so those references stay valid. Cleared unconditionally after the
+		// resolve (and on the fault path) so a stale closure can never be invoked
+		// on a later frame.
 		std::function<void()> g_pendingSunExec;
-		std::atomic_bool g_inOwnResolve = false;   // true only while OUR resolve call is on the stack (the hooks key off this)
-		// v0.2.133 - the deferred-decal stage (bullet holes). Armed per render,
-		// fired once from ResolveAccumBind0Hook BEFORE the accum bind (G-buffer
-		// still bound - the stage reads AND writes it).
+		std::atomic_bool g_inOwnResolve = false;   // true only while our resolve call is on the stack (the hooks key off this)
+		// The deferred-decal stage (bullet holes). Armed per render, fired once
+		// from ResolveAccumBind0Hook before the accum bind (G-buffer still bound —
+		// the stage reads and writes it).
 		std::atomic_bool g_pendingDecalStage{ false };
 		std::uintptr_t   g_decalStageCam = 0;
 		std::uint32_t    g_diagDecalN = 0;
 		std::uint32_t    g_diagDecalBatches = 0;
-		// v0.2.134: fault attribution - advanced through DecalStageImpl so the
-		// warn names the dying step. 0=entry 1=plane 2=locked 3=visited
-		// 4=refs-held 5=render-call 6=rendered 7=refs-released.
+		// Fault attribution — advanced through DecalStageImpl so the warn names
+		// the dying step. 0=entry 1=plane 2=locked 3=visited 4=refs-held
+		// 5=render-call 6=rendered 7=refs-released.
 		std::atomic<std::uint32_t> g_decalStep{ 0 };
 
 		// Fault forensics: which step the render was in when the SEH guard fired.
@@ -228,30 +209,30 @@ namespace TrueScopes::ScopeRender
 		// Live camera / viewport diagnostics captured after the resolve.
 		std::int32_t g_diagLightsA = 0;  // *(short*)(ssn+0x1a8): resolve's shadowed-light loop count
 		std::int32_t g_diagLightsB = 0;  // *(short*)(ssn+0x1c0): resolve's queued-light loop count
-		std::int32_t g_diagLightsClamp = -1;  // v0.2.73 perfLightsMax actually applied this render (-1 = none)
-		// v0.2.75: the sun NiLight's world basis / position / color as our exec sees them.
+		std::int32_t g_diagLightsClamp = -1;  // perfLightsMax actually applied this render (-1 = none)
+		// The sun NiLight's world basis / position / color as the exec sees them.
 		float g_diagSunBasis[9] = {};  // rows at niLight+0x70/+0x80/+0x90
 		float g_diagSunPos[3] = {};
 		float g_diagSunRGB[3] = {};
 		float g_diagSunScale = 0.0f;
-		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot BEFORE resolve
-		std::int32_t g_diagSunSlotPost = -2;  // ... and AFTER (0xff = no slot -> the resolve skips the light)
+		std::int32_t g_diagSunSlotPre = -2;   // sun (shadowed light 0) +0x18 shadow-map slot before resolve
+		std::int32_t g_diagSunSlotPost = -2;  // ... and after (0xff = no slot -> the resolve skips the light)
 		std::uint64_t g_diagSunFlags = 0;     // sun light +0x108 flags qword
 		std::int32_t g_diagSunPass = -1;      // -1 not attempted, 0 config invalid, 1 executed
-		// v0.2.76: "executed" above only ever meant "we made the call". These are the
-		// return value of FUN_142891040 — whether the draw actually happened.
+		// g_diagSunPass only says the call was made; these carry FUN_142891040's
+		// return value — whether the draw actually happened.
 		std::int32_t g_diagSunDrew = -1;      // -1 not attempted, 0 gated off, 1 drew
 		std::uint64_t g_sunDrewCount = 0;
 		std::uint64_t g_sunGatedCount = 0;
 		std::uint32_t g_diagSunCfgFlags = 0;  // sun config technique flags (+0x48): 0x202|filter = shadowed Dir, 0x201 = unshadowed
 		std::int32_t g_diagSunIsSSNSun = -1;  // config light[0] == *(ssn+0x248)?
 		std::int32_t g_diagEyeCount = 0;
-		// v0.2.71 culling forensics: the two frusta the engine keeps on a camera.
+		// Culling forensics: the two frusta the engine keeps on a camera.
 		// eye0 = [cam+0x1a0][0], the one SetCameraFOV writes and the projection uses;
-		// comb = *(cam+0x200), the COMBINED frustum BSCullingGroup::SetCamera culls
-		// with. On a mono camera the engine never refreshes comb's lateral extents,
-		// which is exactly the §3.7e bug. `combPre` is comb as found BEFORE our
-		// mirror, so the log records the stale value that was doing the culling.
+		// comb = *(cam+0x200), the combined frustum BSCullingGroup::SetCamera culls
+		// with. On a mono camera the engine never refreshes comb's lateral extents.
+		// combPre is comb as found before the mirror below, so the log records the
+		// stale value that was doing the culling.
 		float g_diagFrustumEye0[7] = {};
 		float g_diagFrustumCombPre[7] = {};
 		std::int32_t g_diagFrustumAliased = -1;  // 1 = [cam+0x200] == [cam+0x1a0] (mirror is a no-op), 0 = distinct, -1 = unknown
@@ -259,33 +240,26 @@ namespace TrueScopes::ScopeRender
 		float g_fogRGB[3] = { 0.05f, 0.05f, 0.05f };  // last-good fog color (ambient base); dim gray until first read
 		std::uint64_t g_diagFogNulls = 0;             // frames where the fog singleton was null (stutter forensics)
 
-		// --- v0.2.43 black-burst forensics: 1-pixel GPU readback of the lens chain.
-		// D3D11 immediate context global (RIP-derived from Renderer::ClearColor
-		// 0x141d8dd80: ID3D11DeviceContext* at 0x146235ab0; RTV at renderer+0xa78+
-		// idx*0x30 => live ID3D11Texture2D* at renderer+0xa70+idx*0x30, the fields
-		// the mode-4 CopyResource restore uses). Each sampled render costs two
-		// Map() sync stalls — diagnostic only, off by default.
+		// 1-pixel GPU readback of the lens chain. D3D11 immediate context global
+		// (RIP-derived from Renderer::ClearColor 0x141d8dd80: ID3D11DeviceContext*
+		// at 0x146235ab0; RTV at renderer+0xa78+idx*0x30 => live ID3D11Texture2D*
+		// at renderer+0xa70+idx*0x30, the fields the mode-4 CopyResource restore
+		// uses). Each sampled render costs two Map() sync stalls — diagnostic
+		// only, off by default.
 		constexpr std::uintptr_t kD3DContextRVA = 0x6235ab0;
 
-		// ---- v0.2.73 THE STOPWATCH — per-stage GPU + CPU timing ------------------
-		//
-		// The v0.2.72 culling fix took the render 27.3 ms -> 13.6 ms, and the shape of
-		// what is left says the remaining cost is not geometry: draw passes fell 19x
-		// (14,441 -> ~700) while time fell 2x. The standing suspects — 1024^2 render
-		// resolution and 385 shadowed lights — are guesses. So were the last two perf
-		// theories, and both were wrong. This measures the stages directly.
+		// ---- per-stage GPU + CPU timing ------------------------------------------
 		//
 		// GPU: D3D11 timestamp queries. Eight marks bracket the seven stages of
 		// Render(); a TIMESTAMP_DISJOINT query per render carries the tick frequency
 		// and the validity flag (the GPU clock can change frequency mid-flight, and
-		// the D3D contract is to DISCARD such a frame — counted, never averaged in).
+		// the D3D contract is to discard such a frame — counted, never averaged in).
 		// Results are collected 2-3 renders later with DONOTFLUSH, so nothing here
 		// ever stalls the pipeline the way the 1-pixel readbacks do.
 		//
 		// CPU: QueryPerformanceCounter at the same marks. Both are needed —
 		// AccumulateScene is CPU pass-list building with almost no GPU work, while
-		// the resolve is the reverse. A single number could not tell those apart, and
-		// which one it is decides whether the fix is fewer objects or fewer pixels.
+		// the resolve is the reverse; a single number could not tell those apart.
 		constexpr std::uint32_t kMarkCount = 8;
 		constexpr std::uint32_t kSegCount = kMarkCount - 1;  // == kStageCount in the header
 		constexpr std::uint32_t kTimerRing = 4;              // renders in flight before we skip timing one
@@ -315,14 +289,11 @@ namespace TrueScopes::ScopeRender
 		std::int64_t  g_cpuMarks[kMarkCount] = {};
 		std::int64_t  g_qpcFreq = 0;
 
-		// v0.2.74: set by ResetStageTimers() from the DevBench thread; consumed on the
-		// render thread. v0.2.73 detected the reset as an OFF->ON edge of perfTimers seen
-		// by the render thread, so two /config/set calls back to back landed between
-		// renders and the reset never happened -- the first ladder of the 08-09 session
-		// silently reported session-long running means and damped a 9 ms effect to 1 ms.
-		// A latch cannot miss the window: whenever the flag is set, the next render clears
-		// its accumulators. (Gotcha #3 again: a probe that reports something plausible and
-		// wrong is worse than one that reports nothing.)
+		// Set by ResetStageTimers() from the DevBench thread; consumed on the render
+		// thread. A latch, not an edge detect: two config writes back to back can
+		// land between renders, and an off->on edge seen by the render thread would
+		// miss them — the stats would silently keep session-long running means.
+		// Whenever the flag is set, the next render clears its accumulators.
 		std::atomic_bool g_timerResetRequest{ false };
 
 		void ResetTimerStats() noexcept
@@ -544,43 +515,30 @@ namespace TrueScopes::ScopeRender
 			CapturePassCountsInto(a_accum, g_passCounts, g_passTotal);
 		}
 
-		// Sky accumulation forensics (v0.2.38): group counts immediately before and
-		// after the sky-root accumulation — the delta says which groups the sky passes
-		// actually landed in (0xC expected; anything else = routing surprise).
+		// Sky accumulation forensics: group counts immediately before and after the
+		// sky-root accumulation — the delta says which groups the sky passes
+		// actually landed in.
 		std::uint32_t g_skyBaseCounts[kPassGroupCount] = {};
 		std::uint32_t g_skyBaseTotal = 0;
 		std::uint32_t g_skyAfterCounts[kPassGroupCount] = {};
 		std::uint32_t g_skyAfterTotal = 0;
 
-		// THE v0.2.28 bisect result: with the sun pass in, accum DIFFUSE (0x6a) is a
-		// clean sun-lit image but accum SPECULAR (0x6b) is flat saturated garbage —
-		// and the composite output is dominated by it. Diffuse needs only N·L;
-		// specular additionally needs the VIEW vector, reconstructed from depth via
-		// the INVERSE VIEW MATRIX at camData+0x1d0 — which only the engine's scene
-		// renderers write MANUALLY (FUN_140c875f0: XMMatrixInverse of the view at
-		// camData+0x90, stored TRANSPOSED at +0x1d0..+0x20c). The state camera-data
-		// update (0x1da8c40) does NOT touch it, so ours held the stale MAIN camera
-		// inverse → garbage world positions → exploded specular. This was flagged as
-		// the "next lever" in the v0.2.8 notes and never fired because diffuse looked
-		// fine. Replicated here 1:1.
-		// THE v0.2.29/30 POST-MORTEM (settled live, x64dbg session 2026-08-07): the
-		// camera commit FUN_141daa860 (inside the viewport setter 0x1da8bf0) copies
-		// the camera's CameraStateData block into a FIXED STAGING block at
-		// *(ctx+0x25d0) — but the copy spans offsets +0x20..+0x1c8 ONLY. The
-		// inverse-projection slot at +0x1d0 is NEVER copied; the engine's scene
-		// renderers write it into STAGING manually and get away with a stale-source
-		// inverse because they re-commit the same camera every frame. v0.2.29 wrote
-		// staging from a stale source BEFORE the commit; v0.2.30 wrote a perfect
-		// inverse into the camera BLOCK, which the commit never propagates. The
-		// draws (BSDFLight spec world-pos reconstruction, composite) consume
-		// STAGING+0x1d0 — which still held the MAIN view's inverse-projection.
-		// Correct recipe: source = OUR block+0x90 (proj, valid after SetCamData),
-		// destination = *(ctx+0x25d0)+0x1d0, written any time before the draws
-		// (subsequent commits leave +0x1d0 untouched).
-		// v0.2.58: how often the inverse-projection source was singular (each one
-		// would previously have written a full NaN matrix into the staging block).
-		// FIELD RESULT: never fires (invproj=0, det ~745) — XMMatrixInverse was NOT
-		// the NaN source. Check kept: it is correct hygiene and costs nothing.
+		// Specular (and world-pos reconstruction generally) needs the inverse
+		// projection at staging+0x1d0, which only the engine's scene renderers
+		// write manually (FUN_140c875f0: XMMatrixInverse of the matrix at
+		// camData+0x90, stored transposed at +0x1d0..+0x20c). The state camera-data
+		// update (0x1da8c40) does not touch it, and the camera commit FUN_141daa860
+		// (inside the viewport setter 0x1da8bf0) copies the camera's
+		// CameraStateData block into a fixed staging block at *(ctx+0x25d0)
+		// spanning offsets +0x20..+0x1c8 only — +0x1d0 is never propagated, so
+		// writing it into the camera block does nothing. The draws (BSDFLight spec
+		// world-pos reconstruction, composite) consume staging+0x1d0. Correct
+		// recipe: source = our block+0x90 (valid after SetCamData), destination =
+		// *(ctx+0x25d0)+0x1d0, written any time before the draws (subsequent
+		// commits leave +0x1d0 untouched).
+		// g_invProjRejects counts a singular inverse-projection source (each one
+		// would otherwise write a full NaN matrix into the staging block). Never
+		// fires in practice; kept as hygiene.
 		std::uint64_t g_invProjRejects = 0;
 		std::int32_t g_invProjState = -1;
 
@@ -604,25 +562,15 @@ namespace TrueScopes::ScopeRender
 			if (!staging) {
 				return;
 			}
-			// v0.2.58 — THE NaN ROOT CAUSE. XMMatrixInverse returns a matrix of QNaN
-			// when the source is SINGULAR, and passing nullptr for the determinant
-			// meant nothing ever checked. That NaN landed in staging+0x1d0 — the
-			// inverse-projection constant the sun's fullscreen BSDFLightDir pass and
-			// the composite both consume — so one poisoned draw turned the ENTIRE
-			// light accumulation buffer to NaN (measured: 0x6a 100% NaN with a clean
-			// G-buffer, clean specular accum and a clean fog clear). NaN then reached
-			// the lens on exactly the pixels that sample the accum (geometry yes, sky
-			// no, since the sky is our separate forward pass) and displayed as BLACK —
-			// while probing as LIT, because PixelDark tests exponent < 12 and NaN's is
-			// 31. That is the whole "black burst" mystery, five sessions of it.
-			//
-			// The source is a CACHED camera-state block (FindCamBlock), so it can be
-			// stale, recycled or not yet populated for our mono camera — which is why
-			// the black was view-dependent, sticky while the view held still, and
-			// impossible to correlate with anything in our own render.
-			//
-			// Validate, and on failure leave the previous value in place: a stale
-			// inverse-projection is wrong-looking at worst, NaN is a black lens.
+			// XMMatrixInverse returns a matrix of QNaN when the source is singular,
+			// and the source is a cached camera-state block (FindCamBlock) that can
+			// be stale, recycled or not yet populated for this mono camera. A NaN
+			// here lands in staging+0x1d0 — the inverse-projection constant the
+			// sun's fullscreen BSDFLightDir pass and the composite both consume —
+			// and one poisoned draw turns the entire light accumulation buffer to
+			// NaN. Validate, and on failure leave the previous value in place: a
+			// stale inverse-projection is wrong-looking at worst, NaN is a black
+			// lens.
 			const auto* proj = reinterpret_cast<const XMFLOAT4X4*>(block + 0x90);
 			const XMMATRIX projM = XMLoadFloat4x4(proj);
 			XMVECTOR det{};
@@ -655,15 +603,14 @@ namespace TrueScopes::ScopeRender
 			}
 			XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(staging + 0x1d0), inv);
 
-			// THE EYE-1 STALENESS (root cause, live session pt.2): BSDFLightShader::
-			// SetupGeometry builds the Dir-light constants from the staging block's
-			// EYE-1 slots (+0x260/+0x2a0 — second 0x210-stride view block) and the
-			// ctx eye-1 position (+0x25a0). The camera commit only fills as many eye
-			// slots as cam+0x208 — our mono camera fills eye 0 ONLY, so eye 1 kept
-			// the MAIN view's right-eye matrices: wrong view-space sun direction,
-			// garbage spec. (Same stereo-view-block disease Addendum 2 found for the
-			// composite CB.) Mirror eye 0 -> eye 1 after the commit; the resolve's
-			// internal re-commit also only writes eye 0, so the mirror survives.
+			// BSDFLightShader::SetupGeometry builds the Dir-light constants from the
+			// staging block's eye-1 slots (+0x260/+0x2a0 — second 0x210-stride view
+			// block) and the ctx eye-1 position (+0x25a0). The camera commit only
+			// fills as many eye slots as cam+0x208 — a mono camera fills eye 0 only,
+			// leaving eye 1 with the main view's right-eye matrices: wrong
+			// view-space sun direction, garbage spec. Mirror eye 0 -> eye 1 after
+			// the commit; the resolve's internal re-commit also only writes eye 0,
+			// so the mirror survives.
 			std::memcpy(
 				reinterpret_cast<void*>(staging + 0x230),
 				reinterpret_cast<const void*>(staging + 0x20),
@@ -694,42 +641,35 @@ namespace TrueScopes::ScopeRender
 			return addr + a_instrLen + disp;
 		}
 
-		// --- widget fit (v0.2.68) ------------------------------------------------
+		// --- widget fit ----------------------------------------------------------
 		// The vanilla VR scope widget (Data\Meshes\VR\Scope\world_scope.nif) hangs off
 		// the engine's "ScopeParent" NiNode at player+0x7d0: TS_SetupScopeRig
 		// (0x140ef21a0) does ScopeParent->AttachChild(WSScopeModel->model). Its render
 		// surface `render_circle:0` is a flat disc of radius 7.852 centred exactly on
-		// ScopeParent's origin (measured with tools/nif-inspect.py), so
+		// ScopeParent's origin, so
 		//        scale = aperture_radius / 7.852
 		// fits the widget to a real scope's lens. Shipped scopes measure 0.76–4.56, i.e.
 		// scale 0.097–0.581 — the vanilla widget is 2–6x oversized, which is why the
 		// real scope mesh shows through the middle of it.
 		//
-		// TWO THINGS THIS MUST GET RIGHT, both established by measurement:
+		// Two things this must get right:
 		//
-		// 1. ScopeParent's WORLD transform is NOT recomputed per frame. Read live
-		//    2026-08-09 it was bit-for-bit identical across 3 s while the camera's moved.
-		//    The engine only refreshes it at equip/3D-change. So writing the local
-		//    transform alone does NOTHING VISIBLE — NiAVObject::Update must follow,
-		//    exactly as the engine's own path (FUN_140f0a9f0) does after writing it.
+		// 1. ScopeParent's world transform is not recomputed per frame — the engine
+		//    only refreshes it at equip/3D-change. Writing the local transform alone
+		//    does nothing visible; NiAVObject::Update must follow, exactly as the
+		//    engine's own path (FUN_140f0a9f0) does after writing it.
 		//
-		// 2. The engine REWRITES that local transform at equip. Offsets are applied to a
-		//    captured BASELINE, never accumulated onto the current value.
+		// 2. The engine rewrites that local transform at equip (not at scope-in).
+		//    Offsets are applied to a captured baseline, never accumulated onto the
+		//    current value — invalidating the baseline on any event re-captures our
+		//    own previously written value and stacks the offset every cycle.
 		//
-		//    *** v0.2.69 BUG FIX — v0.2.68 invalidated that baseline on the WRONG EVENT. ***
-		//    It dropped the baseline on SCOPE-IN, assuming the engine had rewritten the
-		//    node by then. It has not: the engine rewrites at EQUIP. So every
-		//    scope-out/scope-in cycle re-captured OUR OWN previously written value as the
-		//    new baseline and stacked the offset on top. Field evidence:
-		//        WIDGET FIT baseline: translate=(0.000,-59.800,16.000)
-		//    against a true engine value of (0, 0, 4) — the widget had walked ~60 units off
-		//    the gun and could not be found anywhere in the scene.
-		//
-		//    The correct invalidation signal is not an event at all: compare the node's
-		//    current values with the exact ones we last wrote. Identical => still ours, keep
-		//    the baseline. Different => something else (the engine, at equip) wrote it, so
-		//    what is there now IS pristine and becomes the new baseline. Exact float
-		//    comparison is right here precisely because we wrote those bits ourselves.
+		//    The correct invalidation signal is not an event at all: compare the
+		//    node's current values with the exact ones we last wrote. Identical =>
+		//    still ours, keep the baseline. Different => the engine wrote it at
+		//    equip, so what is there now is pristine and becomes the new baseline.
+		//    Exact float comparison is right here precisely because we wrote those
+		//    bits ourselves.
 		constexpr std::uintptr_t kScopeParentInPlayer = 0x7d0;
 		constexpr float          kVanillaRenderCircleRadius = 7.852f;
 
@@ -742,7 +682,7 @@ namespace TrueScopes::ScopeRender
 			bool  applied = false;
 		};
 		WidgetState g_widget;
-		// v0.2.119: cross-thread mirror of g_widget.applied (read by the game-thread
+		// Cross-thread mirror of g_widget.applied (read by the game-thread
 		// presence gate; written on the render thread wherever `applied` changes).
 		std::atomic_bool g_fitAppliedAtomic{ false };
 
@@ -759,9 +699,9 @@ namespace TrueScopes::ScopeRender
 			Fn<NiAVObjectUpdate_t>(0x1c22fb0)(a_sp, upd);
 		}
 
-		// --- derived scope FOV (v0.2.90) -----------------------------------------
-		// Stop hand-tuning scopeFovDegrees. What the player should perceive is the
-		// scope's real magnification M, and that fixes the render FOV completely:
+		// --- derived scope FOV ---------------------------------------------------
+		// What the player should perceive is the scope's real magnification M, and
+		// that fixes the render FOV completely:
 		//
 		//   the lens disc has world radius  R = 7.852 * ScopeParent.worldScale
 		//   the eye sits distance           d  from the disc centre
@@ -771,15 +711,14 @@ namespace TrueScopes::ScopeRender
 		//                                   M = tan(theta_disc/2) / tan(theta_render/2)
 		//   therefore                       theta_render = 2*atan( (R/d) / M )
 		//
-		// M comes from the weapon's zoomData fovMult (6.0 on the hunting rifle's
-		// long scope, read live), so this generalises to every optic for free.
+		// M comes from the weapon's zoomData fovMult, so this generalises to every
+		// optic for free.
 		//
-		// Computing d per render is not an approximation of a fixed value, it is
-		// more correct than one: a real scope's magnification does not change as
-		// you move your head back, but its visible field narrows. Recomputing does
-		// exactly that. It also costs nothing -- SetCameraFOV already runs every render.
+		// Computing d per render is deliberate: a real scope's magnification does
+		// not change as you move your head back, but its visible field narrows.
+		// It also costs nothing — SetCameraFOV already runs every render.
 		//
-		// Layout, all read out of the VR binary rather than assumed:
+		// Layout, read out of the VR binary rather than assumed:
 		//   NiAVObject world transform +0x70, world translate +0xa0, world scale +0xac
 		//     (NiAVObject::UpdateWorldData 0x141c23740 copies local 0x30..0x6c into
 		//      exactly those slots when a node has no parent)
@@ -850,62 +789,35 @@ namespace TrueScopes::ScopeRender
 			return fovDeg;
 		}
 
-		// --- automatic widget placement (v0.2.92) --------------------------------
+		// --- automatic widget placement ------------------------------------------
 		//
-		// One hand-tuned offset per scope does not scale, and the 2026-08-10
-		// screenshots showed what a missing one looks like: the disc floating above
-		// and behind the optic. So derive the placement instead.
-		//
-		// The target is the OCULAR FACE — the rear end of the scope, the end the
+		// One hand-tuned offset per scope does not scale, so derive the placement.
+		// The target is the ocular face — the rear end of the scope, the end the
 		// player looks into. Two facts make that computable without mesh data:
 		//
 		//   * the walk gives a world-space bounding sphere for the P-Scope subtree,
 		//     centre C and radius r;
-		//   * when the scope is raised the eye is very nearly ON the tube axis, so
-		//     the direction from C toward the eye E IS the tube axis, to within the
+		//   * when the scope is raised the eye is very nearly on the tube axis, so
+		//     the direction from C toward the eye E is the tube axis, to within the
 		//     small angle the player's head is off-centre.
 		//
 		// so   target = C + normalize(E - C) * r.
 		//
-		// This is a HEURISTIC and is written down as one. A bounding sphere over a
+		// This is a heuristic and is written down as one. A bounding sphere over a
 		// long tube has radius ~= half its length, so the target lands near the rear
 		// face; the error is the sphere's overshoot past a flat face (about
-		// tube_radius^2 / length, well under a unit for a real scope) PLUS whatever
+		// tube_radius^2 / length, well under a unit for a real scope) plus whatever
 		// mounts and rails inflate the sphere by. The second term is the one to
-		// distrust, and it is exactly why this is computed but not applied by
-		// default: `widgetAutoPlace` is off, the candidate is reported every probe,
-		// and it can be checked against the hunting rifle's VR-confirmed -1.8 before
-		// anyone trusts it on a scope nobody has tuned.
+		// distrust, which is why this is computed but not applied by default:
+		// `widgetAutoPlace` is off and the candidate is reported every probe.
 		//
-		// ScopeParent's translate is in its PARENT's space, so the world-space target
+		// ScopeParent's translate is in its parent's space, so the world-space target
 		// has to come back through that transform: v = R^T * (W - T) / s.
 		//
-		// v0.2.94 — WHY THIS IS NOW CLOSED-LOOP.
-		//
-		// v0.2.92/93 computed one offset through that chain and applied it. The
-		// 2026-08-11 bench refuted the result (predicted |offset| ~1.8 on the
-		// hunting rifle, got 3.07) and, worse, the chain could not be checked from
-		// outside the process: reads taken over separate DevBench round trips
-		// sample DIFFERENT FRAMES, and a rifle held in VR moves units between them,
-		// so every "verification" of it was measuring hand tremor as much as
-		// geometry. An open-loop transform that cannot be validated is exactly the
-		// shape of defect this project keeps shipping.
-		//
-		// So stop asserting the transform and MEASURE it. Aim at the target, then
-		// each frame read where the disc actually landed and correct by the
-		// residual:
-		//
-		//     err   = target - ScopeParent.world
-		//     local += R^T * err / s          (best estimate of the mapping)
-		//
-		// The estimate only has to be roughly right for this to converge — it is a
-		// contraction as long as the assumed mapping is within ~90 degrees of the
-		// real one. A transposed matrix, a wrong parent offset, an intermediate
-		// node or a non-unit scale all get absorbed instead of silently mis-aiming
-		// the disc. Divergence is detected and backed out rather than left running.
-		//
-		// Everything the loop reads is sampled inside ONE render, so it is immune
-		// to the cross-frame sampling error that invalidated the manual check.
+		// Everything the placement reads is sampled inside one render. Reads taken
+		// over separate DevBench round trips sample different frames, and a rifle
+		// held in VR moves units between them — a cross-frame check measures hand
+		// tremor as much as geometry.
 		constexpr std::uintptr_t kParentInNiAVObject = 0x28;
 		constexpr std::uintptr_t kWorldTransform = 0x70;
 		constexpr std::size_t    kMatrixRowStride = 4;  // NiMatrix3 is 3 rows of 4
@@ -922,16 +834,16 @@ namespace TrueScopes::ScopeRender
 			char  reason[72] = "not computed";
 			// Which of the two targets was taken, and how far apart they were.
 			// The heuristic is what an unmeasured (modded) scope must fall back
-			// on, so the gap between it and the exact census answer on a scope we
-			// DO have measured is the only honest estimate of its error.
+			// on, so the gap between it and the exact census answer on a measured
+			// scope is the only honest estimate of its error.
 			char  method[16] = "none";
 			// True when the target came from the census face, which is pure weapon
 			// geometry and does not involve the eye. Such a target can be recomputed
-			// every frame without jitter -- and MUST be, see ApplyWidgetFit.
+			// every frame without jitter — and must be, see ApplyWidgetFit.
 			bool  eyeIndependent = false;
 			bool  haveBoth = false;
 			float agreement = 0.0f;  // |exact - heuristic|, world units
-			// --- closed loop state (v0.2.94) ---
+			// --- loop state (kept for the report) ---
 			bool  converged = false;   // kept for the report; open loop is done at once
 			bool  diverged = false;
 			bool  warnedResidual = false;
@@ -957,23 +869,21 @@ namespace TrueScopes::ScopeRender
 
 		// Always runs; never writes anything. The caller decides whether to use it.
 		//
-		// a_keepLoopState is set when the closed loop calls this to refresh the
-		// target for a new frame: the geometry must be re-read (the weapon moves)
-		// but the loop's accumulated offset, step count and best-so-far must NOT be
-		// reset, or the servo restarts from scratch every frame and never converges.
-		// v0.2.124 — ONE EURO CAMERA DAMPING (STATUS 3.7d). Filters the scope
-		// camera's WORLD orientation once per live fill, at the single coherent
-		// point after SetCameraFOV's Update has derived a fresh weapon-parented
-		// pose and before anything downstream consumes it (culling planes, the
-		// camera-state commits, AccumulateScene all read the filtered basis).
-		// Feed-forward and self-healing: next fill regenerates raw pose from
-		// the parent, the engine never accumulates our correction. Orientation
-		// only — positional tremor is unamplified parallax; filtering position
-		// risks the camera swimming inside the tube. Never touches weapon or
-		// hand nodes (FRIK's mistake), never ScopeParent: the widget disc
-		// tracks the honest weapon, only the lens IMAGE is damped, and the
-		// composited reticle marks the damped camera's boresight so image and
-		// reticle stay mutually coherent (both lag true aim by <= maxLag).
+		// a_keepLoopState is set when the caller refreshes the target for a new
+		// frame: the geometry must be re-read (the weapon moves) but the
+		// accumulated offset, step count and best-so-far must not be reset.
+		// One Euro damping of the scope camera's world orientation, once per live
+		// fill, at the single coherent point after SetCameraFOV's Update has
+		// derived a fresh weapon-parented pose and before anything downstream
+		// consumes it (culling planes, the camera-state commits, AccumulateScene
+		// all read the filtered basis). Feed-forward and self-healing: the next
+		// fill regenerates the raw pose from the parent, so the engine never
+		// accumulates the correction. Orientation only — positional tremor is
+		// unamplified parallax, and filtering position risks the camera swimming
+		// inside the tube. Never touches weapon or hand nodes, never ScopeParent:
+		// the widget disc tracks the honest weapon, only the lens image is damped,
+		// and the composited reticle marks the damped camera's boresight so image
+		// and reticle stay mutually coherent (both lag true aim by <= maxLag).
 		// While pose-frozen no renders happen, so thaw arrives as a dt gap
 		// > camSmoothResetMs and snaps to raw — no lurch, no bogus velocity.
 		struct CamSmoothState
@@ -1037,10 +947,10 @@ namespace TrueScopes::ScopeRender
 				return;  // pose already raw — nothing to write
 			}
 			const float dt = (std::clamp)(float(dtRaw), 1.0e-4f, 0.1f);
-			// Adaptive core (Casiez 2012). NOTE: the magnitude-only derivative
-			// cannot average oscillating tremor toward zero — at rest the
-			// effective cutoff is minCutoff + beta*mean|tremor rate|. Tune
-			// minCutoff FIRST with beta=0 (the ladder in the TOML).
+			// Adaptive core (Casiez 2012). The magnitude-only derivative cannot
+			// average oscillating tremor toward zero — at rest the effective
+			// cutoff is minCutoff + beta*mean|tremor rate|. Tune minCutoff first
+			// with beta=0 (the ladder in the TOML).
 			const float ang = OneEuro::Angle(g_camSmooth.f.qRawPrev, qraw);
 			std::memcpy(g_camSmooth.f.qRawPrev, qraw, sizeof(qraw));
 			const float omega = ang / dt;
@@ -1110,10 +1020,10 @@ namespace TrueScopes::ScopeRender
 				PlaceDecline("parent scale is degenerate");
 				return;
 			}
-			// TRANSPOSED ON READ (v0.2.96) — the engine stores this column-major, so
-			// the true mapping is world = T + s * (M_stored^T * v). See the proof in
-			// ScopeIdent::ReadGeom. With R read this way both the forward use below
-			// and the R^T inverse further down are the textbook forms.
+			// Transposed on read — the engine stores this column-major, so the true
+			// mapping is world = T + s * (M_stored^T * v); see ScopeIdent::ReadGeom.
+			// With R read this way both the forward use below and the R^T inverse
+			// further down are the textbook forms.
 			float R[3][3];
 			for (std::size_t r = 0; r < 3; ++r) {
 				for (std::size_t c = 0; c < 3; ++c) {
@@ -1151,7 +1061,7 @@ namespace TrueScopes::ScopeRender
 			const float prz = predicted[2] - curWorld[2];
 			const float parentResidual = std::sqrt(prx * prx + pry * pry + prz * prz);
 
-			// Candidate 1, the HEURISTIC: target = C + normalize(E - C) * r.
+			// Candidate 1, the heuristic: target = C + normalize(E - C) * r.
 			float      heuristic[3] = {};
 			bool       haveHeuristic = false;
 			const float ax = eye[0] - center[0];
@@ -1165,7 +1075,7 @@ namespace TrueScopes::ScopeRender
 				haveHeuristic = true;
 			}
 
-			// Candidate 2, the EXACT answer: the census-measured face centre pushed
+			// Candidate 2, the exact answer: the census-measured face centre pushed
 			// through the live shape's world transform. Preferred when available —
 			// it is a real measurement of the glass rather than an inference from a
 			// sphere that mounts and rails inflate.
@@ -1233,16 +1143,14 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
-			// v0.2.122 — STALENESS GUARD. The post-load probe walks fine but its
-			// WORLD transforms still hold the pre-placement rig pose (the same
-			// (34.7,15.5,78.1) in every session's log) until the first skeleton
-			// update lands. That garbage produced a 30.7-unit offset in the 17:03
-			// field run — under the 40-unit misread cap above — which latched a
-			// census placement and parked the disc out of sight. The eye can never
-			// be more than arm's length + weapon (~60 units) from an equipped
-			// scope, so distance-from-eye is the principled test; the decline
-			// feeds PresenceFit's bounded retry (v0.2.121), which converges as
-			// soon as the transforms are real (26 ms after load in the logs).
+			// Staleness guard. The post-load probe walks fine but its world
+			// transforms still hold the pre-placement rig pose until the first
+			// skeleton update lands, which can produce a large-but-under-cap
+			// offset that latches a bad placement. The eye can never be more than
+			// arm's length + weapon (~60 units) from an equipped scope, so
+			// distance-from-eye is the principled test; the decline feeds
+			// PresenceFit's bounded retry, which converges as soon as the
+			// transforms are real.
 			{
 				const float dx = target[0] - eye[0];
 				const float dy = target[1] - eye[1];
@@ -1260,7 +1168,7 @@ namespace TrueScopes::ScopeRender
 			p.bestResidual = 0.0f;
 			std::snprintf(p.reason, sizeof(p.reason), "ok");
 			if (a_keepLoopState && g_place.valid) {
-				// Carry the loop forward: its offset IS the accumulated correction,
+				// Carry the loop forward: its offset is the accumulated correction,
 				// and re-deriving it open-loop here would discard everything the
 				// closed loop has learned.
 				for (std::size_t k = 0; k < 3; ++k) {
@@ -1276,45 +1184,20 @@ namespace TrueScopes::ScopeRender
 			g_place = p;
 		}
 
-		// OBSERVE the achieved placement. Does NOT feed back (v0.2.99).
+		// Observe the achieved placement. Does not feed back.
 		//
-		// v0.2.94-98 ran this as a closed loop: measure where the disc landed,
-		// correct the offset by the residual, repeat. That was a REGRESSION, and the
-		// log made it plain -- the offset marched instead of settling:
-		//
-		//   (0.45,4.58,-0.43) -> (0.53,4.83,-1.02) -> (0.64,5.29,-2.15)
-		//   ... twelve steps ... -> (1.45,6.95,-6.40)   then hit the step cap
-		//
-		// against an open-loop answer of (0.35,4.33,0.15). It walked the disc clean
-		// off the weapon, on both scopes, and the guard missed it because the
-		// RESIDUAL stayed small (~0.3-0.5) the whole time while the OFFSET ran away.
-		// I guarded the wrong quantity.
-		//
-		// Two causes, both cross-frame errors of exactly the kind this project keeps
-		// meeting:
-		//
-		//  1. It compared a target read THIS frame against a disc position produced
-		//     by LAST frame's write. While the weapon moves -- scope-in animation, or
-		//     just hands in VR -- that difference is mostly the weapon's motion, so
-		//     the loop integrated the motion into the offset. An integrator with no
-		//     reference can only drift.
-		//  2. The target was itself built from shape transforms cached at PROBE time,
-		//     so it lagged reality by however long ago the probe ran. That is the
-		//     persistent residual the loop was chasing -- it was never a transform
-		//     error at all.
-		//
-		// Fix (2) properly (ScopeIdent::OcularFaceWorld now re-reads the LIVE shape
-		// transform) and the open-loop answer is exact: every term -- face, shape
-		// transform, parent transform, baseline -- is read in ONE frame and combined
-		// into a LOCAL-space offset, so weapon motion cancels identically. There is
-		// nothing left for a servo to fix.
-		//
-		// The loop existed to paper over a transform that could not be trusted. That
-		// transform is now proven correct both statically (the transpose convention
-		// read out of NiTransform::operator*) and live (parentResidual = 0.000). So
-		// this measures and reports; it does not act. The number is still worth
-		// having -- it is what would catch the transform going wrong again -- and
-		// unlike the old loop it cannot make anything worse by being large.
+		// A closed loop here (measure where the disc landed, correct the offset by
+		// the residual, repeat) is a mistake: it compares a target read this frame
+		// against a disc position produced by last frame's write, so while the
+		// weapon moves the loop integrates the motion into the offset and walks
+		// the disc off the weapon — with the residual staying small the whole
+		// time. With ScopeIdent::OcularFaceWorld re-reading the live shape
+		// transform, every term — face, shape transform, parent transform,
+		// baseline — is read in one frame and combined into a local-space offset,
+		// so weapon motion cancels identically and there is nothing left for a
+		// servo to fix. This measures and reports; the number is what would catch
+		// the transform going wrong again, and it cannot make anything worse by
+		// being large.
 		void ObserveAutoPlacement(std::uintptr_t a_sp)
 		{
 			if (!g_place.valid) {
@@ -1346,11 +1229,10 @@ namespace TrueScopes::ScopeRender
 		}
 
 
-		// v0.2.121: what a fit call actually did with PLACEMENT — the load-in
-		// defect was PresenceFit latching "done" on a call that had (correctly)
-		// declined a garbage post-load placement, which made the good probe 38 ms
-		// later invisible. Only the callee knows whether the census gate consumed
-		// a placement, so it says so.
+		// What a fit call actually did with placement. Only the callee knows
+		// whether the census gate consumed a placement, so it says so — a caller
+		// latching "done" on a call that declined would otherwise hide the next
+		// good probe.
 		enum class FitOutcome
 		{
 			kNotWritten,       // no ScopeParent / fit disabled / scale refused
@@ -1372,10 +1254,10 @@ namespace TrueScopes::ScopeRender
 			                       t[0] == g_widget.wroteTx && t[1] == g_widget.wroteTy &&
 			                       t[2] == g_widget.wroteTz && *s == g_widget.wroteScale;
 
-			// Re-baseline whenever the node holds something we did NOT write — that is the
+			// Re-baseline whenever the node holds something we did not write — that is the
 			// engine having rewritten it at equip, and only then is the value pristine.
-			// Doing this on an event (v0.2.68 used scope-in) re-captured our own output and
-			// compounded the offset every cycle; see the note above.
+			// Doing this on an event (scope-in) re-captures our own output and compounds
+			// the offset every cycle; see the note above.
 			const bool rebaselined = !stillOurs;
 			if (!stillOurs) {
 				g_widget.baseTx = t[0];
@@ -1385,16 +1267,16 @@ namespace TrueScopes::ScopeRender
 				g_widget.captured = true;
 				g_widget.applied = false;
 				g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
-				// v0.2.119: an engine rewrite of ScopeParent IS the equip signal —
-				// re-identify the scope so a weapon swap can never keep the old
-				// weapon's aperture/placement (field: first-draw giant widget).
+				// An engine rewrite of ScopeParent is the equip signal — re-identify
+				// the scope so a weapon swap can never keep the old weapon's
+				// aperture/placement.
 				ScopeIdent::Request();
 				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
 					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
-				// Sanity tripwire for exactly the failure that produced this fix: the engine
-				// parks ScopeParent within a few units of the weapon. A baseline far from
-				// that means we captured corrupted state, and every offset from here is
-				// measured from the wrong origin. Say so loudly rather than fit to garbage.
+				// Sanity tripwire: the engine parks ScopeParent within a few units of the
+				// weapon. A baseline far from that means corrupted state was captured, and
+				// every offset from here is measured from the wrong origin. Say so rather
+				// than fit to garbage.
 				const float d2 = g_widget.baseTx * g_widget.baseTx +
 				                 g_widget.baseTy * g_widget.baseTy +
 				                 g_widget.baseTz * g_widget.baseTz;
@@ -1417,14 +1299,12 @@ namespace TrueScopes::ScopeRender
 				return FitOutcome::kNotWritten;
 			}
 
-			// v0.2.85: per-scope, from the equipped weapon's node names. Falls back
-			// to the widgetApertureRadius setting for an unrecognised scope, so an
-			// optic the table has never seen behaves exactly as it did before.
+			// Per-scope aperture, falling back to the widgetApertureRadius setting
+			// for an unrecognised scope.
 			const auto  aperture = ScopeIdent::ApertureRadius();
-			// v0.2.123 — under-aperture sizing (encapsulation layer 2): shrink the
-			// disc slightly inside the housing hole so the seam is never a bright
-			// picture pixel. Applies after the per-scope table, so every entry
-			// keeps its relative fit.
+			// Under-aperture sizing: shrink the disc slightly inside the housing
+			// hole so the seam is never a bright picture pixel. Applies after the
+			// per-scope table, so every entry keeps its relative fit.
 			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 1.1f);
 			const float scale = (aperture * apScale) / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
@@ -1439,41 +1319,26 @@ namespace TrueScopes::ScopeRender
 				return FitOutcome::kNotWritten;
 			}
 
-			// v0.2.91: per-scope, falling back per axis to the global settings.
+			// Per-scope offsets, falling back per axis to the global settings.
 			float ox = 0.0f, oy = 0.0f, oz = 0.0f;
 			ScopeIdent::WidgetOffsets(ox, oy, oz);
 
-			// v0.2.92: the automatic placement is LATCHED, not tracked. The ocular
-			// face is fixed on the weapon; only the axis ESTIMATE uses the eye, so
-			// recomputing per frame would make the disc creep with head motion — a
-			// jitter at 6x magnification, and a full NiAVObject::Update every frame
-			// to produce it. Recompute on equip (the engine re-baselining
-			// ScopeParent), on demand, or until it first succeeds.
-			// RECOMPUTE EVERY FRAME when the target is eye-independent (v0.2.100).
-			//
-			// ScopeParent hangs off PrimaryUIAttachNode, NOT off the weapon, so the
-			// local offset that puts the disc on the lens depends on the RELATIVE
-			// pose of the weapon and that UI node. That relationship is not fixed:
-			// it changes through the scope-raise animation and as the player's hands
-			// move relative to their head. Computing the offset once at equip and
-			// holding it therefore bakes in whatever transitional pose happened to
-			// exist at that instant -- which is exactly what the user hit, and why
-			// forcing a fresh probe made the disc snap back onto the lens.
-			//
-			// Latched at equip: (-0.11, -0.76, -1.15).  Recomputed live: (-0.00,
-			// -0.86, -0.42) -- stable to two decimals across five forced latches,
-			// and identical to the value confirmed by eye on 2026-08-11.
+			// Recompute policy. ScopeParent hangs off PrimaryUIAttachNode, not the
+			// weapon, so the local offset that puts the disc on the lens depends on
+			// the relative pose of the weapon and that UI node — which changes
+			// through the scope-raise animation and as the hands move relative to
+			// the head. Computing the offset once at equip would bake in whatever
+			// transitional pose existed at that instant.
 			//
 			// A census target is pure weapon geometry with no eye term, so
-			// recomputing it per frame is stable, not jittery. The bound HEURISTIC
-			// does use the eye, so that one stays latched -- recomputing it per
-			// frame would creep the disc with head motion, which is the concern that
-			// (correctly) motivated latching in the first place. It just should
-			// never have been applied to the census path.
-			// v0.2.120: a completed probe is new ident data - anything latched from
-			// before it (a bound-heuristic placement computed in the probe gap, the
-			// field defect of 2026-08-24) must re-latch. The generation counter makes
-			// that structural instead of hoping the paths happen to order correctly.
+			// recomputing it per frame is stable, not jittery. The bound heuristic
+			// does use the eye, so that one stays latched — recomputing it per
+			// frame would creep the disc with head motion.
+			//
+			// A completed probe is new ident data: anything latched from before it
+			// (e.g. a bound-heuristic placement computed in the probe gap) must
+			// re-latch. The generation counter makes that structural instead of
+			// hoping the paths happen to order correctly.
 			static std::uint32_t s_probeGen = 0;
 			if (const auto gen = ScopeIdent::ProbeCount(); gen != s_probeGen) {
 				s_probeGen = gen;
@@ -1490,10 +1355,10 @@ namespace TrueScopes::ScopeRender
 					g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
 					g_place.boundRadius, g_place.reason);
 				// Single-frame test of the assumed parent transform. Anything much
-				// above zero means ScopeParent.world is NOT parent.world composed
+				// above zero means ScopeParent.world is not parent.world composed
 				// with its local translate — i.e. the layout is not what this code
-				// believes. The closed loop survives that; the number is here so it
-				// is diagnosed rather than inferred from a misplaced disc.
+				// believes. The number is here so that is diagnosed rather than
+				// inferred from a misplaced disc.
 				if (relatch && g_place.valid && g_place.parentResidual >= 0.0f) {
 					logger::info(FMT_STRING("WIDGET AUTO-PLACE: parent-transform residual {:.3f} "
 					                        "(0 = ScopeParent.world matches parent o local; large = the "
@@ -1514,14 +1379,12 @@ namespace TrueScopes::ScopeRender
 				(!a_censusPlacementOnly || g_place.eyeIndependent)) {
 				outcome = g_place.eyeIndependent ? FitOutcome::kPlacedCensus
 				                                 : FitOutcome::kPlacedHeuristic;
-				// censusPlacementOnly (the presence path, v0.2.120): the bound
-				// HEURISTIC uses the eye position and is garbage at hip poses - the
-				// disc-by-the-hammer field defect. Presence applies placement only
-				// from the eye-independent census target; heuristic scopes keep the
-				// engine baseline until the first live aim places them, as pre-.119.
-				// Open loop, computed once per equip from same-frame data. See
-				// ObserveAutoPlacement for why the closed loop it replaces was a
-				// regression rather than an improvement.
+				// censusPlacementOnly (the presence path): the bound heuristic uses
+				// the eye position and is garbage at hip poses. Presence applies
+				// placement only from the eye-independent census target; heuristic
+				// scopes keep the engine baseline until the first live aim places
+				// them. Open loop, computed from same-frame data — see
+				// ObserveAutoPlacement for why a closed loop here is a regression.
 				ox = g_place.offset[0];
 				oy = g_place.offset[1];
 				oz = g_place.offset[2];
@@ -1549,12 +1412,10 @@ namespace TrueScopes::ScopeRender
 			g_widget.lastOz = oz;
 			g_widget.applied = true;
 			g_fitAppliedAtomic.store(true, std::memory_order_relaxed);
-			// v0.2.122 — the census path recomputes per frame (v0.2.100), so this
-			// wrote (and logged) every ~9 ms while aiming: 2000+ identical lines
-			// per minute in the 17:03 field log. The WRITE stays per-frame (that
-			// is the live tracking); the LOG only speaks when something meaningful
-			// changed: a rebaseline, a scale change, or the offset moving more
-			// than a quarter unit since the last logged value.
+			// The census path recomputes per frame, so the write stays per-frame
+			// (that is the live tracking) but the log only speaks when something
+			// meaningful changed: a rebaseline, a scale change, or the offset
+			// moving more than a quarter unit since the last logged value.
 			static float s_logScale = -1.0f, s_logOx = 0.0f, s_logOy = 0.0f, s_logOz = 0.0f;
 			const bool logWorthy = rebaselined || scale != s_logScale ||
 			                       std::fabs(ox - s_logOx) > 0.25f ||
@@ -1589,8 +1450,8 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 
-			// v0.2.65: publish the per-render engine pointers for DevBench /addresses,
-			// so an ad-hoc /read can target the camera or the RT manager directly.
+			// Publish the per-render engine pointers for DevBench, so an ad-hoc
+			// read can target the camera or the RT manager directly.
 			g_lastRtm = rtm;
 			g_lastRenderer = renderer;
 			g_lastCam = cam;
@@ -1605,18 +1466,18 @@ namespace TrueScopes::ScopeRender
 				localTranslate[2] = static_cast<float>(*Settings::scopeCamOffsetZ);
 			}
 
-			// Identify the equipped scope (v0.2.85). Runs only when something asked
-			// for it — scope-in, or a DevBench request — because it walks the weapon's
-			// 3D and calls into the engine's inventory code, neither of which belongs
+			// Identify the equipped scope. Runs only when something asked for it —
+			// scope-in, or a DevBench request — because it walks the weapon's 3D
+			// and calls into the engine's inventory code, neither of which belongs
 			// in a per-frame path. Must precede ApplyWidgetFit, which consumes the
 			// aperture it resolves.
 			ScopeIdent::RunIfRequested(player);
 
-			// v0.2.90: derive the FOV from the scope's real magnification and the
-			// lens geometry. ALWAYS computed so it can be compared against the
-			// hand-tuned value in the log, but only USED when scopeFovDegrees is 0 —
-			// a new derivation that quietly replaces a VR-confirmed calibration is
-			// how you lose a known-good state without noticing.
+			// Derive the FOV from the scope's real magnification and the lens
+			// geometry. Always computed so it can be compared against the
+			// hand-tuned value in the log, but only used when scopeFovDegrees is 0 —
+			// a derivation that quietly replaces a confirmed calibration is how a
+			// known-good state gets lost.
 			if (const float derived = DeriveScopeFovDegrees(player); derived > 0.0f && a_fovDeg <= 0.0f) {
 				a_fovDeg = derived;
 			}
@@ -1631,7 +1492,7 @@ namespace TrueScopes::ScopeRender
 			// DevBench works without paying a subtree update every frame.
 			ApplyWidgetFit(player);
 
-			// v0.2.73: mark 0 — everything from here to the light fit is "setup".
+			// Mark 0 — everything from here to the light fit is "setup".
 			TimersBegin();
 
 			// Zoom FOV: force SetCameraFOV's symmetric-frustum path (instead of HMD eye
@@ -1647,16 +1508,12 @@ namespace TrueScopes::ScopeRender
 			g_armed.fov738Saved = saved738;
 			g_armed.fov750 = mode750;
 			g_armed.fov750Saved = saved750;
-			// v0.2.36 THE DEPTH-INVERSION FIX: params 3/4 are (FAR, NEAR) — NOT
-			// (near, far). Static proof: SetCameraFOV stores param_4 into frustum
-			// near-slot / param_3 into far-slot, and every vanilla caller passes the
-			// pair (far, near) — FUN_140c875f0's param_4 is the literal 1.0f constant.
-			// The engine is standard-Z everywhere (proj z-row f/(f-n) in
-			// FUN_141da8e60, DS clear = 1.0, geometry depth mode 3 = LESS_EQUAL +
-			// write). Passing (near, far) built a reversed projection: near→depth 1,
-			// far→depth 0 — under LESS_EQUAL the FARTHEST fragment always won (the
-			// locker-behind-wall bug), and the "near clip slices the gun" complaint
-			// was actually the FAR plane sitting at 15 units.
+			// Params 3/4 are (far, near) — not (near, far). SetCameraFOV stores
+			// param_4 into the frustum near slot and param_3 into the far slot, and
+			// every vanilla caller passes (far, near). The engine is standard-Z
+			// everywhere (proj z-row f/(f-n) in FUN_141da8e60, DS clear = 1.0,
+			// geometry depth mode 3 = LESS_EQUAL + write), so a swapped pair builds
+			// a reversed projection where the farthest fragment always wins.
 			Fn<SetCameraFOV_t>(0x2804a90)(
 				cam, a_fovDeg,
 				static_cast<float>(*Settings::scopeFarClip),
@@ -1666,40 +1523,37 @@ namespace TrueScopes::ScopeRender
 			g_armed.fov738 = nullptr;
 			g_armed.fov750 = nullptr;
 
-			// v0.2.124: damp the scope camera's orientation HERE — the Update
-			// above just derived a fresh world pose; everything downstream
-			// (culling planes, camera-state commits, AccumulateScene) consumes
-			// the filtered basis coherently. See ApplyCamSmooth.
+			// Damp the scope camera's orientation here — the Update above just
+			// derived a fresh world pose; everything downstream (culling planes,
+			// camera-state commits, AccumulateScene) consumes the filtered basis
+			// coherently. See ApplyCamSmooth.
 			ApplyCamSmooth(cam);
 
-			// NOTE: this VR camera type is NOT flatrim NiCamera. SetCameraFOV's own code
-			// shows: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
+			// This VR camera type is not flatrim NiCamera. From SetCameraFOV's own
+			// code: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
 			// (which it forces to full-frame {0,1,1,0} itself — do not touch +0x184,
 			// that is per-eye frustum data on this type).
 
 
-			// ============================ v0.2.71 — THE PERF FIX (§3.7e) ==========
-			// Publish the frustum we just built to the slot the CULLER actually reads.
+			// Publish the frustum we just built to the slot the culler actually reads.
 			//
 			// AccumulateScene (0x27ff370) ignores the BSCullingProcess's own frustum
 			// for visibility: it builds a stack BSCullingGroup and calls
 			// BSCullingGroup::SetCamera (0x638270), which derives its six clip planes
-			// from *(NiFrustum**)(cam + 0x200) — the COMBINED (all-eye union) frustum
+			// from *(NiFrustum**)(cam + 0x200) — the combined (all-eye union) frustum
 			// — together with the camera's world transform at cam+0x70/+0xa0.
 			//
 			// SetCameraFOV writes the per-eye frusta at [cam+0x1a0] + eye*0x1c and
-			// rebuilds the combined one ONLY in its `if (1 < eyeCount)` tail
+			// rebuilds the combined one only in its `if (1 < eyeCount)` tail
 			// (FUN_141c2bf80, fed by the HMD eye projections). Our scope camera is
 			// mono (eyes=1), so that tail never runs and FUN_141c2bee0 refreshes just
-			// the combined frustum's NEAR field. Its left/right/top/bottom/far stayed
-			// at whatever the engine last left there, so every scope render culled
-			// against a frustum that had nothing to do with the scope: the 2026-08-09
-			// sweep measured 14,411 passes at 2.4° vs 13,672 at 120°, a 50× FOV change
-			// moving the workload ~5% — i.e. no culling at all, ~21 ms a render.
+			// the combined frustum's near field — the lateral extents would stay at
+			// whatever the engine last left there and the render would cull against
+			// a frustum that has nothing to do with the scope.
 			//
 			// Mirroring eye 0 into the combined slot is the whole fix. Safe to mutate:
-			// this camera is PrimaryWeaponScopeCamera, which only the vanilla scope
-			// redirect (disarmed under Route B) and we consume, and the engine
+			// this camera is PrimaryWeaponScopeCamera, which only the (disarmed)
+			// vanilla scope redirect and this render consume, and the engine
 			// rewrites both frusta from scratch on the next SetCameraFOV.
 			{
 				auto* const eye0 = *reinterpret_cast<float**>(cam + 0x1a0);
@@ -1738,11 +1592,10 @@ namespace TrueScopes::ScopeRender
 						g_diagFrustumCombPre[3], g_diagFrustumCombPre[4], g_diagFrustumCombPre[5]);
 				}
 			}
-			// =====================================================================
 
-			// Accumulator: DEFERRED renderMode 0x19 (0 = forward buckets, which the
-			// resolve never draws — the v0.2.x black-lens root cause), the deferred
-			// enable bytes both engine templates set, world SSN, eye positions.
+			// Accumulator: deferred renderMode 0x19 (0 = forward buckets, which the
+			// resolve never draws), the deferred enable bytes both engine templates
+			// set, world SSN, eye positions.
 			RENDER_STEP(2);
 			const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
 			const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray);
@@ -1757,23 +1610,21 @@ namespace TrueScopes::ScopeRender
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf690), eyePos, 12);
 			std::memcpy(reinterpret_cast<void*>(accum + 0xf6a0), eyePos, 12);
 
-			// Stack culling process bound to our accumulator, with OUR camera at +0x18 —
-			// UpdateLightList dereferences it (the v0.2.8 fault was this being null, not
-			// a camera-type problem; the engine's own world path sets cull+0x18 = camera,
-			// FUN_14284e370).
+			// Stack culling process bound to our accumulator, with our camera at
+			// +0x18 — UpdateLightList dereferences it (the engine's own world path
+			// sets cull+0x18 = camera, FUN_14284e370).
 			RENDER_STEP(3);
 			alignas(16) std::uint8_t cullBuf[0x1a0];
 			Fn<CullCtor_t>(0x1d4d8e0)(cullBuf, 0);
 			*reinterpret_cast<std::uintptr_t*>(cullBuf + 0x18) = cam;
-			// v0.2.71: also give the culling process its own frustum, exactly as the
-			// engine's cull helper FUN_141d4dc50 does (set +0x18, then SetFrustum).
-			// The ctor zeroes the NiFrustum at +0x20 and the six planes at +0x3c, so
-			// every consumer of them — BSCullingProcess::TestBaseVisibility, which
-			// hands cull+0x3c to the object's vtable+0x170 visibility test — has been
-			// testing against degenerate planes. This is separate from the camera
-			// mirror above: AccumulateScene's own culling uses the CAMERA's combined
-			// frustum, not this. Both are needed and both hang off the one setting so
-			// the §3.7e ladder stays a single-flag A/B.
+			// Also give the culling process its own frustum, exactly as the engine's
+			// cull helper FUN_141d4dc50 does (set +0x18, then SetFrustum). The ctor
+			// zeroes the NiFrustum at +0x20 and the six planes at +0x3c, so without
+			// this BSCullingProcess::TestBaseVisibility hands degenerate planes to
+			// the object's vtable+0x170 visibility test. Separate from the camera
+			// mirror above: AccumulateScene's own culling uses the camera's combined
+			// frustum, not this. Both are needed and both hang off the one setting
+			// so an A/B stays single-flag.
 			if (*Settings::cullToScopeFrustum) {
 				if (const auto* const eye0 = *reinterpret_cast<const float**>(cam + 0x1a0)) {
 					Fn<CullSetFrustum_t>(0x1c452b0)(cullBuf, eye0);
@@ -1785,19 +1636,19 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(5);
 			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
 
-			// SCOPE G-buffer setup, decoded from the world path's own +4 remap site
+			// Scope G-buffer setup, decoded from the world path's own +4 remap site
 			// (FUN_142844180): when renderer+4 is set the engine binds the dedicated
-			// scope-sized mono G-buffer 0x63/0x64/0x66/0x67/0x68/0x69 with DS 0xC, all
-			// mode 0 (clear). Binding the stereo double-wide 0x1c..0x23 with the mono
-			// DS 0xC is an RTV/DSV size mismatch D3D11 rejects silently — our geometry
-			// never drew at all in v0.2.8-16; the lens showed main-view G-buffer residue.
+			// scope-sized mono G-buffer 0x63/0x64/0x66/0x67/0x68/0x69 with DS 0xC,
+			// all mode 0 (clear). Binding the stereo double-wide 0x1c..0x23 with the
+			// mono DS 0xC is an RTV/DSV size mismatch D3D11 rejects silently —
+			// nothing draws.
 			RENDER_STEP(6);
 			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState
 
 			// Pre-clear the composite target. The resolve binds 0x61 mode 3 (never
-			// clears) and the composite only shades G-buffer-covered pixels — with no
-			// sky pass yet, empty regions otherwise keep stale frames (ghosting) or
-			// primordial black. Engine pattern (FUN_1401f8bb0): bind + ClearColor.
+			// clears) and the composite only shades G-buffer-covered pixels — empty
+			// regions would otherwise keep stale frames (ghosting). Engine pattern
+			// (FUN_1401f8bb0): bind + ClearColor.
 			Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 1.0f);
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
@@ -1812,60 +1663,39 @@ namespace TrueScopes::ScopeRender
 			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 0);
 			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
-			// Re-fit the lights for OUR camera. The main frame's light update fitted
-			// every light's screen proxy volume to the MAIN camera; drawn through the
-			// zoomed scope projection those volumes cover only part of the screen —
-			// the camera-independent rounded cutoff + ambient-only darkness of
-			// v0.2.22-24 (sunSlot=255 pre-resolve confirmed the sun's shadow slot was
-			// released too). With cull+0x18 = our camera this is safe (the v0.2.8
-			// fault was the null camera), and the next main frame re-fits for its own
-			// camera, so the mutation self-heals.
+			// Re-fit the lights for our camera. The main frame's light update fitted
+			// every light's screen proxy volume to the main camera; drawn through
+			// the zoomed scope projection those volumes cover only part of the
+			// screen. Safe with cull+0x18 = our camera, and the next main frame
+			// re-fits for its own camera, so the mutation self-heals.
 			TimerMark(1);  // end "setup" (camera, binds, clears)
 			RENDER_STEP(7);
 			using ProcessLights_t = void (*)(std::uintptr_t, void*);
 			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
-			TimerMark(2);  // end "lights" (ProcessQueuedLights — the 385-light fit)
+			TimerMark(2);  // end "lights" (ProcessQueuedLights)
 
-			// ===================== v0.2.72 — WHY NOTHING WAS EVER CULLED =========
-			// The frustum was never the problem (v0.2.71's mirror logged aliased=1:
-			// [cam+0x200] and [cam+0x1a0] are the SAME buffer, and it already held the
-			// correct 2.4° frustum). The planes are built correctly. They are simply
-			// never TESTED.
-			//
-			// Inside AccumulateScene, the per-object frustum test is gated:
+			// Previs bypass. Inside AccumulateScene the per-object frustum test is
+			// gated:
 			//   BSCuller::ProcessVectorFrustum(culler, 0)   -- 0x1d4b9d0, the SIMD
 			//   6-plane test -- runs only if
 			//       culler.count != 0 &&
 			//       (BSPreCulledObjects::QEnabled() == false || culler[+0x3a6f] != 0)
 			// and culler[+0x3a6f] is copied from BSCullingGroup+0x17a, which that
 			// group's constructor (0x6373e0) sets to 0 and nothing in this path ever
-			// sets otherwise. The group is a stack local inside AccumulateScene, so we
-			// cannot reach it.
-			//
-			// That leaves QEnabled(), read live 2026-08-09 as TRUE:
+			// sets otherwise (the group is a stack local inside AccumulateScene,
+			// unreachable from here). QEnabled() is normally true:
 			//   [0x146878ad0]=1 (enabled) && [0x14391d830]=1 (want) && [0x146878ad1]=0 (temp-disable)
-			// So the engine skips frustum culling entirely here and leans on PREVIS —
-			// precomputed per-cell visibility, computed once per frame for the MAIN
-			// camera in the frame prep (FUN_1427dff70). Our scope render inherits that
-			// whole visible set, which is why a 27x FOV change moved the workload 1.9%
-			// and a far plane of 300 units at Diamond City moved it 0.06%.
+			// so the engine skips frustum culling entirely here and leans on previs —
+			// precomputed per-cell visibility, computed once per frame for the main
+			// camera in the frame prep (FUN_1427dff70) — and the scope render would
+			// inherit that whole visible set.
 			//
-			// We flip the TEMP-DISABLE byte across our accumulation only. Deliberately
-			// the raw byte and NOT BSPreCulledObjects::SetTempDisabled (0x1427e0de0):
-			// that setter also walks every registered visibility callback and un-hides
-			// the objects previs had hidden. Writing the byte keeps those objects
-			// hidden (their app-cull flags are untouched), so we KEEP previs occlusion
-			// and ADD real frustum culling — which is what we want, not a trade.
-			//
-			// ⚠️ UNVERIFIED PREDICTION, and the honest doubt: ProcessVectorFrustum
-			// writes a per-object VISIBLE mask (255 = inside all six planes), and the
-			// arena reserve zeroes those bytes. If the accumulation consumed that mask,
-			// skipping the test would accumulate NOTHING — yet we accumulate 14,401.
-			// So either the emission ignores the mask (and enabling the test will cut
-			// the pass count), or this whole path is not what produces our passes (and
-			// nothing will change). The heartbeat's `passes total=` discriminates in
-			// one reading, which is why this ships behind a live flag instead of as a
-			// silent change.
+			// Flip the temp-disable byte across our accumulation only. Deliberately
+			// the raw byte and not BSPreCulledObjects::SetTempDisabled (0x1427e0de0):
+			// that setter also walks every registered visibility callback and
+			// un-hides the objects previs had hidden. Writing the byte keeps those
+			// objects hidden (their app-cull flags are untouched), so previs
+			// occlusion is kept and real frustum culling is added.
 			const auto previsTempDisable = base + 0x6878ad1;
 			std::uint8_t savedPrevis = 0;
 			const bool bypassPrevis = *Settings::cullToScopeFrustum;
@@ -1888,20 +1718,16 @@ namespace TrueScopes::ScopeRender
 				g_armed.previs = nullptr;
 			}
 			TimerMark(3);  // end "accum" (AccumulateScene — CPU pass-list building)
-			// =====================================================================
 
 			RENDER_STEP(9);
 			CapturePassCounts(accum);
 
 			// Drop stale pass-list groups from our accumulator: their passes can be
 			// freed back to the pool by their owning property's ClearRenderPasses at
-			// any time (the v0.2.11 dangling-pass fault; mechanism finally decoded
-			// 2026-08-25 - see the decal deep-dive). LORE CORRECTION (2026-08-25):
-			// group 0x11 is SKY, not decals (v0.2.11's label was wrong); the real
-			// decal groups are 5/6, which the resolve draws itself (order fixed by
-			// the v0.2.132 call-site hooks). 0x17 = sun glare, drawn by the resolve
-			// tail with the same stale-pass exposure - added to the drop list as
-			// hardening (gated: dropSunGlareGroup).
+			// any time, so drawing them later dereferences freed passes. Group 0x11
+			// is sky, not decals; the real decal groups are 5/6, which the resolve
+			// draws itself. 0x17 = sun glare, drawn by the resolve tail with the
+			// same stale-pass exposure (gated: dropSunGlareGroup).
 			RENDER_STEP(10);
 			using ClearGroup_t = void (*)(std::uintptr_t);
 			for (const std::uint32_t g : { 9u, 0x11u, 0x12u, 0x13u }) {
@@ -1924,69 +1750,60 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(11);
 			Fn<Flush_t>(0x1d8dc70)(renderer);
 
-			// --- SKY group check (v0.2.40 — corrected premise) ---
-			// GROUND TRUTH (static dive 2026-08-08): sky is NOT group 0xC (that is the
-			// refraction group). BSSkyShaderProperty::GetRenderPasses (FUN_14288e400)
-			// hard-codes the group by skyObjectType: dome/sun/stars/moons -> group
-			// 0x11, clouds -> 0x12 (sun GLARE -> 0x17, skipped for now); renderMode
-			// 0x19 passes its only gate. Vanilla draws 0x11/0x12/0x13 in stage
-			// FUN_14284d680 right after the composite: slot0 RT 0x61 (scoped), slot1
-			// aux RT 0x69, DS 0xC, depth-tested — sky fills only far pixels. The
-			// world SSN accumulation DOES include these passes (baseline 11:2 12:3),
-			// but our pre-resolve decal-group drop (9/0x11/0x12/0x13) deletes them —
-			// correctly: they are the stale already-drawn-and-released passes that
-			// faulted v0.2.11 (the resolve draws 0x11/9 internally) and v0.2.36. We
-			// re-register FRESH ones post-resolve and draw them ourselves.
+			// --- sky group check ---
+			// Sky is not group 0xC (that is the refraction group).
+			// BSSkyShaderProperty::GetRenderPasses (FUN_14288e400) hard-codes the
+			// group by skyObjectType: dome/sun/stars/moons -> group 0x11, clouds ->
+			// 0x12 (sun glare -> 0x17, skipped); renderMode 0x19 passes its only
+			// gate. Vanilla draws 0x11/0x12/0x13 in stage FUN_14284d680 right after
+			// the composite: slot0 RT 0x61 (scoped), slot1 aux RT 0x69, DS 0xC,
+			// depth-tested — sky fills only far pixels. The world SSN accumulation
+			// does include these passes, but the pre-resolve group drop above
+			// deletes them — correctly: they are stale already-drawn-and-released
+			// passes (the resolve draws 0x11/9 internally). Fresh ones are
+			// re-registered post-resolve and drawn here.
 			RENDER_STEP(12);
 			const auto skyGroup = accum + 0x18 + 0x11 * 0x678;
 			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
 
-			// --- SUN (v0.2.26) ---
-			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT. The
-			// engine draws the sun once per frame (pre-world stage) into the MAIN view's
-			// 0x24/0x25; the resolve only draws point/spot volumes, so our 0x6a stayed
-			// sunless (v0.2.25: local lights fine, no directional). Recipe = queued job
-			// FUN_142849990 verbatim: bind accum MRT, camera state, render states
-			// (base ctx+0x1ee0: +0xb0=5, +0xbc=1, +0xc8=5(additive), +0xd0=1), execute
-			// the persistent config, flush, restore +0xb0=0. The resolve's own accum
-			// clear (bind mode 0) is forced to mode 3 by the Hooks::Install call-site
-			// hooks while g_inOwnResolve — without them the sun would be wiped, so we
-			// skip the draw entirely if they are not installed.
+			// --- sun ---
+			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT.
+			// The engine draws the sun once per frame (pre-world stage) into the
+			// main view's 0x24/0x25; the resolve only draws point/spot volumes, so
+			// 0x6a would stay sunless. Recipe = queued job FUN_142849990 verbatim:
+			// bind accum MRT, camera state, render states (base ctx+0x1ee0: +0xb0=5,
+			// +0xbc=1, +0xc8=5(additive), +0xd0=1), execute the persistent config,
+			// flush, restore +0xb0=0. The resolve's own accum clear (bind mode 0) is
+			// forced to mode 3 by the Hooks::Install call-site hooks while
+			// g_inOwnResolve — without them the sun would be wiped, so the draw is
+			// skipped entirely if they are not installed.
 			RENDER_STEP(13);
 			g_diagSunPass = -1;
-			// v0.2.41 STUTTER FIX (the 10:22 black-silhouette frames): the fog clear,
-			// accum binds, camera state, and hook arming are INDEPENDENT of the
-			// engine's sun pass-config — but they were gated on its dirty byte.
-			// Frames where the engine had the config dirty (rebuild in flight;
-			// correlates with heavy scenes) skipped the clear AND left the resolve's
-			// accum binds in clear-on-apply mode with the CURRENT clear color = our
-			// step-6 BLACK -> composite = black ambient * albedo = black world
-			// silhouettes (depth fine, sky fine — drawn post-resolve). Now the accum
-			// setup always runs when the hooks are available; only the sun EXEC is
-			// skipped on dirty-config frames (one frame of ambient-only lighting).
+			// The fog clear, accum binds, camera state, and hook arming are
+			// independent of the engine's sun pass-config, so they must not gate on
+			// its dirty byte: a frame that skips them leaves the resolve's accum
+			// binds in clear-on-apply mode with the current clear color (the step-6
+			// black) -> black world silhouettes. The accum setup always runs when
+			// the hooks are available; only the sun exec is skipped on dirty-config
+			// frames (one frame of ambient-only lighting).
 			bool accumSetup = false;
 			if (g_sunBindHooksInstalled && g_gfxState && *Settings::sunEnabled) {
-					// Clear the accum RTs DETERMINISTICALLY (v0.2.23 pattern: bind as
-					// slot 0 + commit + immediate CRTV) — but to the FOG/AMBIENT color,
-					// not black. Vanilla's mode-0 clear-on-apply executes lazily at the
-					// first DRAW, by which point the resolve has re-set the clear color
-					// to the fog RGB (FUN_1427aeeb0()+0x1d4..0x1dc, alpha 1) — the accum
-					// starts at the ambient base light level. Our v0.2.27 black clear
-					// (plus the hooks suppressing the engine clear) deleted that base
-					// term: the whole scene lost ambient and read near-black except
-					// sun-facing surfaces.
+					// Clear the accum RTs deterministically (bind as slot 0 + commit +
+					// immediate ClearColor) — but to the fog/ambient color, not black.
+					// Vanilla's mode-0 clear-on-apply executes lazily at the first
+					// draw, by which point the resolve has re-set the clear color to
+					// the fog RGB (FUN_1427aeeb0()+0x1d4..0x1dc, alpha 1) — the accum
+					// starts at the ambient base light level. A black clear deletes
+					// that base term: the whole scene loses ambient and reads
+					// near-black except sun-facing surfaces.
 					{
 						using GetFogSingleton_t = std::uintptr_t (*)();
 						const auto fog = Fn<GetFogSingleton_t>(0x27aeeb0)();
-						// v0.2.42 STUTTER SUSPECT: this clear IS the scope's entire
-						// ambient light level (the 10:33 tone bisect proved brightness
-						// tracks accumClearScale linearly and scale 0 = pitch black —
-						// the sun exec contributes NOTHING yet). The old null-fallback
-						// to 0 therefore painted whole frames black whenever the fog
-						// singleton was transiently null (streaming/weather churn —
-						// matches the black-silhouette bursts: sky/depth fine, world
-						// black, content-correlated). Fall back to the LAST GOOD color
-						// instead, and count nulls for the log.
+						// This clear is the scope's entire ambient light level, so a
+						// null fog singleton (transient during streaming/weather
+						// churn) must not fall back to zero — that paints whole
+						// frames black. Fall back to the last good color instead,
+						// and count nulls for the log.
 						const auto cs = static_cast<float>(*Settings::accumClearScale);
 						if (fog) {
 							g_fogRGB[0] = *reinterpret_cast<const float*>(fog + 0x1d4);
@@ -2007,12 +1824,11 @@ namespace TrueScopes::ScopeRender
 					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
 
 					// Bind the accum MRT (no clear now) with our scene depth, targets
-					// 2..5 unbound like the resolve. The specular target is optional:
-					// the sun pass's spec output is the poisoned buffer (v0.2.28 bisect)
-					// and root-causing its constants needs a live session — with spec
-					// unbound the sun contributes diffuse only and 0x6b stays cleared,
-					// which the composite reads as "no sun specular" (correct-looking
-					// minus highlights).
+					// 2..5 unbound like the resolve. Specular is left unbound: the
+					// sun pass's spec output is unreliable, and with spec unbound the
+					// sun contributes diffuse only while 0x6b stays cleared, which
+					// the composite reads as "no sun specular" (correct-looking minus
+					// highlights).
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
@@ -2023,12 +1839,13 @@ namespace TrueScopes::ScopeRender
 					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 
 					// Camera state exactly as the resolve sets it before its light loops,
-					// plus the manual inverse-view write the engine's scene renderers do
-					// (specular/world-pos reconstruction input; see WriteInverseView).
+					// plus the manual inverse-projection write the engine's scene
+					// renderers do (specular/world-pos reconstruction input; see
+					// WriteInverseProj).
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
 					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
 					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0.0f, 1.0f);
-					WriteInverseProj(g_gfxState, cam);  // AFTER the commit (see note above)
+					WriteInverseProj(g_gfxState, cam);  // after the commit (see note above)
 					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
 					Fn<Flush_t>(0x1d8dc70)(renderer);
 					Fn<DepthMode_t>(0x1d8de10)(renderer, 2);
@@ -2045,36 +1862,28 @@ namespace TrueScopes::ScopeRender
 							g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
 						}
 					}
-					// v0.2.57: sunExecEnabled isolates the SUN DRAW ALONE. sunEnabled is
-					// NOT a valid isolation for it — that flag gates this whole block,
-					// which also owns the accum clear, the accum/DS binds, the camera
-					// state and the pre-resolve G-buffer rebind. Turning it off faults
-					// the delivery outright (step 17, C0000005 in the D3D layer) because
-					// the ImageSpace copy then runs with no camera state. Everything
-					// above stays; only the fullscreen additive BSDFLightDir exec below
-					// is skipped, which is exactly the pass suspected of poisoning the
-					// whole of 0x6a (100% NaN with a clean G-buffer and a clean clear).
+					// sunExecEnabled isolates the sun draw alone. sunEnabled is not a
+					// valid isolation for it — that flag gates this whole block, which
+					// also owns the accum clear, the accum/DS binds, the camera state
+					// and the pre-resolve G-buffer rebind, and turning it off faults
+					// the delivery outright (the ImageSpace copy then runs with no
+					// camera state). Everything above stays; only the fullscreen
+					// additive BSDFLightDir exec below is skipped.
 					if (cfgClean && cfgBuilt && *Settings::sunExecEnabled) {
 
-					// v0.2.78 — WHEN this runs is the whole defect (§3.1, proven v0.2.77).
-					// A deferred directional light SHADES BY SAMPLING THE G-BUFFER. Measured
-					// immediately before this exec: 0x63 albedo = 0xFF000000 (the black clear)
-					// and 0x64 normals = 0x00000000 (not a valid normal), while the same two
-					// buffers read as a real image after the resolve. N.L against a zero normal
-					// is exactly zero everywhere -- which is 0x6a's immovable meanLum 155.0, its
-					// indifference to a 10,000x sun, and (on frames where that memory holds
-					// garbage rather than the clear) the ~20% NaN bursts. One mechanism, both
-					// halves. Vanilla has no such problem: FUN_14284e9e0 fills the G-buffer in
-					// the stages before its sun stage (call #22), then resolves (#24); OUR
-					// G-buffer geometry is drawn INSIDE the resolve, which we call below.
-					//
-					// So the body is captured here and invoked
-					// from ResolveAccumBind0Hook -- the moment the resolve binds the light-accum
-					// buffer, which is after the G-buffer geometry and before the light volumes.
+					// When this runs matters: a deferred directional light shades by
+					// sampling the G-buffer, and our G-buffer geometry is drawn inside
+					// the resolve, which is called below — exec'ing before it samples
+					// the black clear (N.L against a zero normal is zero everywhere).
+					// Vanilla fills the G-buffer in the stages before its sun stage
+					// (FUN_14284e9e0), then resolves. So the body is captured here and
+					// invoked from ResolveAccumBind0Hook — the moment the resolve
+					// binds the light-accum buffer, after the G-buffer geometry and
+					// before the light volumes.
 					const auto runSunExec = [&]() {
 
 					// Render states (dirty-mask at ctx+0x1ee0: |4 = depth-stencil group,
-					// |8 = 0xbc group, |0x10 = blend group — byte-verified in the job).
+					// |8 = 0xbc group, |0x10 = blend group).
 					const auto ctxA = g_ctxPtrA ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrA) : 0;
 					const auto ctxB = g_ctxPtrB ? *reinterpret_cast<std::uintptr_t*>(g_ctxPtrB) : 0;
 					if (const auto sctx = (ctxA ? ctxA : ctxB) + 0x1ee0; sctx != 0x1ee0) {
@@ -2093,7 +1902,7 @@ namespace TrueScopes::ScopeRender
 
 						// Brightness diagnostic/tuning: scale the sun NiLight's diffuse
 						// RGB (NiLight+0x16c..0x174 — the floats FUN_14286d890 reads)
-						// around the exec, restore after. If a small scale does NOT dim
+						// around the exec, restore after. If a small scale does not dim
 						// the lens, the overbright isn't coming through the light color.
 						const auto sunLight = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248);
 						const auto niLight = sunLight ? *reinterpret_cast<std::uintptr_t*>(sunLight + 0xb8) : 0;
@@ -2113,44 +1922,32 @@ namespace TrueScopes::ScopeRender
 						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
 
 
-						// ⚠️ THE GATE (Ghidra 2026-08-09, FUN_142891040). This does NOT
-						// unconditionally draw. It is:
+						// The gate: FUN_142891040 does not unconditionally draw. It is:
 						//
 						//   ok = (ctx+0x40 == cfg+0x48 && ctx+0x38 == cfg->shader)
 						//        || FUN_142891280(cfg+0x48, shader, ctx);   // SetupTechnique
 						//   if (ok) { ...SetupGeometry, draw, restore... }
 						//   return ok;
 						//
-						// FUN_142891280 calls shader->vtable[0x20](shader, technique, ctx) and
-						// caches (shader, technique) into ctx+0x38/+0x40 on success, clearing
-						// them on failure. Our ctx is FRESH every render, so +0x38/+0x40 are 0,
-						// the fast path can never match, and EVERY frame depends on
-						// SetupTechnique(0x20201) succeeding. If it fails, this returns 0 and
-						// nothing is drawn at all — which is exactly "the pass executes and
-						// adds precisely zero" (§6.7, re-confirmed against the v0.2.75 control:
-						// main accum 0x24 fully sun-lit with cast shadows, our 0x6a a perfectly
-						// uniform grey, identical with the exec on and off).
-						//
-						// We discarded this byte for the entire sun arc, and reported
-						// `sunPass=1` — meaning "we called it" — in its place. Gotcha #3: a
-						// probe that cannot represent the failure will exonerate every suspect.
+						// FUN_142891280 calls shader->vtable[0x20](shader, technique, ctx)
+						// and caches (shader, technique) into ctx+0x38/+0x40 on success,
+						// clearing them on failure. Our ctx is fresh every render, so
+						// +0x38/+0x40 are 0, the fast path can never match, and every
+						// frame depends on SetupTechnique succeeding. If it fails, this
+						// returns 0 and nothing is drawn at all — hence the return value
+						// is recorded, not discarded.
 
 
 
-						// v0.2.82 — THE FIX. Measured at the deferred call site:
-						//   pre-resolve (old) : SRV [0,1,5,6,7], RTs bound = 1
-						//   in-resolve  (new) : SRV [0,1,2,3,5,8], RTs bound = 4
-						// FOUR render targets = the G-BUFFER MRT, still bound. The RT manager
-						// STAGES binds and commits them later, and our hook sits on the slot-0
-						// staging call -- before slot 1 is staged and before the commit. So the
-						// sun was drawing into the G-buffer, corrupting albedo/normals; the
-						// resolve's light volumes then read NaN normals and every downstream
-						// buffer inherited it. That is exactly why the damage landed on
-						// precisely the geometry pixels and left the sky clean.
-						//
-						// Bind the accumulation MRT and COMMIT it ourselves, the same way the
-						// pre-resolve path does, so the draw lands where it is supposed to.
-						{  // v0.2.82 accum rebind - always on (knobs removed v0.2.137)
+						// The RT manager stages binds and commits them later, and the
+						// hook that invokes this sits on the slot-0 staging call —
+						// before slot 1 is staged and before the commit — so at this
+						// point the G-buffer MRT is still bound. Without a commit of
+						// our own the sun would draw into the G-buffer, corrupting
+						// albedo/normals for everything downstream. Bind the
+						// accumulation MRT and commit it here, the same way the
+						// pre-resolve path does.
+						{  // accum rebind — always on
 							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
 							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 							Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
@@ -2196,7 +1993,7 @@ namespace TrueScopes::ScopeRender
 			// bind-site hooks so the resolve inherits (not clears) our sun in 0x6a/0x6b.
 			TimerMark(4);  // end "sun" (accum clears + binds + the BSDFLightDir exec)
 			RENDER_STEP(14);
-			// Ensure the staging inverse-projection is OURS for the resolve's own
+			// Ensure the staging inverse-projection is ours for the resolve's own
 			// lighting/composite too. The resolve re-commits the camera internally,
 			// but the commit never touches staging+0x1d0, so this write survives it.
 			if (g_gfxState) {
@@ -2205,16 +2002,13 @@ namespace TrueScopes::ScopeRender
 				WriteInverseProj(g_gfxState, cam);
 			}
 
-			// CRITICAL (v0.2.35): the resolve builds its render context at entry and
-			// captures the CURRENT slot-0 RT into ctx+0x54 — the source of the
-			// screen-size/UV constants for every pass it draws (lights, composite).
-			// Vanilla calls the resolve with the G-BUFFER bound (the world render
-			// precedes it) — and so did our v0.2.25 flow, whose composite worked.
-			// The v0.2.26+ sun block left the accum MRT (0x6a) bound at resolve
-			// entry, poisoning those constants: the composite sampled out of
-			// footprint (flat output = the accum clear color) and screen-space
-			// terms (spec) got garbage UV scaling. Rebind the G-buffer (no clear)
-			// before the call to restore the vanilla invariant.
+			// The resolve builds its render context at entry and captures the
+			// current slot-0 RT into ctx+0x54 — the source of the screen-size/UV
+			// constants for every pass it draws (lights, composite). Vanilla calls
+			// the resolve with the G-buffer bound (the world render precedes it);
+			// entering with the accum MRT bound poisons those constants (composite
+			// samples out of footprint, garbage UV scaling on screen-space terms).
+			// Rebind the G-buffer (no clear) before the call.
 			if (accumSetup) {
 				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 3);
@@ -2225,14 +2019,13 @@ namespace TrueScopes::ScopeRender
 				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 3);
 				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
-			// v0.2.73 LEVER 2 — LIGHT COUNT. Clamp the two loop counts the resolve
-			// iterates, for the duration of the resolve only. The resolve draws a light
-			// VOLUME per entry (cone/sphere geometry); through a 2.4 deg frustum any
-			// light that intersects at all projects across the entire target, so 385
-			// shadowed lights is 385 potentially full-screen shaded passes. Restored
-			// immediately after, before the heartbeat re-reads the true counts — so a
-			// clamped run reports its real light count AND its clamp, and cannot be
-			// mistaken later for an ordinary reading.
+			// Clamp the two light loop counts the resolve iterates, for the duration
+			// of the resolve only. The resolve draws a light volume per entry
+			// (cone/sphere geometry); through a narrow frustum any light that
+			// intersects at all projects across the entire target, so hundreds of
+			// shadowed lights can mean hundreds of full-screen shaded passes.
+			// Restored immediately after, before the heartbeat re-reads the true
+			// counts — so a clamped run reports its real light count and its clamp.
 			const auto   lightsMax = static_cast<std::int32_t>(*Settings::perfLightsMax);
 			const bool   clampLights = lightsMax >= 0;
 			std::int16_t savedLightsA = 0, savedLightsB = 0;
@@ -2255,8 +2048,8 @@ namespace TrueScopes::ScopeRender
 			}
 			g_diagLightsClamp = clampLights ? lightsMax : -1;
 
-			// v0.2.133: arm the decal stage for this resolve (fired by the bind
-			// hook, before the accum bind, while the G-buffer is still current).
+			// Arm the decal stage for this resolve (fired by the bind hook, before
+			// the accum bind, while the G-buffer is still current).
 			g_decalStageCam = cam;
 			g_pendingDecalStage.store(accumSetup && *Settings::decalStageEnabled);
 			g_inOwnResolve.store(accumSetup);
@@ -2274,18 +2067,17 @@ namespace TrueScopes::ScopeRender
 			TimerMark(5);  // end "resolve" (G-buffer draw + light volumes + composite)
 
 
-			// --- SKY accumulate + draw (post-resolve; groups corrected in v0.2.40) ---
-			// Vanilla order: composite into 0x61, THEN draw sky groups 0x11/0x12/0x13
+			// --- sky accumulate + draw (post-resolve) ---
+			// Vanilla order: composite into 0x61, then draw sky groups 0x11/0x12/0x13
 			// into 0x61 (slot1 = 0x69, DS 0xC, no clears) — sky depth-tests against
-			// the world and fills only far pixels (replacing our black pre-clear).
+			// the world and fills only far pixels (replacing the black pre-clear).
 			// Accumulating the roots here (after the resolve) means the fresh passes
-			// are drawn only by US and then released by FinishAccum; pre-resolve
-			// registration was the v0.2.36 step-14 fault (the resolve draws 0x11/9
-			// internally). Must run BEFORE FinishAccum (0x281e750 clears every
-			// group's pass lists). Ctx is built AFTER the binds (v0.2.35 lesson: it
-			// snapshots the current slot-0 RT for screen-size constants).
-			// skyRootMask bisects a faulting root without a rebuild: 1 = sky dome only
-			// (Sky+0x8), 2 = sun/cloud only, 3 = both.
+			// are drawn only by us and then released by FinishAccum; pre-resolve
+			// registration faults (the resolve draws 0x11/9 internally). Must run
+			// before FinishAccum (0x281e750 clears every group's pass lists). Ctx is
+			// built after the binds: it snapshots the current slot-0 RT for
+			// screen-size constants. skyRootMask bisects a faulting root without a
+			// rebuild: 1 = sky dome only (Sky+0x8), 2 = sun/cloud only, 3 = both.
 			RENDER_STEP(15);
 			g_diagSkyDrawn = 0;
 			g_diagSkyRoots = 0;
@@ -2310,24 +2102,20 @@ namespace TrueScopes::ScopeRender
 					if (vtbl < base || vtbl >= base + 0x0a000000) {
 						continue;  // not an engine vtable -> mislabeled global, skip
 					}
-					// THE v0.2.37 zero-passes fix: the sky roots are DISABLED outside
-					// the engine's own sky stage — vanilla brackets its sky accumulation
-					// with vfunc+0x180(root, 1) ... (root, 0) on each root
-					// (FUN_140c875f0's forward pre-pass does exactly this on the two
-					// objects at ctx+0x38/+0x40 before AccumulateScene). Without the
-					// toggle, culling rejects the whole subtree and nothing registers
-					// (v0.2.37 log: sky=1/2/1/0). Same vfunc, same bracket.
+					// The sky roots are disabled outside the engine's own sky stage —
+					// vanilla brackets its sky accumulation with vfunc+0x180(root, 1)
+					// ... (root, 0) on each root (FUN_140c875f0's forward pre-pass
+					// does exactly this before AccumulateScene). Without the toggle,
+					// culling rejects the whole subtree and nothing registers.
 					const auto toggleFn = *reinterpret_cast<const std::uintptr_t*>(vtbl + 0x180);
 					if (toggleFn < base || toggleFn >= base + 0x0a000000) {
 						continue;
 					}
-					// v0.2.39: ALSO bypass culling for the sky accumulation. The v0.2.38
-					// toggle got the roots' screen-space glare quads registering
-					// (skyNew=[11:+2 12:+3]) but the DOME geometry still never reached
-					// group 0xC — its huge multibound fails the default frustum/portal
-					// culling. The engine's own forward passes bracket accumulation
-					// with cull+0x158 = 1 (accumulate-all mode, byte-confirmed in the
-					// first-person pass FUN_14284e370); mirror that here.
+					// Also bypass culling for the sky accumulation — the dome's huge
+					// multibound fails the default frustum/portal culling. The
+					// engine's own forward passes bracket accumulation with
+					// cull+0x158 = 1 (accumulate-all mode, per the first-person pass
+					// FUN_14284e370); mirror that here.
 					const auto savedCullMode = *reinterpret_cast<std::uint8_t*>(cullBuf + 0x158);
 					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = 1;
 					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
@@ -2361,7 +2149,7 @@ namespace TrueScopes::ScopeRender
 				Fn<CtxCtor_t>(0x2812be0)(skyCtx, cam, accum);
 				// Draw order + exec flags = vanilla's: 0x11 (dome/sun/stars/moons,
 				// flag 1), 0x12 (clouds, flag 0), 0x13 (flag 0). Vanilla's queued 0x11
-				// uses a SORTED pass builder (FUN_14281df50); e400's default order is
+				// uses a sorted pass builder (FUN_14281df50); e400's default order is
 				// the known gap if sky objects layer wrongly (sun behind dome etc.).
 				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x11, skyCtx, 1);
 				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x12, skyCtx, 0);
@@ -2395,22 +2183,12 @@ namespace TrueScopes::ScopeRender
 					g_diagSunSlotPost = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
 				}
 			}
-			// v0.2.75 SUN INPUTS. §6.7 measured that the sun exec adds EXACTLY ZERO on
-			// normal frames; §7.3 measured that on ~20% of frames it turns 100% of 0x6a
-			// to NaN. Those two together say the pass DOES rasterize every pixel (so
-			// §6.7's own "stencil rejects everything" suspect is dead) and computes a
-			// contribution of zero. One input explains both readings: a light DIRECTION
-			// that is zero most frames — dot(N, 0) = 0, no light — and garbage on the
-			// rest — normalize(garbage) or a 0/0 → NaN. That is the signature of an
-			// UNINITIALISED per-frame value, which is exactly what we would expect to
-			// inherit by skipping the engine's pre-world sun stage and exec'ing its
-			// cached pass config directly.
-			//
-			// So log what we actually hand the pass. The NiLight's world rotation rows
-			// live at +0x70/+0x80/+0x90 (3 floats each, stride 0x10) — read off
-			// TS_BSLight_UpdateVisibilityAndFade's own spot-direction math — and a
-			// directional light's direction is a column of that basis. If these are
-			// zeros or garbage, the hypothesis is confirmed without a debugger.
+			// Log what the sun pass is actually handed. The NiLight's world rotation
+			// rows live at +0x70/+0x80/+0x90 (3 floats each, stride 0x10 — read off
+			// TS_BSLight_UpdateVisibilityAndFade's own spot-direction math), and a
+			// directional light's direction is a column of that basis. Zeros or
+			// garbage here explain a pass that rasterizes but contributes nothing
+			// (dot(N, 0) = 0) or NaN (normalize(garbage), 0/0) without a debugger.
 			if (const auto sunLight = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248)) {
 				if (const auto niSun = *reinterpret_cast<const std::uintptr_t*>(sunLight + 0xb8)) {
 					for (int row = 0; row < 3; ++row) {
@@ -2434,13 +2212,11 @@ namespace TrueScopes::ScopeRender
 						std::memcpy(g_diagRect, reinterpret_cast<const void*>(camData), sizeof(g_diagRect));
 					}
 					std::memcpy(g_diagViewport, reinterpret_cast<const void*>(ctx + 0x1ee0 + 0x90), sizeof(g_diagViewport));
-					// v0.2.53: the last two floats of that block are the D3D11_VIEWPORT
-					// MinDepth/MaxDepth. D3D11 REQUIRES 0 <= Min <= Max <= 1 and drops
+					// The last two floats of that block are the D3D11_VIEWPORT
+					// MinDepth/MaxDepth. D3D11 requires 0 <= min <= max <= 1 and drops
 					// the whole RSSetViewports call otherwise (the previous viewport
-					// then silently stays in effect). The heartbeat has been printing
-					// values like -0.35, 0.41 and 2.75 there, varying per frame with
-					// view direction — flag it explicitly so we stop having to decode
-					// float bits out of the diag ints by hand.
+					// then silently stays in effect) — flag it explicitly rather than
+					// decoding float bits out of the diag ints by hand.
 					{
 						const auto minD = *reinterpret_cast<const float*>(&g_diagViewport[4]);
 						const auto maxD = *reinterpret_cast<const float*>(&g_diagViewport[5]);
@@ -2457,28 +2233,19 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 
-			// Lens delivery 0x61 -> 0x62 via the VANILLA copy (FUN_1427b08c0, effect
+			// Lens delivery 0x61 -> 0x62 via the vanilla copy (FUN_1427b08c0, effect
 			// 0xf) — it is the HDR->display tonemap, not a plain copy. The composite
-			// writes linear HDR into 0x61; delivering with the raw ImageSpaceManager::
-			// Copy (v0.2.15-20) showed un-tonemapped values: the faint/dark lens.
-			// Diagnostics (raw copies, no tonemap): 3 = diffuse G-buffer 0x63,
-			// 4 = light accum diffuse 0x6a, 5 = light accum specular 0x6b,
-			// 6 = G-buffer normals 0x64. 4/5 bisect the sun-overbright pipeline: if
-			// the accum itself is blown flat, the sun PASS writes garbage; if the
-			// accum looks sane, the COMPOSITE consumption is at fault.
+			// writes linear HDR into 0x61; delivering with the raw
+			// ImageSpaceManager::Copy shows un-tonemapped values (a faint/dark lens).
 			RENDER_STEP(17);
-			// v0.2.49 DELIVERY CAMERA GUARD (black/blue-burst suspect #6, the best
-			// yet): ImageSpace effects select their render camera via the manager's
-			// +0x60 byte (FUN_1427b01a0: 0 -> mgr+0x28 [or +0x38 in VR], 1 -> the
-			// TRANSIENT slot mgr+0x58 that engine stages own around their own
-			// effect renders, e.g. FUN_140c875f0's tail). If a concurrent stage
-			// holds the byte when our delivery runs, the tonemap quad renders with
-			// a foreign/stale camera -> wrong viewport -> silently draws nothing
-			// (lens keeps whatever was painted before = blue with the diag tint)
-			// or garbage over the footprint (black). Force the normal selector for
-			// the duration of our delivery; restore after. (If a racing stage's
-			// own effect glitches for a frame in exchange, we'll see it in the
-			// MAIN view at former-burst moments and refine.)
+			// Delivery camera guard: ImageSpace effects select their render camera
+			// via the manager's +0x60 byte (FUN_1427b01a0: 0 -> mgr+0x28 [or +0x38
+			// in VR], 1 -> the transient slot mgr+0x58 that engine stages own around
+			// their own effect renders, e.g. FUN_140c875f0's tail). If a concurrent
+			// stage holds the byte when our delivery runs, the tonemap quad renders
+			// with a foreign/stale camera -> wrong viewport -> silently draws
+			// nothing or garbage over the footprint. Force the normal selector for
+			// the duration of our delivery; restore after.
 			const auto ismMgr = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kIsmInstanceRVA);
 			std::uint8_t savedIsmBusy = 0;
 			if (ismMgr) {
@@ -2487,14 +2254,14 @@ namespace TrueScopes::ScopeRender
 				g_armed.ismBusy = reinterpret_cast<std::uint8_t*>(ismMgr + 0x60);
 				g_armed.ismBusySaved = savedIsmBusy;
 			}
-			// v0.2.67 CRESCENT (§3.2) — unbind the depth-stencil across the delivery.
-			// Step 16 above restores DS logical 1, and the DS translation table at
-			// rtm+0x15fc maps 1 -> physical 2: the MAIN VR EYE's depth-stencil. The
-			// delivery quad has been drawing with it bound, stencil-masked to the
-			// headset's hidden-area mesh — the ~20% four-corner cutout.
+			// Unbind the depth-stencil across the delivery. Step 16 above restores
+			// DS logical 1, and the DS translation table at rtm+0x15fc maps 1 ->
+			// physical 2: the main VR eye's depth-stencil, stencil-masked to the
+			// headset's hidden-area mesh — the delivery quad must not draw with it
+			// bound (four-corner cutout).
 			//
 			// Logical DS 0xA maps to physical -1 in that table = no depth-stencil.
-			// Use 0xA, NOT -1: SelectDS (0x1db9e40) indexes rtm+0x15fc+idx*4
+			// Use 0xA, not -1: SelectDS (0x1db9e40) indexes rtm+0x15fc+idx*4
 			// unconditionally, with none of the `param_3 == -1` guard that
 			// SetCurrentRenderTarget (0x1db9dd0) has, so -1 would read rtm+0x15f8
 			// and bind whatever physical index happens to live there.
@@ -2502,8 +2269,7 @@ namespace TrueScopes::ScopeRender
 			const bool             unbindDS = *Settings::deliveryUnbindDS;
 			{
 				// Forensics for the first few renders: what the delivery would have
-				// inherited. Cheap, self-limiting, and it makes the run informative
-				// whichever way the A/B lands.
+				// inherited. Cheap and self-limiting.
 				static std::uint32_t dsLogs = 0;
 				if (dsLogs < 5 && (g_ctxPtrA || g_ctxPtrB)) {
 					auto dsCtx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
@@ -2528,13 +2294,13 @@ namespace TrueScopes::ScopeRender
 				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
 			{
-				// lensMode diag rungs 3-8 removed v0.2.139; mode 2 (the shipping path)
-				// is the only one that reaches delivery - modes 0/1 divert upstream.
+				// Mode 2 (the shipping path) is the only lensMode that reaches
+				// delivery — modes 0/1 divert upstream.
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
-				// v0.2.104 — OWN DELIVERY PASS. Composite the engine's reticle + the
-				// glass look over the tonemapped picture (LensComposite.cpp). Runs
-				// with the delivery's DS unbound and the ISM busy byte forced, same
-				// as the tonemap it follows.
+				// Own delivery pass: composite the engine's reticle + the glass look
+				// over the tonemapped picture (LensComposite.cpp). Runs with the
+				// delivery's DS unbound and the ISM busy byte forced, same as the
+				// tonemap it follows.
 				if (*Settings::lensCompositeEnabled) {
 					LensComposite::Inputs in{};
 					in.renderer = renderer;
@@ -2560,9 +2326,8 @@ namespace TrueScopes::ScopeRender
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
 				g_armed.ismBusy = nullptr;
 			}
-			// Mark 7 — end "deliver" (step 16's unbind/FinishAccum + the tonemap copy
-			// into the lens). Taken BEFORE the diagnostic dumps and readbacks below,
-			// which are off in any perf run and would otherwise be attributed to it.
+			// Mark 7 — end "deliver" (step 16's unbind/FinishAccum + the tonemap
+			// copy into the lens).
 			TimerMark(7);
 			TimersEnd();
 
@@ -2639,7 +2404,7 @@ namespace TrueScopes::ScopeRender
 		// its FUN_142891040(&sunConfig, 0, ctx) call (the third exec in the job).
 		g_sunConfig = RipResolve(0x2849c85, { 0x48, 0x8D, 0x0D }, 3, 7, "sun pass config"sv);
 		// BSGraphics::State: first lea in the resolve @ +0x1427ff926 (FUN_141da8c40 arg).
-		// NOTE: resolves to +0x65A2AB0 in the live process — Ghidra's DAT_146541ef0 label
+		// Resolves to +0x65A2AB0 in the live process — Ghidra's DAT_146541ef0 label
 		// for this block is section-shifted; the code bytes are ground truth.
 		g_gfxState = RipResolve(0x27ff926, { 0x48, 0x8D, 0x0D }, 3, 7, "graphics state"sv);
 
@@ -2676,23 +2441,22 @@ namespace TrueScopes::ScopeRender
 		// Scope-pass bracket, mirroring Main::Swap's scoped branch exactly (the only
 		// writer of renderer+1 in the binary, FUN_141d94750, is called just there):
 		//   +4 = 1   route RT/DS through the scope set (0x61/0x62/0x6a/0x6b/0xC)
-		//   +1 = 0   STEREO MASTER OFF — every draw becomes mono DrawIndexed and the
+		//   +1 = 0   stereo master off — every draw becomes mono DrawIndexed and the
 		//            VS stereo constant (b8 float = +1 && +2, uploaded by the state
 		//            flush from ctx+0x1ec0) goes 0, so no per-instance NDC half-shift.
 		//   FUN_141d94c10 rebinds the constant buffers (incl. b8) around both edges.
-		// Do NOT bracket +2 instead: the deferred technique setup (FUN_142918fc0 and
-		// ~30 siblings) unconditionally re-writes +2=1 mid-resolve — that is why the
-		// v0.2.18 +2=0 bracket still composited stereo-instanced with stale view-1
-		// data (the split lens). +1 is never touched by pass setup.
+		// Do not bracket +2 instead: the deferred technique setup (FUN_142918fc0 and
+		// ~30 siblings) unconditionally re-writes +2=1 mid-resolve, which composites
+		// stereo-instanced with stale view-1 data (a split lens). +1 is never
+		// touched by pass setup.
 		const auto renderer = REL::Module::get().base() + kRendererRVA;
 		using RendererFn_t = void (*)(std::uintptr_t);
 		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(renderer + 4);
 		auto* stereoMaster = reinterpret_cast<std::uint8_t*>(renderer + 1);
 		const auto savedFlag = *scopePassFlag;
 		const auto savedStereo = *stereoMaster;
-		// v0.2.48: publish our thread id for the +4-reader hook — concurrent engine
-		// threads that call the reader during our bracket must NOT see scoped mode
-		// (phantom late-frame scoped actions on the lens RT = black-burst suspect).
+		// Publish our thread id for the +4-reader hook — concurrent engine threads
+		// that call the reader during our bracket must not see scoped mode.
 		g_renderTid.store(::GetCurrentThreadId());
 		*scopePassFlag = 1;
 		*stereoMaster = 0;
@@ -2707,7 +2471,7 @@ namespace TrueScopes::ScopeRender
 		Fn<RendererFn_t>(0x1d95240)(renderer);  // clear prev-cam cache (vanilla does)
 
 		if (!ok) {
-			RestoreArmedEngineState();  // v0.3 hardening: undo any bracket the fault skipped
+			RestoreArmedEngineState();  // undo any bracket the fault skipped
 			g_available = false;
 			g_faulted = true;
 			static constexpr std::string_view kSteps[] = {
@@ -2754,10 +2518,8 @@ namespace TrueScopes::ScopeRender
 		// black point at the resolve/bind side instead.
 		++g_renders;
 		const auto renders = g_renders;
-		// v0.2.41 stutter-theory verifier: every sunPass value TRANSITION is logged
-		// (rate-limited). If the black-silhouette bursts were dirty-config frames,
-		// pre-fix logs would show 1->0 at burst start and 0->1 at burst end; post-fix
-		// the transitions may still happen but the lens must stay lit (ambient frame).
+		// Every sunPass value transition is logged (rate-limited) — a run of 0s
+		// means the engine's sun config was dirty/unbuilt for those frames.
 		{
 			static std::int32_t lastSunPass = -2;
 			if (g_diagSunPass != lastSunPass) {
@@ -2786,10 +2548,9 @@ namespace TrueScopes::ScopeRender
 				*Settings::lensMode, *Settings::fillEveryNFrames,
 				WidgetPresentable(), g_faulted);
 
-			// v0.2.73: the stage stopwatch, on its own line. Every condition that
-			// changes the numbers (clamped lights, reduced render scale, sample count,
-			// discarded frames) prints beside them, so a log line from a bench run
-			// carries its own experimental setup and cannot be misfiled later.
+			// The stage stopwatch, on its own line. Every condition that changes the
+			// numbers (clamped lights, sample count, discarded frames) prints beside
+			// them, so a log line from a bench run carries its own setup.
 			if (const auto t = GetStageTimes(); t.cpuSamples != 0) {
 				std::string gpu, cpu;
 				for (std::size_t i = 0; i < kStageCount; ++i) {
@@ -2822,13 +2583,11 @@ namespace TrueScopes::ScopeRender
 		g_camSmoothResetReq.store(true);
 	}
 
-	// v0.2.125 — LENS PRIMING. The 21:07 field run proved the placement chain
-	// converges 314 ms after load with no aim — but the lens PICTURE only
-	// exists after the first pose-gate activation (LensComposite init stamped
-	// 33 s after load, at the first scope-in), so the correctly-placed disc
-	// sat black the whole time ("didn't see the lens start"). This flag asks
-	// the fill hook for one presence-time fill; set on every equip rebaseline
-	// so a weapon swap re-primes with the new scope's view.
+	// Lens priming. The placement chain converges shortly after load with no
+	// aim, but the lens picture only exists after the first pose-gate
+	// activation, so the correctly-placed disc would sit black until then.
+	// This flag asks the fill hook for one presence-time fill; set on every
+	// equip rebaseline so a weapon swap re-primes with the new scope's view.
 	std::atomic_bool g_lensPrimeNeeded{ true };
 
 	bool LensPrimeNeeded() noexcept
@@ -2843,37 +2602,32 @@ namespace TrueScopes::ScopeRender
 
 	bool WidgetPresentable()
 	{
-		// v0.2.119: may plugin-owned presence show the widget? True once the fit
-		// has been applied for the current ScopeParent baseline (or always, when
-		// the user runs with widgetFitEnabled=false and WANTS the vanilla look).
-		// Gating presence on this is what keeps the raw oversized vanilla band
-		// from ever being visible on a first-drawn weapon (field 2026-08-24).
+		// May plugin-owned presence show the widget? True once the fit has been
+		// applied for the current ScopeParent baseline (or always, when the user
+		// runs with widgetFitEnabled=false and wants the vanilla look). Gating
+		// presence on this keeps the raw oversized vanilla band from ever being
+		// visible on a first-drawn weapon.
 		return !*Settings::widgetFitEnabled || g_fitAppliedAtomic.load(std::memory_order_relaxed);
 	}
 
 	void PresenceFit()
 	{
-		// v0.2.120 rework - the v0.2.119 version ran the fit continuously and
-		// UNGATED: after an equip it applied with the PREVIOUS weapon's aperture
-		// and a bound-heuristic placement computed at a hip pose (eye far away),
-		// which then latched (field: disc by the hammer). Now: on an engine
-		// rewrite of ScopeParent request the probe, WAIT for it, then apply the
-		// fit exactly ONCE per baseline - census-only placement (see
-		// ApplyWidgetFit) - and go quiet until the next equip. Live fills keep
-		// continuous ownership while actually aiming, exactly as before .119.
+		// On an engine rewrite of ScopeParent request the probe, wait for it,
+		// then apply the fit once per baseline — census-only placement (see
+		// ApplyWidgetFit) — and go quiet until the next equip. Live fills keep
+		// continuous ownership while actually aiming. Running the fit
+		// continuously and ungated would apply the previous weapon's aperture
+		// after an equip, with a bound-heuristic placement computed at a hip
+		// pose.
 		//
-		// v0.2.121 - DON'T LATCH ON A DECLINE. The 2026-08-24 load-in defect,
-		// log-proven: the first post-load probe walks fine but carries
-		// one-update-stale WORLD transforms (P-Scope at (34.7,15.5,78.1) at
-		// 15:44:59.048; the correct (229.1,-246.4,81.9) existed by .086), the
-		// auto-place sanity gate correctly refuses ("offset implausibly large"),
-		// the fit applies offset (0,0,0)... and s_done latched anyway, so the
-		// good data 38 ms later was never consumed until the first live aim.
-		// Now: latch only when a census placement actually LANDED, or when none
-		// is expected (heuristic-only scope, fit/auto-place disabled, faulted
-		// probe), or when a bounded retry budget is spent. Placement re-reads
-		// world transforms live, so a retry needs a fresh PROBE only when the
-		// face never resolved. Converges on the first retry in the logged case.
+		// Don't latch on a decline: the first post-load probe walks fine but can
+		// carry one-update-stale world transforms, which the auto-place sanity
+		// gate correctly refuses — latching then would hide the good data a few
+		// frames later until the first live aim. Latch only when a census
+		// placement actually landed, when none is expected (heuristic-only
+		// scope, fit/auto-place disabled, faulted probe), or when a bounded
+		// retry budget is spent. Placement re-reads world transforms live, so a
+		// retry needs a fresh probe only when the face never resolved.
 		const auto base = REL::Module::get().base();
 		const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
 		if (!player) {
@@ -2882,7 +2636,7 @@ namespace TrueScopes::ScopeRender
 		constexpr std::uint32_t kRetryFrames = 30;  // ~1/3 s at 90 fps
 		constexpr std::uint32_t kMaxTries = 8;      // ~2.7 s worst case, then latch
 		static bool          s_done = false;
-		static bool          s_track = false;  // v0.2.128: census landed -> track per frame
+		static bool          s_track = false;  // census landed -> track per frame
 		static std::uint32_t s_tries = 0;
 		static std::uint32_t s_cooldown = 0;
 		bool                 warnExhausted = false;
@@ -2912,13 +2666,11 @@ namespace TrueScopes::ScopeRender
 			}
 			ScopeIdent::RunIfRequested(player);
 			if (s_done || ScopeIdent::ProbePending()) {
-				// v0.2.128 - THE HIP-LAG FIX (field screenshot 2026-08-25): the
-				// disc hangs off PrimaryUIAttachNode, NOT the weapon, so its
-				// correct local offset changes every frame the gun moves. The
-				// live path recomputes census placement per frame; presence
-				// applied ONCE and went quiet, so at hip the frozen disc
-				// trailed the moving gun. Once a census placement has landed,
-				// keep tracking it per frame - the census target is pure weapon
+				// The disc hangs off PrimaryUIAttachNode, not the weapon, so its
+				// correct local offset changes every frame the gun moves — a
+				// placement applied once would leave the frozen disc trailing
+				// the gun at hip. Once a census placement has landed, keep
+				// tracking it per frame: the census target is pure weapon
 				// geometry (eye-independent), so it is hip-safe by construction,
 				// and the write early-out keeps unchanged frames free.
 				if (s_done && s_track) {
@@ -2931,8 +2683,8 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 			const auto outcome = ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
-			// Retry only while a census placement is genuinely expected AND the
-			// machinery that could deliver one is enabled - otherwise this would
+			// Retry only while a census placement is genuinely expected and the
+			// machinery that could deliver one is enabled — otherwise this would
 			// burn the budget on every equip of a heuristic-only scope, or spin
 			// forever with widgetAutoPlace=false (a documented live knob).
 			const bool wantCensus = ScopeIdent::CensusFaceExpected() &&
@@ -2977,13 +2729,11 @@ namespace TrueScopes::ScopeRender
 
 	void DimFrozenLens(float a_factor)
 	{
-		// v0.2.116 — POSE FREEZE dim. One-shot multiply of the frozen lens
-		// picture, applied by the fill hook on the live->frozen edge (pose gate:
-		// widget up, eye not at the tube; RT 0x62 persists so the last live
-		// picture would otherwise read as live). Runs at the same fill-hook slot
-		// TintLens / the phase-1 ImageSpaceCopy proved safe, and LensComposite
-		// saves/restores all D3D state + invalidates the engine's cached-state
-		// block itself.
+		// Pose-freeze dim: one-shot multiply of the frozen lens picture, applied
+		// by the fill hook on the live->frozen edge (pose gate: widget up, eye
+		// not at the tube; RT 0x62 persists so the last live picture would
+		// otherwise read as live). LensComposite saves/restores all D3D state
+		// and invalidates the engine's cached-state block itself.
 		const auto base = REL::Module::get().base();
 		LensComposite::Inputs in{};
 		in.renderer = base + kRendererRVA;
@@ -3009,7 +2759,7 @@ namespace TrueScopes::ScopeRender
 			g_faulted = false;
 			g_available = true;
 			logger::info("ScopeRender: fault latch cleared — retrying own render (retryAfterFault)"sv);
-			return true;  // v0.3: report the clear so the caller's retry cap counts real retries only
+			return true;  // report the clear so the caller's retry cap counts real retries only
 		}
 		return false;
 	}
@@ -3019,25 +2769,18 @@ namespace TrueScopes::ScopeRender
 		return g_inOwnResolve.load();
 	}
 
-	// v0.2.78: fire the deferred sun exec from inside the resolve. Called by
-	// ResolveAccumBind0Hook right after the light-accum buffer is bound -- i.e. after
-	// the G-buffer geometry has been drawn (which is the entire point; see the note at
-	// the capture site) and before the resolve's own light volumes. One-shot: the slot
-	// is cleared before invoking, so a re-entrant or repeated bind cannot draw twice.
-	// v0.2.133 - THE BULLET-HOLE STAGE (field defect 2026-08-25: shot decals in
-	// the main scene, absent from the lens). Screen-space decals are BSDFDecal
-	// objects at SSN+0x218, drawn in vanilla by the dedicated DrawWorld stage
-	// FUN_142845cc0 our render never ran - the sun situation over again, and
-	// with zero pass-lifetime exposure (no BSRenderPass involved). Design was
-	// adversarially verified twice; the corrections are all here:
-	//  - REBUILD the visible list ourselves with the engine's own visitor under
+	// The bullet-hole (screen-space decal) stage. Decals are BSDFDecal objects
+	// at SSN+0x218, drawn in vanilla by the dedicated DrawWorld stage
+	// FUN_142845cc0, which this render never runs; no BSRenderPass is involved,
+	// so there is no pass-lifetime exposure. Points that must hold:
+	//  - rebuild the visible list ourselves with the engine's own visitor under
 	//    the SSN spin lock (the engine's global list is consumed and freed
-	//    before our fill site runs - ordering-proven), into a plugin-owned
-	//    BSScrapArray-shaped list with capacity pre-reserved >= the SSN count
-	//    so the visitor's growth path provably never fires (growth on a foreign
-	//    buffer would scrap-free plugin memory).
-	//  - param 2 of the renderer is the TEXTURE-BATCH count from the visitor's
-	//    counter, snapshotted before unlock - NOT the decal count (an overcount
+	//    before our fill site runs), into a plugin-owned BSScrapArray-shaped
+	//    list with capacity pre-reserved >= the SSN count so the visitor's
+	//    growth path never fires (growth on a foreign buffer would scrap-free
+	//    plugin memory).
+	//  - param 2 of the renderer is the texture-batch count from the visitor's
+	//    counter, snapshotted before unlock — not the decal count (an overcount
 	//    reads past the instance-count array).
 	//  - the DrawWorld camera global is bracketed to our scope camera (the
 	//    stage's draw-ctx builder and camera-rect write read it).
@@ -3047,9 +2790,9 @@ namespace TrueScopes::ScopeRender
 	//    bits (|4 depth-stencil, |8 0xbc group, |0x10 blend).
 	//  - decal refcounts (+8) held across the call (AddDecal parity), engine
 	//    release on exit (dec; 0 -> vfunc vtable+8).
-	//  - NO MRT restore: the stage's exit binding is bitwise the G-buffer set
+	//  - no MRT restore: the stage's exit binding is bitwise the G-buffer set
 	//    the resolve left bound, and the resolve's accum binds only touch
-	//    slots 0/1 (+unbind 2) afterward - verified from disassembly.
+	//    slots 0/1 (+unbind 2) afterward — verified from disassembly.
 	// The near plane uses our known scopeNearClip rather than walking the VR
 	// camera's +0x1a0 frustum pointer (layout differs from flatrim).
 	void DecalStageImpl(std::uint32_t& a_n, std::uint32_t& a_batches) noexcept
@@ -3075,11 +2818,9 @@ namespace TrueScopes::ScopeRender
 		alignas(16) float plane[8] = {};
 		Fn<void (*)(float*, const float*, const float*)>(Addr::kNiPlaneCtor)(plane, nrm, pt);
 
-		// v0.2.135 - THE STEP-2 FAULT: BSScrapArray's capacity is PADDED to 8
-		// bytes, so size lives at +0x18 - the v0.2.133/134 struct packed it at
-		// +0x14 and the visitor read its element count from stack garbage past
-		// the struct (wild binary-insert range -> AV). The verify-2 report even
-		// said "the renderer reads param_1+0x18 (count)"; the clue was there.
+		// BSScrapArray's capacity field is padded to 8 bytes, so size lives at
+		// +0x18 — pack it at +0x14 and the visitor reads its element count from
+		// stack garbage past the struct.
 		struct ScrapArray
 		{
 			void*           heap;   // +0x00 ScrapHeap* (null ok)
@@ -3101,12 +2842,10 @@ namespace TrueScopes::ScopeRender
 		VisitCtx   vc{ plane, &list, &batches };
 		g_decalStep.store(1);  // plane built
 
-		// v0.2.134 - THE LOCK CAN NEVER BE ORPHANED AGAIN. The v0.2.133 field
-		// freeze: the stage faulted while holding this lock, the SEH latch in
-		// the wrapper swallowed the exception, the lock stayed set, and the
-		// next shot's AddDecal spun forever on the game thread (freeze with no
-		// Buffout dump - the tell). __finally releases on EVERY exit path,
-		// fault included; the wrapper's __except still latches the stage off.
+		// The lock must never be orphaned: a fault while holding it leaves the
+		// next shot's AddDecal spinning forever on the game thread. __finally
+		// releases on every exit path, fault included; the wrapper's __except
+		// still latches the stage off.
 		auto* lock = reinterpret_cast<volatile long*>(ssn + 0x230);
 		int   spins = 0;
 		while (_InterlockedExchange(lock, 1) != 0) {
@@ -3168,11 +2907,11 @@ namespace TrueScopes::ScopeRender
 			auto*      camGlobal = reinterpret_cast<std::uintptr_t*>(base + Addr::kDrawWorldCameraPtr);
 			const auto savedCam = *camGlobal;
 			*camGlobal = cam;
-			// v0.3 hardening (INV §8.5): the render call is the fault suspect, and a
-			// fault here used to skip BOTH the camera-global restore (leaving the
-			// engine's DrawWorld camera pointed at our scope camera) and the decal
-			// refcount release (leaking every visited decal). __finally runs them on
-			// every exit; the wrapper's __except still latches the stage off.
+			// A fault in the render call must not skip the camera-global restore
+			// (leaving the engine's DrawWorld camera pointed at our scope camera)
+			// or the decal refcount release (leaking every visited decal).
+			// __finally runs them on every exit; the wrapper's __except still
+			// latches the stage off.
 			__try {
 				g_decalStep.store(5);  // render call
 				Fn<void (*)(void*, std::uint32_t, std::uint32_t)>(Addr::kDeferredDecalRender)(
@@ -3230,9 +2969,8 @@ namespace TrueScopes::ScopeRender
 				g_decalStep.load());
 			return;
 		}
-		// v0.2.136: log whenever the drawn/total counts CHANGE (field 2026-08-25:
-		// "some holes show, others do not - always the same ones" - the next
-		// diagnosis needs drew-vs-SSN-total per fill, not just the first run).
+		// Log whenever the drawn/total counts change — diagnosis needs
+		// drew-vs-SSN-total per fill, not just the first run.
 		static std::uint32_t s_lastN = 0xffffffffu, s_lastTotal = 0xffffffffu;
 		std::uint32_t        total = 0;
 		const auto           ssnG = *reinterpret_cast<std::uintptr_t*>(
@@ -3247,6 +2985,11 @@ namespace TrueScopes::ScopeRender
 		}
 	}
 
+	// Fire the deferred sun exec from inside the resolve. Called by
+	// ResolveAccumBind0Hook right after the light-accum buffer is bound — after
+	// the G-buffer geometry has been drawn and before the resolve's own light
+	// volumes. One-shot: the slot is cleared before invoking, so a re-entrant
+	// or repeated bind cannot draw twice.
 	void RunPendingSunExec() noexcept
 	{
 		if (!g_pendingSunExec) {
@@ -3262,7 +3005,7 @@ namespace TrueScopes::ScopeRender
 		g_sunBindHooksInstalled = a_installed;
 	}
 
-	// --- DevBench surface (v0.2.65) -----------------------------------------
+	// --- DevBench surface ---
 
 
 	FovInfo GetFovInfo()

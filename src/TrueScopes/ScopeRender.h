@@ -21,11 +21,11 @@ namespace TrueScopes::ScopeRender
 	// resolve accum-bind call-site hooks (Hooks.cpp) key off this to force
 	// bind mode 3 (no clear) so our pre-drawn sun pass survives into the composite.
 	bool InOwnResolve();
-	// v0.2.78: invoked by ResolveAccumBind0Hook to run the sun pass INSIDE the resolve,
+	// Invoked by ResolveAccumBind0Hook to run the sun pass inside the resolve,
 	// after the G-buffer geometry exists for it to shade. No-op unless a render deferred one.
 	void RunPendingSunExec() noexcept;
-	// v0.2.133: the deferred-decal (bullet-hole) stage - fired once per own
-	// resolve from ResolveAccumBind0Hook, before the accum bind.
+	// The deferred-decal (bullet-hole) stage - fired once per own resolve from
+	// ResolveAccumBind0Hook, before the accum bind.
 	void RunPendingDecalStage() noexcept;
 
 	// Hooks::Install reports whether the two resolve bind sites were hooked; the sun
@@ -33,29 +33,28 @@ namespace TrueScopes::ScopeRender
 	void SetSunBindHooksInstalled(bool a_installed);
 
 
-	// v0.2.116 — POSE FREEZE: one-shot dim of the frozen lens picture (fill hook,
-	// live->frozen edge). Builds the LensComposite inputs itself; SEH-guarded.
-	// Render-thread only.
+	// One-shot dim of the frozen lens picture (fill hook, live->frozen edge).
+	// Builds the LensComposite inputs itself; SEH-guarded. Render-thread only.
 	void DimFrozenLens(float a_factor);
 
-	// v0.2.119 — plugin-owned widget presence support: may presence show the
-	// widget (fit applied, or fit disabled by choice)?
+	// Plugin-owned widget presence support: may presence show the widget
+	// (fit applied, or fit disabled by choice)?
 	bool WidgetPresentable();
 
 	// Run ident probe + widget fit outside a live fill (render thread; SEH'd).
 	void PresenceFit();
-	// v0.2.124: request a camera-smoothing state reset (scope-in edge, weapon
-	// swap) — adopted on the next live fill.
+	// Request a camera-smoothing state reset (scope-in edge, weapon swap) -
+	// adopted on the next live fill.
 	void CamSmoothReset() noexcept;
-	// v0.2.125: does the frozen lens still need its presence-time prime fill?
+	// Does the frozen lens still need its presence-time prime fill?
 	bool LensPrimeNeeded() noexcept;
 	void LensPrimeDone() noexcept;
 
-	// (v0.2.68 had a ResetWidgetFit() called on scope-in. REMOVED in v0.2.69: the engine
-	// rewrites ScopeParent at EQUIP, not scope-in, so that reset re-captured our own
-	// output as the new baseline and compounded the offset every scope cycle. The fit now
-	// detects an engine rewrite by comparing the node against the values it last wrote,
-	// which needs no external event and cannot be hooked to the wrong one.)
+	// (There is deliberately no reset-fit call on scope-in: the engine rewrites
+	// ScopeParent at equip, not scope-in, so an edge-triggered reset re-captures our
+	// own output as the new baseline and compounds the offset every scope cycle. The
+	// fit instead detects an engine rewrite by comparing the node against the values
+	// it last wrote, which needs no external event and cannot be hooked to the wrong one.)
 
 
 	// Thread id that currently holds the renderer+4 scoped bracket (0 = none).
@@ -67,14 +66,14 @@ namespace TrueScopes::ScopeRender
 	// lets the user bisect a faulting config live instead of restarting the game.
 	bool RetryAfterFault();  // true = a latch was actually cleared
 
-	// --- DevBench surface (v0.2.65) -----------------------------------------
+	// --- DevBench surface ----------------------------------------------------
 	// Everything below exists so the query server can answer questions that
-	// previously required grepping the heartbeat log (emitted only every 300
+	// otherwise require grepping the heartbeat log (emitted only every 300
 	// renders) or attaching a debugger.
 
 
 	// Live snapshot of the render diagnostics. These are the same values the
-	// heartbeat prints, plus the engine pointers we resolve at Init() — having
+	// heartbeat prints, plus the engine pointers resolved at Init() - having
 	// those readable means an ad-hoc /read can target the sun pass config, the
 	// render context or the accumulator without re-deriving anything.
 	struct Diagnostics
@@ -93,18 +92,18 @@ namespace TrueScopes::ScopeRender
 		std::uint32_t passTotal;
 		std::int32_t  lightsShadowed, lightsQueued, eyeCount;
 		std::int32_t  sunPass, sunIsSSN, skyRoots, skyDrawn;
-		// v0.2.76: sunPass means "we called the exec"; sunDrew is its RETURN VALUE,
+		// sunPass means "we called the exec"; sunDrew is its return value,
 		// i.e. whether FUN_142891040's technique gate let the draw happen at all.
 		std::int32_t  sunDrew;
 		std::uint64_t sunDrewCount, sunGatedCount;
 		std::uint32_t sunCfgFlags;
 		float         camRect[6];
 		std::int32_t  viewport[6];
-		std::int32_t  lightsClamp;  // v0.2.73: perfLightsMax applied last render (-1 = none)
+		std::int32_t  lightsClamp;  // perfLightsMax applied last render (-1 = none)
 	};
 	Diagnostics GetDiagnostics();
 
-	// v0.2.90 derived FOV. `derived` is computed every render whether or not it is
+	// Derived FOV. `derived` is computed every render whether or not it is
 	// used, so it can be compared against a hand-tuned scopeFovDegrees before
 	// anyone trusts it. `used` is what SetCameraFOV actually got.
 	//   theta_render = 2*atan( (R / d) / M )
@@ -118,10 +117,10 @@ namespace TrueScopes::ScopeRender
 	};
 	FovInfo GetFovInfo();
 
-	// --- v0.2.92 automatic widget placement ----------------------------------
+	// --- automatic widget placement ------------------------------------------
 	// The candidate offset that would put the lens disc on the optic's ocular
 	// face, derived from the scope's world bounding sphere and the eye position.
-	// ALWAYS computed, applied only when `widgetAutoPlace` is on — so it can be
+	// Always computed, applied only when `widgetAutoPlace` is on - so it can be
 	// checked against a hand-tuned value that is known to be right, before it is
 	// trusted on a scope nobody has ever looked through.
 	struct PlacementReport
@@ -138,7 +137,7 @@ namespace TrueScopes::ScopeRender
 		char  method[16];  // "census" (exact) or "bound" (heuristic fallback)
 		bool  haveBoth;
 		float agreement;  // |census - heuristic|, the heuristic's measured error
-		// Closed-loop state (v0.2.94). The loop steers by observing where the disc
+		// Closed-loop state. The loop steers by observing where the disc
 		// actually lands, so it converges even if the assumed parent transform is
 		// wrong — `parentResidual` says whether it was.
 		bool  converged;
@@ -155,18 +154,18 @@ namespace TrueScopes::ScopeRender
 	// different scope, or a setting feeding it changed).
 	void InvalidatePlacement();
 
-	// --- v0.2.73 stage stopwatch ---------------------------------------------
+	// --- stage stopwatch -----------------------------------------------------
 	// Mean milliseconds per stage of our own render since the last reset, measured
-	// on BOTH timelines: GPU via D3D11 timestamp queries, CPU via QPC across the
-	// same marks. Both are needed — AccumulateScene is CPU pass-list building with
+	// on both timelines: GPU via D3D11 timestamp queries, CPU via QPC across the
+	// same marks. Both are needed - AccumulateScene is CPU pass-list building with
 	// near-zero GPU work and the resolve is the reverse, and which one dominates
 	// decides whether the fix is fewer objects or fewer pixels.
 	//
 	// Reset the window with DevBench `/perf/reset` (or any `perfTimers` write, which
-	// calls the same thing). ⚠️ v0.2.73 detected the reset as an off->on EDGE seen by
-	// the render thread, so two back-to-back /config/set calls landed between renders
-	// and the reset silently never fired -- reporting session-long means that damped a
-	// 9 ms effect to 1 ms. v0.2.74 uses a latch the render thread cannot miss.
+	// calls the same thing). The reset is a latch the render thread cannot miss - an
+	// edge-detect version let two back-to-back /config/set calls land between renders
+	// so the reset silently never fired, and session-long means damped a 9 ms effect
+	// to 1 ms.
 	inline constexpr std::size_t kStageCount = 7;
 	inline constexpr const char* kStageNames[kStageCount] = {
 		"setup",    // camera + FOV + widget fit + G-buffer binds and clears

@@ -11,17 +11,16 @@ namespace TrueScopes::Hooks
 	bool Install();
 
 
-	// v0.2.70 — PERF INSTRUMENT. Count of per-frame fill-hook invocations, i.e. the
-	// GAME's frame count. Advances whether or not the scope is up, which is the whole
-	// point: ScopeRender's own `renders` counter only ticks while scoped, so it cannot
-	// measure the scope-down baseline we need to compare against. Frames/second from
-	// two reads of this is the game frame rate in ANY state.
+	// Count of per-frame fill-hook invocations, i.e. the game's frame count.
+	// Advances whether or not the scope is up: ScopeRender's own `renders` counter
+	// only ticks while scoped, so it cannot measure the scope-down baseline.
+	// Frames/second from two reads of this is the game frame rate in any state.
 	std::uint64_t FrameCount();
 
 	// True while the scope is considered active (post-hysteresis). Lets a perf sample
 	// record which state it was taken in instead of trusting the operator's notes.
 	bool ScopeActive();
 
-	// v0.2.118: is the plugin-owned widget presence currently showing the nodes.
+	// Is the plugin-owned widget presence currently showing the nodes.
 	bool WidgetPresenceShown();
 }

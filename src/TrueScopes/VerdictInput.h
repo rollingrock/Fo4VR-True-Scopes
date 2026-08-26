@@ -1,11 +1,11 @@
 #pragma once
 
-// v0.2.109 — controller verdicts for guided test passes (the starfield-vr idea:
-// quick feedback through controller chords, no headset removal, no voice).
+// Controller verdicts for guided test passes: quick feedback through
+// controller chords, no headset removal, no voice.
 //
-//   GRIP + A        -> "yes"   (short haptic ack)
-//   GRIP + B        -> "no"    (long haptic ack)
-//   GRIP + TRIGGER  -> "skip"
+//   grip + A        -> "yes"   (short haptic ack)
+//   grip + B        -> "no"    (long haptic ack)
+//   grip + trigger  -> "skip"
 //
 // Either hand. Read passively off the game's own openvr_api.dll (IVRSystem_017,
 // version string verified inside the shipped DLL): VR_GetGenericInterface once,
@@ -40,10 +40,10 @@ namespace TrueScopes::VerdictInput
 	// Latest event (seq 0 = none yet).
 	[[nodiscard]] Event Latest() noexcept;
 
-	// Diagnostics: did the IVRSystem_017 lookup succeed?
 	// Arm the poller at runtime (first 'verdict' tool call) even when
 	// verdictInputEnabled is false - the drivers need chords without a TOML edit.
 	void RequestStart() noexcept;
 
+	// Diagnostics: did the IVRSystem_017 lookup succeed?
 	[[nodiscard]] bool Available() noexcept;
 }

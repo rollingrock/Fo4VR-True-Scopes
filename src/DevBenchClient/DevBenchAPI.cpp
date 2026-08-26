@@ -2,18 +2,16 @@
 // MIT-licensed (see DevBenchAPI.LICENSE.txt) so any plugin may vendor it; the devbench
 // plugin itself is GPL-3.0. Compile this in YOUR plugin only (not in devbench).
 //
-// THE ONLY EXTENDER-AWARE FILE IN THE ABI. DevBenchAPI.h is plain C++; everything
+// The only extender-aware file in the ABI. DevBenchAPI.h is plain C++; everything
 // game-specific is the messaging dispatch below, which is the same call on both
 // extenders — SKSE and F4SE both expose
 //     GetMessagingInterface()->Dispatch(type, data, dataLen, receiver)
 // with identical semantics, so the only real difference is which header to include.
 //
-// Game selection, in order:
-//   1. Define DEVBENCHAPI_GAME_SKYRIM or DEVBENCHAPI_GAME_FALLOUT4 to force it.
-//   2. Otherwise it is auto-detected from which extender header is reachable.
-// The explicit macro exists because auto-detection is a convenience, not a guarantee:
-// a plugin whose include path can see both headers would otherwise get whichever this
-// file happens to test first, silently.
+// Game selection: define DEVBENCHAPI_GAME_SKYRIM or DEVBENCHAPI_GAME_FALLOUT4 to
+// force it, otherwise it is auto-detected from which extender header is reachable.
+// The explicit macro exists because a plugin whose include path can see both headers
+// would otherwise get whichever this file happens to test first, silently.
 #include "DevBenchAPI.h"
 
 #if !defined(DEVBENCHAPI_GAME_SKYRIM) && !defined(DEVBENCHAPI_GAME_FALLOUT4)
@@ -32,7 +30,7 @@
 #	include <SKSE/SKSE.h>
 #endif
 
-// Consumer-side helper — compile this in YOUR plugin (devbench itself does not build it).
+// Consumer-side helper — compile this in your plugin (devbench itself does not build it).
 DevBenchAPI::IDevBenchInterface001* g_devBenchInterface = nullptr;
 
 namespace DevBenchAPI
@@ -53,21 +51,20 @@ namespace DevBenchAPI
 		// Synchronous: dispatching to the named provider invokes its listener inline,
 		// which fills message.GetApiFunction in this stack struct.
 		//
-		// NOTE the dataLen argument is sizeof(DevBenchMessage*), not sizeof(DevBenchMessage).
-		// That is almost certainly a slip in the original, but it is the value every
-		// already-shipped consumer sends and the host has never read it — so it stays as
-		// published. Do not "fix" it into a value the host might one day start validating.
+		// The dataLen argument is sizeof(DevBenchMessage*), not sizeof(DevBenchMessage).
+		// A slip in the original, but it is the value every already-shipped consumer
+		// sends and the host has never read it — so it stays as published. Do not fix it
+		// into a value the host might one day start validating.
 		DevBenchMessage message;
 		messaging->Dispatch(DevBenchMessage::kMessage_GetInterface, &message,
 			sizeof(DevBenchMessage*), DevBenchPluginName);
 		if (!message.GetApiFunction) {
 #if defined(DEVBENCHAPI_GAME_FALLOUT4)
-			// FALLBACK (2026-08-26, FO4VR): the messaging handshake requires the
-			// provider's any-sender listener to be present in THIS plugin's
-			// listener slot, and F4SEVR's RegisterListener de-dupes by handle -
-			// a provider that loaded earlier can be unreachable by message
-			// forever (its kPostLoad re-register is a global no-op). The DLL
-			// export is load-order-proof; same GetApi either way.
+			// Fallback: the messaging handshake needs the provider's any-sender
+			// listener in this plugin's listener slot, and F4SEVR's RegisterListener
+			// de-dupes by handle - a provider that loaded earlier can be unreachable
+			// by message forever (its kPostLoad re-register is a global no-op). The
+			// DLL export is load-order-proof; same GetApi either way.
 			if (const auto mod = ::GetModuleHandleW(L"devbench.dll")) {
 				if (const auto entry = reinterpret_cast<void* (*)()>(
 						::GetProcAddress(mod, "DevBench_GetApiFunction"))) {

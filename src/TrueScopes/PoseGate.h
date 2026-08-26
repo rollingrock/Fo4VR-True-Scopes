@@ -1,71 +1,56 @@
 #pragma once
 
-// v0.2.116 — POSE-BASED ACTIVATION.
+// Pose-based scope activation, replacing the vanilla eye-gate verdict.
 //
-// The vanilla eye-gate (TS_Player_UpdateScopeEyeGate, 0x140ef7b00 — decompiled
-// 2026-08-24) activates the scope only when the eye↔scope distance is under
-// fWeaponDistEnterScope:VRInput = 38 units (~54 cm), which makes a pistol scope
-// at arm's length (~45-55 units) impossible to activate. Its verdict is fed to
-// the enable switch FUN_140efaa60 through exactly ONE per-frame call site
-// (0x140ef851f, game thread, from Main::OnIdle); Hooks.cpp thunks that call and
-// routes the verdict through OnGateVerdict() below.
+// The vanilla gate (TS_Player_UpdateScopeEyeGate, 0x140ef7b00) activates only
+// under an eye-scope distance of fWeaponDistEnterScope:VRInput = 38 units, so a
+// pistol scope at arm's length (~45-55 units) can never activate. Its verdict
+// reaches the enable switch FUN_140efaa60 through exactly one per-frame call
+// site (0x140ef851f, game thread); Hooks.cpp thunks that call and routes the
+// verdict through OnGateVerdict() below.
 //
-// Our test replaces vanilla's three checks (HMD-to-weapon look cone 25°/35°,
-// weapon-forward cone 7°/15° widened by (60/dist)², distance 38/40) with a
-// geometrically better-conditioned trio measured against the ACTUAL tube:
-//   * distance     eye → ocular point (the ScopeParent widget origin —
-//                  engine-owned, never dangling; deliberately not the probe's
-//                  cached ocular face, see the note in Compute()), in units
-//   * lateral      the eye's perpendicular distance from the tube AXIS line, in
-//                  units — this is vanilla's cone test made distance-invariant:
-//                  a fixed lateral band is a wide angle up close and a narrow
-//                  angle at arm's length, which is exactly the optics
-//   * look cone    angle between the HMD's forward axis and the direction to
-//                  the ocular — the head must actually be oriented at the scope
-// The eye position is the NEARER of the two real eyes (camera root ± half IPD
-// along the head X axis — the v0.2.114 aiming-eye selection), and the eye must
-// sit BEHIND the ocular (positive axial component along the tube).
+// The replacement test, measured against the actual tube: eye to ocular
+// distance (ocular = the ScopeParent widget origin, engine-owned; see the note
+// in Compute()), the eye's perpendicular distance from the tube axis (the cone
+// test made distance-invariant), and the angle between the HMD forward axis and
+// the direction to the ocular. The eye is the nearer of the two real eyes
+// (camera root +/- half IPD along the head X axis) and must sit behind the
+// ocular. Every threshold has an enter/exit pair for hysteresis and is a TOML
+// knob, live-tunable through DevBench.
 //
-// Every threshold has an enter/exit pair (spatial hysteresis — this is what
-// retires the scopeOffHoldMs time-hold hack for the pose path), and everything
-// is a TOML knob, live-tunable through DevBench.
-//
-// Vanilla's own machinery is otherwise untouched: menu/holster force-off paths
-// keep their meaning, ScopeMenu lifecycle stays sighted-state driven (it opens
-// independently of eye proximity — reticle and Steady work at arm's length),
-// and the Steady hold-breath bit (player+0x12a1 bit 8) is bypassed only in the
-// sense that our verdict replaces the whole expression it short-circuited.
-// iScopeEnabled=2 is NOT used anywhere (the forceAlwaysOn crash was root-caused
-// 2026-08-24: the ScopeMenu ctor dereferences a failed input-layer allocation).
+// Vanilla's menu/holster force-off paths keep their meaning and ScopeMenu stays
+// sighted-state driven (reticle and Steady work at arm's length). iScopeEnabled=2
+// is not used anywhere: the ScopeMenu ctor dereferences a failed input-layer
+// allocation and crashes.
 
 #include <cstdint>
 
 namespace TrueScopes::PoseGate
 {
 	// Game thread, once per eligible frame, from the verdict call-site thunk.
-	// Returns the verdict to feed vanilla's enable switch (the WIDGET verdict).
-	// With poseGateEnabled=false (or pose sources missing) it is a transparent
+	// Returns the verdict to feed vanilla's enable switch. With
+	// poseGateEnabled=false (or pose sources missing) it is a transparent
 	// passthrough of the vanilla verdict.
 	bool OnGateVerdict(std::uintptr_t a_player, bool a_vanillaVerdict);
 
 	// Render thread (fill hook): true when the lens fill should run. While the
-	// widget is active but this is false, the lens is FROZEN — RT 0x62 persists,
+	// widget is active but this is false, the lens is frozen - RT 0x62 persists,
 	// so freeze = don't fill. Always true when the pose gate is not in charge.
 	bool FillLive();
 
-	// True when the verdict site has NOT evaluated within the last a_maxFrames
-	// game frames while the pose gate had taken ownership — i.e. the weapon is
+	// True when the verdict site has not evaluated within the last a_maxFrames
+	// game frames while the pose gate had taken ownership - i.e. the weapon is
 	// holstered or a blocking menu is open (vanilla eligibility stops the site).
-	// The fill hook uses this to force the widget OFF edge that vanilla's own
+	// The fill hook uses this to force the widget off edge that vanilla's own
 	// per-frame force-off would have produced (it reads the real renderer+3,
-	// which this design keeps at 0 — v0.2.116 review finding: without this, a
-	// mid-unequip re-arm latches scope-active forever and the next draw fires
-	// no ON edge, silently skipping the TOML reload and the scope re-ident).
+	// which this design keeps at 0). Without it a mid-unequip re-arm latches
+	// scope-active forever and the next draw fires no on edge, silently skipping
+	// the TOML reload and the scope re-ident.
 	bool VerdictStale(std::uint64_t a_maxFrames);
 
-	// True when the verdict SITE has not run for a_maxFrames game frames at all
-	// (weapon holstered / blocking menu), independent of pose-gate ownership —
-	// the hide signal for plugin-owned widget presence (v0.2.118).
+	// True when the verdict site has not run for a_maxFrames game frames at all
+	// (weapon holstered / blocking menu), independent of pose-gate ownership -
+	// the hide signal for plugin-owned widget presence.
 	bool SiteStale(std::uint64_t a_maxFrames);
 
 	// Diagnostics for DevBench /state.

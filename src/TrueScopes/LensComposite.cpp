@@ -10,13 +10,12 @@ namespace TrueScopes::LensComposite
 {
 	namespace
 	{
-		// --- engine ground truth (all live-verified 2026-08-23, see the session doc) ---
+		// engine ground truth
 		constexpr std::uintptr_t kD3DContextRVA = 0x6235ab0;      // ID3D11DeviceContext* (immediate)
-		// Ghidra labels DAT_145a66b58/b68, but that high-.data label is SECTION-SHIFTED
-		// (live read there returned garbage). True addresses RIP-decoded from the live
-		// code bytes of GetByName (base+0xb00270) 2026-08-23: lock 0x5ac8c00,
-		// array ptr 0x5ac8c08, count 0x5ac8c18 — and verified by enumerating 36
-		// renderers with sane names ('ScopeMenu' at index 26, customRT 124/swap 125).
+		// Ghidra labels these DAT_145a66b58/b68, but that high-.data label is
+		// section-shifted (a live read there returns garbage). True addresses
+		// RIP-decoded from the code bytes of GetByName (base+0xb00270):
+		// lock 0x5ac8c00, array ptr 0x5ac8c08, count 0x5ac8c18.
 		constexpr std::uintptr_t kRendererArrayRVA = 0x5ac8c08;   // Interface3D::Renderer* []
 		constexpr std::uintptr_t kRendererCountRVA = 0x5ac8c18;   // u32 count
 		constexpr std::uintptr_t kRendererName = 0x220;           // BSFixedString (pool entry ptr) — GetByName compares it
@@ -30,10 +29,10 @@ namespace TrueScopes::LensComposite
 		constexpr std::uintptr_t kStateBlock = 0x1ee0;            // ctx + 0x1ee0: BSGraphics cached-state block
 		constexpr std::uintptr_t kStateBlockInvalidate = 0x1da6170;  // TS_BSGraphics_StateBlock_Invalidate(block)
 		constexpr std::uintptr_t kRendererRebindCBs = 0x1d94c10;     // FUN_141d94c10(renderer)
-		// NiNode (VR layout): children ptr +0x168, loop bound u16 +0x172 (slot
-		// high-water mark - what NiNode::GetObjectByName itself iterates; null
-		// holes legal and skipped. +0x174 is the non-null element count, which
-		// walks short of any child past a hole - fixed here v0.3.4);
+		// NiNode (VR layout): children ptr +0x168, loop bound u16 +0x172 (the
+		// slot high-water mark NiNode::GetObjectByName itself iterates; null
+		// holes are legal and skipped). +0x174 is the non-null element count and
+		// undercounts across holes - don't use it as a loop bound.
 		// NiObjectNET name +0x10; NiAVObject flags +0x108, bit 0 = hidden.
 		constexpr std::uintptr_t kNodeChildren = 0x168;
 		constexpr std::uintptr_t kNodeChildCount = 0x172;
@@ -46,7 +45,7 @@ namespace TrueScopes::LensComposite
 			return reinterpret_cast<F>(REL::Module::get().base() + a_rva);
 		}
 
-		// ------------------------------------------------------------------ shaders
+		// shaders
 		// One triangle covers the clip-space square; uv derived from the vertex id.
 		constexpr const char kHLSL[] = R"(
 cbuffer Params : register(b0)
@@ -272,7 +271,7 @@ float4 PSMain(VSOut i) : SV_Target
 			float nvp[4];
 			float eyebox[4];
 			float fx[4];
-			// v0.2.123 glass suite - mirrors the HLSL cbuffer above EXACTLY.
+			// glass suite - mirrors the HLSL cbuffer above exactly.
 			// Zero-init = every effect off (the Dim() constraint).
 			float pose[4];
 			float rim[4];
@@ -281,11 +280,11 @@ float4 PSMain(VSOut i) : SV_Target
 			float glass2[4];
 		};
 
-		// --- eye-box pose (v0.2.113) ------------------------------------------
+		// eye-box pose
 		// The eye's lateral offset from the scope tube's axis, in disc-radius
-		// units, measured at the ScopeParent disc. Ground truth shared with
+		// units, measured at the ScopeParent disc. Offsets shared with
 		// ScopeRender.cpp's DeriveScopeFovDegrees (which documents where each
-		// offset was read out of the VR binary):
+		// was read out of the VR binary):
 		//   PlayerCamera singleton  [base+0x5930608], camera root at +0x20
 		//   NiAVObject world rotate +0x70 (NiMatrix3 = 3 rows of NiPoint4),
 		//   world translate +0xa0, world scale +0xac
@@ -293,8 +292,8 @@ float4 PSMain(VSOut i) : SV_Target
 		// (down-range), Z = up. local = R^T * (world - T): local_c = sum_r
 		// rot[r][c] * v[r], rows 0x10 apart.
 		// Returns false (offsets zeroed) when any pointer is missing or the
-		// numbers are not sane — the shader then behaves as eye-on-axis.
-		// v0.2.123 parallax EMA state (render thread only).
+		// numbers are not sane - the shader then behaves as eye-on-axis.
+		// parallax EMA state (render thread only).
 		float         g_pllxPrev[2] = {};
 		std::uint64_t g_pllxLastMs = 0;
 
@@ -317,17 +316,16 @@ float4 PSMain(VSOut i) : SV_Target
 			const auto* disc = reinterpret_cast<const float*>(a_scopeParent + 0xa0);
 			const float scale = *reinterpret_cast<const float*>(a_scopeParent + 0xac);
 			const auto* camPos = reinterpret_cast<const float*>(camRoot + 0xa0);
-			// The camera root is the HMD CENTRE, between the eyes — measured from
-			// it, the aiming eye reads ~half an IPD off axis (~2.2 units against a
-			// ~1.3-unit disc radius) and the shadow can never centre (first
-			// in-headset report, 2026-08-24). So compute BOTH eye positions —
-			// camera ± half-IPD along the head's own X axis — and use whichever
-			// sits closer to the tube axis: that auto-selects the eye the player
-			// is actually aiming with, with no dominance setting to configure.
+			// The camera root is the HMD centre, between the eyes - measured from
+			// it the aiming eye reads ~half an IPD off axis (~2.2 units against a
+			// ~1.3-unit disc radius) and the shadow can never centre. So compute
+			// both eye positions - camera ± half-IPD along the head's own X axis -
+			// and use whichever sits closer to the tube axis: that picks the eye
+			// the player is actually aiming with, no dominance setting needed.
 			//
-			// The head's world X axis: with the verified convention R[r][c] =
-			// m[c*4 + r], world_dir(local X)[r] = R[r][0] = m[r] — i.e. the first
-			// three floats of the raw matrix, directly.
+			// The head's world X axis: with the convention R[r][c] = m[c*4 + r],
+			// world_dir(local X)[r] = R[r][0] = m[r] - the first three floats of
+			// the raw matrix, directly.
 			const auto* camRot = reinterpret_cast<const float*>(camRoot + 0x70);
 			const float halfIpd = 0.5f * static_cast<float>(*Settings::eyeBoxIpdUnits);
 			const float discR = 7.852f * scale;  // vanilla render_circle radius at scale 1
@@ -341,12 +339,11 @@ float4 PSMain(VSOut i) : SV_Target
 					                 camPos[2] + side * halfIpd * camRot[2] };
 				const float v[3] = { e[0] - disc[0], e[1] - disc[1], e[2] - disc[2] };
 				// local = R^T * v: local_c = sum_r R[r][c]*v[r] = raw row c dot v
-				// (same transposed-on-read convention ScopeIdent::OcularFaceWorld
-				// live-verified 2026-08-11).
+				// (same transposed-on-read convention as ScopeIdent::OcularFaceWorld).
 				const float lx = rot[0] * v[0] + rot[1] * v[1] + rot[2] * v[2];
 				const float lz = rot[8] * v[0] + rot[9] * v[1] + rot[10] * v[2];
-				// v0.2.123: tube-axial component (local +Y = down-range) of the
-				// eye position - the eye sits BEHIND the ocular, so ly < 0 and
+				// tube-axial component (local +Y = down-range) of the eye
+				// position - the eye sits behind the ocular, so ly < 0 and
 				// eye relief L = -ly. Parallax scales by D/(L+D).
 				const float ly = rot[4] * v[0] + rot[5] * v[1] + rot[6] * v[2];
 				if (!std::isfinite(lx) || !std::isfinite(lz) || !std::isfinite(ly)) {
@@ -366,7 +363,7 @@ float4 PSMain(VSOut i) : SV_Target
 
 		using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
 
-		// ------------------------------------------------------------------ state
+		// state
 		ID3D11Device*             g_device = nullptr;
 		ID3D11VertexShader*       g_vs = nullptr;
 		ID3D11PixelShader*        g_ps = nullptr;
@@ -547,10 +544,9 @@ float4 PSMain(VSOut i) : SV_Target
 				return r;
 			}
 			const auto slot = a_renderer + kPhysRTTable + static_cast<std::uintptr_t>(phys) * kPhysRTStride;
-			// slot+0 is NOT a texture pointer (0 live; the v0.2.104.0 bug — every
-			// render skipped). Take the RTV (+8) / SRV (+0x10) and derive the texture
-			// from the RTV like DumpLogicalRT does. The ref from GetResource is
-			// released by the caller (Run) after use.
+			// slot+0 is not a texture pointer (it reads 0 live). Take the RTV (+8)
+			// and SRV (+0x10) and derive the texture from the RTV. The ref from
+			// GetResource is released by the caller after use.
 			r.rtv = *reinterpret_cast<ID3D11RenderTargetView**>(slot + 8);
 			r.srv = *reinterpret_cast<ID3D11ShaderResourceView**>(slot + 0x10);
 			if (r.rtv) {
@@ -573,9 +569,9 @@ float4 PSMain(VSOut i) : SV_Target
 			if (!arr || count == 0 || count > 64) {
 				return -1;
 			}
-			// v0.3 hardening: snapshot ONCE. load() reassigns the std::string on
-			// every scope-in while this runs on the render thread - a narrow but
-			// real UAF. Changing reticleRendererName now requires a restart.
+			// snapshot once: load() reassigns the std::string on every scope-in
+			// while this runs on the render thread - a narrow but real UAF.
+			// Changing reticleRendererName requires a restart.
 			static const std::string want = *Settings::reticleRendererName;
 			static bool loggedList = false;
 			for (std::uint32_t i = 0; i < count; ++i) {
@@ -623,12 +619,10 @@ float4 PSMain(VSOut i) : SV_Target
 				if (entry && std::strcmp(reinterpret_cast<const char*>(entry + kPoolEntryChars), "render_UI:0") == 0) {
 					return c;
 				}
-				// only NiNodes have a children array; leaf shapes' +0x168 is past
-				// their size (BSTriShape is 0x160-ish). v0.3.4: gate on the exact
-				// vtable test (ScopeIdent::IsNiNode) instead of relying on depth +
-				// "shapes sit directly under one node" - a leaf first-level child
-				// would have read garbage children fields here (the same class of
-				// bug as the v0.3.3 pill miss).
+				// only NiNodes have a children array; a leaf shape's +0x168 is past
+				// its size (BSTriShape is ~0x160), so gate the recursion on the
+				// vtable test (ScopeIdent::IsNiNode) - reading the children fields
+				// off a leaf is garbage.
 				if (a_depth < 1 && ScopeIdent::IsNiNode(c)) {
 					if (const auto r = FindQuad(c, a_depth + 1)) {
 						return r;
@@ -682,10 +676,9 @@ float4 PSMain(VSOut i) : SV_Target
 	{
 		// The shared draw core: copy the lens picture to the scratch, upload the
 		// given constants, draw the fullscreen triangle back into the lens RT with
-		// exact state save/restore, then invalidate the engine's cached-state block
-		// (v0.2.116 refactor — split out of Run() so Dim() can reuse it verbatim).
-		// Does NOT release a_lens.tex and does not touch the run counters; the
-		// caller owns both.
+		// exact state save/restore, then invalidate the engine's cached-state
+		// block. Shared by Run() and Dim(). Does not release a_lens.tex and does
+		// not touch the run counters; the caller owns both.
 		bool Execute(
 			ID3D11DeviceContext*      a_d3d,
 			const PhysRT&             a_lens,
@@ -857,10 +850,9 @@ float4 PSMain(VSOut i) : SV_Target
 			if (reticleSRV) {
 				HideReticleQuad(a_in.scopeParent);
 			} else if (g_hiddenQuad) {
-				// v0.3 hardening (review finding): if the ScopeMenu RT stops resolving
-				// AFTER the vanilla quad was hidden, no reticle would composite AND the
-				// vanilla quad would stay invisible. Restore it so the tester keeps a
-				// reticle either way.
+				// if the ScopeMenu RT stops resolving after the vanilla quad was
+				// hidden, no reticle would composite and the vanilla quad would
+				// stay invisible - restore it so there is a reticle either way.
 				RestoreReticleQuad();
 			}
 		} else if (g_hiddenQuad) {
@@ -881,9 +873,9 @@ float4 PSMain(VSOut i) : SV_Target
 		p.tint[2] = static_cast<float>(*Settings::lensTintB);
 		p.tint[3] = static_cast<float>(*Settings::lensExposure);
 		p.flags[0] = (wantReticle && reticleSRV) ? static_cast<float>(*Settings::reticleAlpha) : 0.0f;
-		// v0.2.111 — modes from the probed zoom identity (ScopeIdent):
-		// screen look for the recon widget branch (overlay 16) or a
-		// Screen* measured shape; NV / recon color from the zoom's imod.
+		// modes from the probed zoom identity (ScopeIdent): screen look for
+		// the recon widget branch (overlay 16) or a Screen* measured shape;
+		// NV / recon color from the zoom's imod.
 		bool screenMode = false;
 		{
 			const auto ident = ScopeIdent::Get();
@@ -898,27 +890,26 @@ float4 PSMain(VSOut i) : SV_Target
 			                 ? static_cast<float>(*Settings::reconEffectStrength)
 			                 : 0.0f;
 			p.nvp[0] = static_cast<float>(*Settings::nvGain);
-			// v0.2.112 — rectangular screens (MGScopeThermal is 2.55 x
-			// 1.37): the aperture is the screen's half-WIDTH, and the
-			// shader crops the vertical overshoot to aspect = h/w.
-			// 1.0 (every circular optic and square screen) is a no-op.
+			// rectangular screens (MGScopeThermal is 2.55 x 1.37): the
+			// aperture is the screen's half-width, and the shader crops
+			// the vertical overshoot to aspect = h/w. 1.0 (every circular
+			// optic and square screen) is a no-op.
 			const float aspect = ident.screenAspect;
 			p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
 			p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
 			p.nvp[3] = std::clamp(static_cast<float>(*Settings::reticleEyeBoxFollow), 0.0f, 1.0f);
 		}
-		// v0.2.113 — the glass effects (SESSION_2026-08-23_RETICLE_AND_
-		// GLASS.md §4 step 3, the deferred half): eye-box from the real
-		// head-to-scope pose, edge blur, chromatic fringe. The shader
-		// applies all three only to optical tubes (screen mode skips
-		// them — an LCD has no exit pupil and no field curvature).
+		// glass effects: eye-box from the real head-to-scope pose, edge
+		// blur, chromatic fringe. The shader applies all three only to
+		// optical tubes (screen mode skips them - an LCD has no exit
+		// pupil and no field curvature).
 		{
 			float ex = 0.0f, ey = 0.0f, ly = 0.0f;
 			const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
-			// v0.2.123: the pose read feeds four consumers now - eye-box (gain-
-			// scaled), rim parallax, sheen, and parallax depth (all RAW, so the
-			// glass effects never retune when eyeBoxGain is calibrated). Run it
-			// when ANY of them wants it; each consumer gates itself below.
+			// the pose read feeds four consumers - eye-box (gain-scaled), rim
+			// parallax, sheen, and parallax depth (all raw, so the glass effects
+			// never retune when eyeBoxGain is calibrated). Run it when any of
+			// them wants it; each consumer gates itself below.
 			const float rimStr = (std::max)(0.0f, static_cast<float>(*Settings::rimShadowStrength));
 			const float rimPll = static_cast<float>(*Settings::rimShadowParallax);
 			const float shStr = (std::max)(0.0f, static_cast<float>(*Settings::sheenStrength));
@@ -939,11 +930,11 @@ float4 PSMain(VSOut i) : SV_Target
 				p.pose[0] = ex;
 				p.pose[1] = ey;
 			}
-			// PARALLAX DEPTH (optical tubes only; an LCD sits AT the housing).
+			// parallax depth (optical tubes only; an LCD sits at the housing).
 			// Image plane D units behind the lens; shift = -0.5*D/(L+D)*offset,
-			// L = live eye relief (pistol at arm's length naturally shows less
-			// than a shouldered rifle). EMA across fills absorbs the auto-eye
-			// flip; a >500 ms gap snaps (no stale slide-in on scope-in); a pose
+			// L = live eye relief (a pistol at arm's length shows less than a
+			// shouldered rifle). EMA across fills absorbs the auto-eye flip; a
+			// >500 ms gap snaps so nothing stale slides in on scope-in; a pose
 			// failure decays toward zero through the same EMA instead of
 			// popping. The clamp keeps clamp-sampler smear under the rim band.
 			{
@@ -974,8 +965,8 @@ float4 PSMain(VSOut i) : SV_Target
 				p.pose[3] = g_pllxPrev[1];
 				p.sheen2[2] = static_cast<float>(*Settings::reticleParallaxFraction);
 			}
-			// RIM SHADOW: fill whenever on - without pose it degrades to the
-			// static top-biased ring (graceful; the shader clamps the center).
+			// rim shadow: fill whenever on - without pose it degrades to the
+			// static top-biased ring (the shader clamps the center).
 			if (rimStr > 0.0f) {
 				p.rim[0] = static_cast<float>(*Settings::rimShadowStart);
 				p.rim[1] = static_cast<float>(*Settings::rimShadowEnd);
@@ -983,7 +974,7 @@ float4 PSMain(VSOut i) : SV_Target
 				p.rim[3] = (std::clamp)(static_cast<float>(*Settings::rimShadowTopBias), -0.25f, 0.25f);
 				p.sheen2[3] = rimPll;
 			}
-			// GLASS SHEEN: pose-gated - a static centred glint would read as a
+			// glass sheen: pose-gated - a static centred glint would read as a
 			// bug, so the whole block turns off when the pose read fails.
 			if (havePose && (shStr > 0.0f || shFre > 0.0f)) {
 				p.sheen[0] = shStr;
@@ -1007,12 +998,12 @@ float4 PSMain(VSOut i) : SV_Target
 
 	bool Dim(const Inputs& a_in, float a_factor) noexcept
 	{
-		// v0.2.116 — one-shot multiply on the frozen lens picture (pose freeze:
-		// the fill stops, RT 0x62 persists, and this keeps the stale picture from
-		// reading as live). A neutral parameter set turns the composite shader
-		// into `picture * factor`: no reticle, optical path with every effect at
-		// zero, vignette strength 0 — only the unconditional tint multiply acts.
-		// Applied ONCE per freeze edge by the caller, so nothing compounds.
+		// One-shot multiply on the frozen lens picture (pose freeze: the fill
+		// stops, RT 0x62 persists, and this keeps the stale picture from reading
+		// as live). A neutral parameter set turns the composite shader into
+		// `picture * factor`: no reticle, optical path with every effect at zero,
+		// vignette strength 0 - only the unconditional tint multiply acts.
+		// Applied once per freeze edge by the caller, so nothing compounds.
 		const auto base = REL::Module::get().base();
 		auto* const d3d = *reinterpret_cast<ID3D11DeviceContext**>(base + kD3DContextRVA);
 		if (!d3d || !EnsureStatic(d3d)) {

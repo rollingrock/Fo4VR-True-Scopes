@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // This interface header and its companion DevBenchAPI.cpp are MIT-licensed (see
-// DevBenchAPI.LICENSE.txt) so ANY script-extender plugin — including
+// DevBenchAPI.LICENSE.txt) so any script-extender plugin — including
 // proprietary/closed-source — may vendor them to talk to devbench, independent of the
 // devbench plugin's GPL-3.0. They are self-contained: drop both files into your plugin
 // (or consume the devbench-api vcpkg port) and build — no other devbench source is
@@ -10,25 +10,17 @@
 
 #include <cstdint>
 
-// NO SCRIPT-EXTENDER HEADER HERE, DELIBERATELY.
-//
-// Two reasons, and the second is a hard build invariant:
-//
-// 1. This ABI is game-neutral. Every declaration below is plain C++ — the message id,
-//    the function-pointer types and the vtable. Nothing in it is Skyrim-shaped, and
-//    pulling <SKSE/SKSE.h> in only ever made it *look* Skyrim-only. The one piece that
-//    genuinely needs an extender is GetDevBenchInterface001(), which dispatches a
-//    message; that lives in DevBenchAPI.cpp, which picks SKSE or F4SE at compile time.
-//
-// 2. devbench's own src/core/ MUST NOT include a script-extender header (see
-//    docs/MULTIGAME.md — the unit-test target, which links neither extender, is what
-//    keeps that honest). The host side of this ABI lives in the core, so it includes
-//    this file; if this file pulled in SKSE the core could not.
+// No script-extender header here, deliberately. This ABI is game-neutral plain C++;
+// the one piece that genuinely needs an extender is GetDevBenchInterface001(), which
+// lives in DevBenchAPI.cpp and picks SKSE or F4SE at compile time. The hard build
+// invariant: devbench's own src/core/ must not include an extender header (its
+// unit-test target links neither), and the host side of this ABI lives in the core —
+// if this file pulled in SKSE the core could not build.
 //
 // devbench cross-plugin API — lets another SKSE or F4SE plugin register MCP/REST tools
-// and emit events into the running devbench host. Usage: once your plugin has loaded
-// (SKSE kPostLoad / F4SE kPostLoad), request the interface via a messaging dispatch,
-// then call through the versioned abstract interface below.
+// and emit events into the running devbench host. Once your plugin has loaded
+// (kPostLoad), request the interface via a messaging dispatch, then call through the
+// versioned abstract interface below.
 //
 // The call direction is reversed from a typical query API: you hand devbench a handler
 // that it calls back when a tool is invoked. So payloads are JSON strings and the
@@ -46,7 +38,7 @@ namespace DevBenchAPI
 	// A tool handler. Invoked on devbench's server (listener) thread — marshal to the
 	// main game thread yourself if you touch game state. `a_argsJson` is the tool's
 	// arguments object as a JSON string; return your result via a_write(a_sink, json).
-	// MUST be a plain C function / captureless lambda.
+	// Must be a plain C function / captureless lambda.
 	using ToolFn = void (*)(void* a_ctx, const char* a_argsJson, void* a_sink, WriteFn a_write);
 
 	// Message used to fetch the interface (a fixed, randomly chosen id).
@@ -87,8 +79,8 @@ namespace DevBenchAPI
 		virtual bool RegisterMenuHandler(const char* a_menuName, const char* a_descriptorJson,
 			ToolFn a_handler, void* a_ctx) = 0;
 
-		// Register a handler that EXTENDS a built-in base tool, keyed by a string, so a mod adds a
-		// sub-capability WITHOUT a top-level tool (the agent-facing surface stays small). The base
+		// Register a handler that extends a built-in base tool, keyed by a string, so a mod adds a
+		// sub-capability without a top-level tool (the agent-facing surface stays small). The base
 		// tool routes to it: `menu invoke name='<key>'`, `inspect kind='<key>'`. Same handler
 		// contract as RegisterTool (args JSON in — the full base-tool args — result JSON out, runs on
 		// the listener thread; marshal to the main thread yourself). a_descriptorJson

@@ -1,54 +1,34 @@
 #pragma once
 
-// DevBench — a localhost query server that makes a *running* Fallout 4 VR
-// agent-drivable, so a debug iteration no longer costs a rebuild + relaunch +
-// headset-on + screenshot cycle.
+// DevBench - the plugin's diagnostic routes (config, state, addresses, log
+// tail, scope probe, OMOD enumeration), so a debug question does not cost a
+// rebuild + relaunch + headset-on cycle.
 //
-// Architecture is modelled on alandtse/devbench (SKSE). That project is
-// GPL-3.0-or-later, so NONE of its source is vendored here — only the shape of
-// the idea: one loopback listener, a name->handler registry, JSON out, and a
-// health endpoint answered off the game's threads so "hung" is distinguishable
-// from "busy".
-//
-// Tier 1 (this file) is deliberately dependency-free and READ-MOSTLY:
-//   * raw Winsock, no httplib / no MCP / no JSON library
-//   * inputs arrive as query-string parameters, so nothing needs a JSON parser
-//   * outputs are hand-built JSON
-//   * the only mutation is setting our own TOML-backed settings
-// Drive it with Invoke-RestMethod / curl. An MCP facade can be layered on
-// later if this proves its worth; the registry below is where it would attach.
-//
-// SAFETY: binds 127.0.0.1 only, and refuses to start otherwise. It can read
-// arbitrary process memory through /read --- the correct trade for a local dev
-// bench. No release gate is needed: this repo is the RESEARCH repo and never
-// ships; the production mod will be a brand-new repo rebuilt with only shipping
-// code, so this file simply is not copied across. Add endpoints freely.
+// Modelled on alandtse/devbench, which is GPL-3.0-or-later, so none of its
+// source is vendored here - only the shape of the idea: a name->handler
+// registry answering hand-built JSON, no JSON library, inputs pre-decoded as
+// key/value pairs. Some routes read arbitrary process memory; this is dev
+// tooling, not shipping code.
 
 namespace DevBench
 {
-	// One-time init (uptime baseline + the settings post-load hook). The HTTP
-	// listener was retired in v0.2.138: every route is now served exclusively
-	// through the 'scope' tool registered on the devbench host (:8931) via
-	// DevBenchClient. Safe to call once, from F4SEPlugin_Load.
+	// One-time init (uptime baseline + the settings post-load hook). There is no
+	// HTTP listener; every route is served through the 'scope' tool registered on
+	// the devbench host (:8931) via DevBenchClient. Call once, from
+	// F4SEPlugin_Load.
 	void Init();
 
-	// Run one request and return its JSON body, WITHOUT going through HTTP.
+	// Run one request and return its JSON body. The `scope` tool registered into
+	// devbench (see src/DevBenchClient/) answers by running these handlers, so
+	// there is exactly one implementation of every answer.
 	//
-	// This exists so the `scope` tool we register into alandtse/devbench over its
-	// cross-plugin C-ABI (see src/DevBenchClient/) answers by running the very same
-	// handlers this server does. The alternative — a second set of report builders —
-	// is two implementations of one answer, and during a migration where both benches
-	// are up at once, two answers that can disagree is the exact failure this project
-	// keeps paying for.
+	// a_path is a route in the old HTTP spelling ("/scope", "/config/set", ...) and
+	// a_params are the decoded query parameters. Unknown routes come back as the
+	// usual {"ok":false,...} error.
 	//
-	// a_path is a route as the HTTP side spells it ("/scope", "/config/set", ...) and
-	// a_params are what would have been the query string, already decoded. Unknown
-	// routes come back as the same {"ok":false,...} error the listener produces.
-	//
-	// THREADING is unchanged and is the caller's problem, exactly as it is for the
-	// listener thread: handlers take snapshots (mutex-guarded) or request work on the
-	// render thread, and none of them touch the 3D directly. devbench invokes tool
-	// handlers on ITS listener thread, which is the same contract.
+	// Threading is the caller's problem: handlers take snapshots (mutex-guarded) or
+	// request work on the render thread, and none of them touch the 3D directly.
+	// devbench invokes tool handlers on its listener thread.
 	[[nodiscard]] std::string Invoke(
 		std::string_view a_path,
 		const std::vector<std::pair<std::string, std::string>>& a_params);

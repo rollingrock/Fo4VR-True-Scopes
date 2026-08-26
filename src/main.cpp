@@ -9,7 +9,7 @@ void InitializeLog()
 	auto path = logger::log_directory();
 	if (!path) {
 		// Broken install (no Documents redirection?): run without a log file
-		// rather than CTD before logging exists (v0.3 hardening).
+		// rather than CTD before logging exists.
 		return;
 	}
 	const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
@@ -36,27 +36,17 @@ void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 	if (!a_msg) {
 		return;
 	}
-	// Register our tools into alandtse/devbench at kPostPostLoad, NOT kPostLoad.
-	//
-	// The v0.2.102 attempt used kPostLoad on the reasoning that devbench installs its
-	// listener at ITS load, so any later message would do. Both halves of that were
-	// wrong, and F4SEVR 0.6.20's PluginManager says why:
-	//
-	//   * Its RegisterListener(sender = nullptr) is a SNAPSHOT — it appends itself to
-	//     the listener slots that exist AT THAT MOMENT, and Dispatch only ever walks the
-	//     SENDER's own slot. devbench loads 3rd, we load 8th, our slot did not exist yet,
-	//     so our dispatch found an empty list and returned false ("failed to dispatch to
-	//     devbench"). A broadcast fallback would have hit the same empty list.
-	//   * devbench therefore re-registers at kPostLoad, when the plugin list is complete.
-	//
-	// kPostLoad handlers run in plugin LOAD ORDER, and we load after devbench, so
-	// kPostLoad would work here today — by luck. kPostPostLoad is dispatched immediately
-	// after kPostLoad for exactly this second-phase handshake and does not depend on the
-	// order. A no-op if devbench is absent.
+	// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.
+	// F4SEVR's RegisterListener(sender = nullptr) snapshots the listener slots that
+	// exist at that moment and Dispatch only walks the sender's own slot, so a plugin
+	// loading after devbench can dispatch into an empty list. devbench re-registers at
+	// kPostLoad once the plugin list is complete; kPostPostLoad is dispatched right
+	// after kPostLoad for exactly this second-phase handshake and does not depend on
+	// load order. A no-op if devbench is absent.
 	if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
-		// Named coexistence refusal (v0.3 hardening): True Scopes REPLACES Better
-		// Scopes - both patch the same scope pipeline and cannot coexist. The
-		// byte-verify hooks already fail soft on the conflict; this names the cause.
+		// True Scopes replaces Better Scopes - both patch the same scope pipeline
+		// and cannot coexist. The byte-verify hooks already fail soft on the
+		// conflict; this names the cause.
 		if (::GetModuleHandleW(L"BetterScopesVR.dll")) {
 			logger::critical(
 				"BetterScopesVR.dll is loaded - True Scopes REPLACES Better Scopes and they "
@@ -71,7 +61,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface* a
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = Version::PROJECT.data();
 	// Pack MAJOR.MINOR.PATCH decimally (0.2.140 -> 2140) so Buffout/crash logs
-	// name the real build instead of 0 (v0.3 hardening).
+	// name the real build instead of 0.
 	a_info->version = Version::MAJOR * 1000000 + Version::MINOR * 1000 + Version::PATCH;
 
 	if (!REL::Module::IsVR()) {
@@ -104,7 +94,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 
 	Settings::load();
 
-	// One allocation for ALL hook stubs (14 bytes each) — never per-hook, see the
+	// One allocation for all hook stubs (14 bytes each) - never per-hook, see the
 	// write_thunk_call note in PCH.h.
 	F4SE::AllocTrampoline(256);
 

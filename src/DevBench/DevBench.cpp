@@ -24,7 +24,7 @@ namespace DevBench
 		std::uint64_t      g_startTick = 0;
 		std::atomic<std::uint64_t> g_requests{ 0 };
 
-		// ---------------------------------------------------------------- json
+		// json helpers
 
 		std::string JsonEscape(std::string_view a_in)
 		{
@@ -70,7 +70,7 @@ namespace DevBench
 			return "{\"ok\":false,\"error\":" + Quote(a_msg) + "}";
 		}
 
-		// -------------------------------------------------------------- guards
+		// seh guards
 
 		// Raw process-memory reads must never take down the game. MSVC forbids
 		// __try in a function that needs C++ unwinding, so the guarded readers
@@ -86,10 +86,8 @@ namespace DevBench
 		}
 
 
-		// v0.2.66: the module's true extent, so a heap pointer that merely happens to
-		// sit above the image base is not reported with a meaningless RVA. Live test
-		// caught this: the scope camera at 0x1ec2ea480 was being labelled
-		// rva=0xac2ea480, which would paste into Ghidra as a valid-looking lie.
+		// The module's true extent, so a heap pointer that merely happens to sit
+		// above the image base is not reported with a meaningless RVA.
 		// Read SizeOfImage out of the PE optional header:
 		//   base+0x3C            = e_lfanew
 		//   base+e_lfanew+0x18   = IMAGE_OPTIONAL_HEADER64
@@ -117,12 +115,12 @@ namespace DevBench
 			return a_va >= base && a_va < base + ModuleSize();
 		}
 
-		// ---------------------------------------------------- address expressions
+		// address expressions
 
 		// Grammar:  expr := term (('+'|'-') term)*
 		//           term := '[' expr ']' | 'base' | 0xHEX | DEC
-		// '[x]' dereferences a qword. 'base' is Fallout4VR.exe's load base, so
-		// the RVAs used throughout the investigation docs work verbatim:
+		// '[x]' dereferences a qword. 'base' is Fallout4VR.exe's load base, so a
+		// documented RVA works verbatim:
 		//   base+0x1d98ff0     ->  the deferred-release enqueue
 		//   [base+0x6239340]+4 ->  BSGraphics::Renderer's scoped flag
 		struct ExprParser
@@ -213,7 +211,7 @@ namespace DevBench
 			return true;
 		}
 
-		// -------------------------------------------------------------- settings
+		// settings
 
 		// One table so /config can list, read, and write every setting without
 		// each endpoint knowing the names. Kept next to Settings.h by hand;
@@ -242,7 +240,7 @@ namespace DevBench
 				{ "scopeCamOffsetY", Kind::Float, &scopeCamOffsetY },
 				{ "scopeCamOffsetZ", Kind::Float, &scopeCamOffsetZ },
 				{ "cullToScopeFrustum", Kind::Bool, &cullToScopeFrustum },
-				// v0.2.73 perf: the stopwatch (off->on resets its window) and its two levers
+				// the perf stopwatch (off->on resets its window) and its two levers
 				{ "perfTimers", Kind::Bool, &perfTimers },
 				{ "perfLightsMax", Kind::Int, &perfLightsMax },
 				{ "sunEnabled", Kind::Bool, &sunEnabled },
@@ -364,9 +362,9 @@ namespace DevBench
 					return false;
 				}
 				**static_cast<Settings::bSetting*>(a_e.ptr) = v;
-				// v0.2.74: writing perfTimers resets the timing window, whatever the
-				// value. Doing it here rather than on the render thread's view of the
-				// flag is the whole fix -- see ScopeRender::ResetStageTimers.
+				// Writing perfTimers resets the timing window, whatever the value.
+				// It has to happen here, not on the render thread's view of the
+				// flag -- see ScopeRender::ResetStageTimers.
 				if (std::string_view{ a_e.name } == "perfTimers") {
 					TrueScopes::ScopeRender::ResetStageTimers();
 				}
@@ -394,7 +392,7 @@ namespace DevBench
 			return false;
 		}
 
-		// ------------------------------------------------------------- requests
+		// requests
 
 		struct Request
 		{
@@ -419,7 +417,7 @@ namespace DevBench
 
 
 
-		// ------------------------------------------------------------- handlers
+		// handlers
 
 		std::string HandleIndex()
 		{
@@ -454,9 +452,7 @@ namespace DevBench
 		}
 
 		// Every value the heartbeat prints, available on demand instead of every
-		// 300th render. Before this, answering "is the sun pass running / is
-		// anything NaN / did the sky draw" meant grepping a log line that may not
-		// have been emitted yet.
+		// 300th render.
 		std::string HandleState()
 		{
 			const auto d = TrueScopes::ScopeRender::GetDiagnostics();
@@ -467,9 +463,8 @@ namespace DevBench
 			out += ",\"faulted\":" + b(d.faulted);
 			out += ",\"lastStep\":" + std::to_string(d.lastStep);
 			out += ",\"renders\":" + std::to_string(d.renders);
-			// v0.2.70 perf instrument: game frames (advances scope-up AND scope-down) plus
-			// the scope state the sample was taken in, so a perf run records its own
-			// condition instead of relying on the operator's notes.
+			// Game frames advance scope-up and scope-down; report the scope state
+			// too, so a perf sample records its own condition.
 			out += ",\"frames\":" + std::to_string(TrueScopes::Hooks::FrameCount());
 			out += ",\"scopeActive\":" + b(TrueScopes::Hooks::ScopeActive());
 			out += ",\"widgetPresence\":" + b(TrueScopes::Hooks::WidgetPresenceShown());
@@ -489,7 +484,7 @@ namespace DevBench
 			out += ",\"eyeCount\":" + std::to_string(d.eyeCount);
 			out += ",\"sunPass\":" + std::to_string(d.sunPass);
 			out += ",\"sunIsSSN\":" + std::to_string(d.sunIsSSN);
-			// v0.2.76: sunPass = "we called the exec"; sunDrew = its return value, i.e.
+			// sunPass = the exec was called; sunDrew = its return value, i.e.
 			// whether FUN_142891040's technique gate actually let the draw happen.
 			out += ",\"sunDrew\":" + std::to_string(d.sunDrew);
 			out += ",\"sunDrewCount\":" + std::to_string(d.sunDrewCount);
@@ -509,11 +504,11 @@ namespace DevBench
 				out += ",\"quadHidden\":" + std::string(lc.quadHidden ? "true" : "false");
 				out += ",\"renderer\":" + Quote(lc.rendererName) + "}";
 			}
-			// v0.2.116 — pose-based activation: the live pose numbers + verdicts.
-			// `evals` advancing = the verdict hook is being reached (weapon drawn,
-			// gun, has-scope, no blocking menu); `owned` = the pose test is the
-			// decider; dist/lateral/lookDeg are the last measured pose — the
-			// numbers to read while tuning the pose* knobs live.
+			// Pose-based activation: the live pose numbers + verdicts. `evals`
+			// advancing = the verdict hook is being reached (weapon drawn, gun,
+			// has-scope, no blocking menu); `owned` = the pose test is the decider;
+			// dist/lateral/lookDeg are the last measured pose — the numbers to read
+			// while tuning the pose* knobs live.
 			{
 				const auto pg = TrueScopes::PoseGate::GetDiag();
 				const auto f = [](float v) {
@@ -534,9 +529,8 @@ namespace DevBench
 			for (int k = 0; k < 6; ++k) {
 				if (k) out += ",";
 				char buf[48];
-				// camRect[4]/[5] are the D3D11 viewport min/max depth. They were
-				// garbage until v0.2.64 (XMM-argument bug); a non-(0,1) pair here
-				// means that regressed.
+				// camRect[4]/[5] are the D3D11 viewport min/max depth. A non-(0,1)
+				// pair here means the SetViewportFromCamera XMM-argument bug is back.
 				if (std::isfinite(d.camRect[k])) std::snprintf(buf, sizeof(buf), "%.9g", d.camRect[k]);
 				else                             std::snprintf(buf, sizeof(buf), "\"%s\"", std::isnan(d.camRect[k]) ? "NaN" : "Inf");
 				out += buf;
@@ -548,12 +542,10 @@ namespace DevBench
 			}
 			out += "]}";
 
-			// v0.2.73 stage stopwatch. Mean ms per stage of OUR render since the last
-			// reset, on both timelines. Reset the window with
-			//   /config/set?key=perfTimers&value=false  then  ...&value=true
-			// The GPU and CPU sample counts are reported separately on purpose: they
-			// diverge when the query ring is saturated, and a reader who assumes they
-			// match would silently average two different windows.
+			// Stage stopwatch: mean ms per stage of our render since the last reset,
+			// on both timelines. Any perfTimers write resets the window. The GPU and
+			// CPU sample counts are reported separately on purpose: they diverge when
+			// the query ring is saturated.
 			{
 				const auto t = TrueScopes::ScopeRender::GetStageTimes();
 				const auto ms = [](double v) {
@@ -587,9 +579,9 @@ namespace DevBench
 			return out;
 		}
 
-		// The engine pointers we resolve at Init. Publishing them turns /read into
-		// a general probe: you can walk the sun pass config or the render context
-		// without re-deriving an address from a call site first.
+		// The engine pointers resolved at init, published so a memory read can walk
+		// the sun pass config or the render context without re-deriving an address
+		// from a call site first.
 		std::string HandleAddresses()
 		{
 			const auto  d = TrueScopes::ScopeRender::GetDiagnostics();
@@ -611,12 +603,12 @@ namespace DevBench
 			for (const auto& [name, va] : rows) {
 				if (!first) out += ",";
 				first = false;
-				// Report both forms: the VA for a direct /read, and the RVA so it can
-				// be pasted straight into Ghidra. 0 = not resolved yet (Init failed,
-				// or no render has run so the per-render pointers are unset).
-				// `rva` appears ONLY for addresses genuinely inside the image —
-				// heap objects (the accumulator, the scope camera) get "heap":true
-				// instead, because an RVA for them would be a plausible-looking lie.
+				// The VA for a direct read, the RVA for pasting into Ghidra. 0 = not
+				// resolved yet (init failed, or no render has run so the per-render
+				// pointers are unset). `rva` appears only for addresses genuinely
+				// inside the image; heap objects (the accumulator, the scope camera)
+				// get "heap":true instead — an RVA for them would be a
+				// plausible-looking lie.
 				out += Quote(name) + ":{\"va\":" + Quote(Hex(va));
 				if (va == 0) {
 					out += ",\"resolved\":false";
@@ -780,10 +772,9 @@ namespace DevBench
 			return out;
 		}
 
-		// ------------------------------------------------- OMOD enumeration
-		// Every weapon mod in the CURRENT load order, so we can see which scopes a
-		// user actually has -- including modded ones the built-in aperture table has
-		// never heard of. No equipping, no console, no interaction.
+		// omod enumeration
+		// Every weapon mod in the current load order, including modded scopes the
+		// built-in aperture table has never heard of. No equipping, no console.
 		//
 		// The form arrays are read exactly as TESDataHandler::GetFormOfTypeAtIndex
 		// (0x14011a470) does: data pointer at handler+0x68+type*0x18, u32 count at
@@ -795,21 +786,16 @@ namespace DevBench
 		constexpr std::uint8_t   kFormTypeOMOD = 0x90;  // ENUM_FORM_ID::kOMOD
 		constexpr std::uintptr_t kFormIDOffset = 0x14;
 
-		// A form's strings are found by SCANNING its head for BSFixedString fields,
-		// rather than by reading TESFullName+0x28 and TESModel+0x50 at their
-		// CommonLibF4 (flatrim) offsets. Those are exactly the kind of thing that
-		// shifts between flatrim and VR, and a wrong one reads adjacent memory as a
-		// string -- which looks like data rather than like a bug. Reporting the slot
-		// offset with every hit means the real layout shows up in the output.
+		// A form's strings are found by scanning its head for BSFixedString fields,
+		// not by reading TESFullName+0x28 and TESModel+0x50 at their CommonLibF4
+		// (flatrim) offsets -- those shift between flatrim and VR, and a wrong one
+		// reads adjacent memory as a string. Reporting the slot offset with every
+		// hit means the real layout shows up in the output.
 		//
-		// A BSFixedString field holds a BSStringPool::Entry*, NOT a char*. Measured
-		// live 2026-08-10 against an OMOD's model field:
+		// A BSFixedString field holds a BSStringPool::Entry*, not a char*:
 		//     entry+0x00  next/pool pointer
-		//     entry+0x10  u32 length          (read 43)
-		//     entry+0x18  the characters      ("Weapons\ReconScope\...nif", 43 long)
-		// The first cut of this scan treated every pointer slot as a char*, which
-		// found one "string" per form -- the texture-ID block at +0x58 rendering as
-		// "w@B}dds" -- and no model paths at all.
+		//     entry+0x10  u32 length
+		//     entry+0x18  the characters
 		constexpr std::uintptr_t kStringPoolLength = 0x10;
 		constexpr std::uintptr_t kStringPoolChars = 0x18;
 
@@ -892,7 +878,7 @@ namespace DevBench
 				SafeReadBytes(reinterpret_cast<const void*>(form + kFormIDOffset), &formID, sizeof(formID));
 
 				// Collect every printable string the form points at, with the slot
-				// offset it came from -- the offsets ARE the layout finding.
+				// offset it came from -- the offsets are the layout finding.
 				std::vector<std::pair<std::uintptr_t, std::string>> strings;
 				for (std::uintptr_t off = 0; off <= 0xC0; off += 8) {
 					char text[416] = {};
@@ -942,9 +928,8 @@ namespace DevBench
 		}
 
 		// Which scope is equipped, and everything the per-scope fit derives from it.
-		// The node NAMES are the point: when the aperture falls back, they are what a
-		// user needs to add a [Scopes] entry, and reading them here beats grepping a
-		// log line that only prints on a scope-in.
+		// The node names matter: when the aperture falls back, they are what a user
+		// needs to add a [Scopes] entry.
 		std::string HandleScope(const Request& a_req)
 		{
 			if (a_req.GetOr("probe", "0") != "0") {
@@ -987,9 +972,9 @@ namespace DevBench
 				out += ",\"eyeToLens\":" + std::to_string(f.eyeDistance);
 			}
 			{
-				// v0.2.92: the automatic-placement candidate, reported whether or not
-				// it is applied — the whole point is to check it against a hand-tuned
-				// offset that is already known to be right.
+				// The automatic-placement candidate, reported whether or not it is
+				// applied, so it can be checked against a hand-tuned offset that is
+				// already known to be right.
 				const auto p = TrueScopes::ScopeRender::GetPlacement();
 				out += ",\"placement\":{\"valid\":" + std::string(p.valid ? "true" : "false");
 				out += ",\"applied\":" + std::string(p.applied ? "true" : "false");
@@ -1044,14 +1029,14 @@ namespace DevBench
 			out += ",\"screenAspect\":" + std::to_string(i.screenAspect);
 			out += ",\"apertureSource\":" + Quote(i.fromTable ? i.matched : "widgetApertureRadius");
 			out += ",\"fromTable\":" + std::string(i.fromTable ? "true" : "false");
-			// HOW it resolved, not just to what. "node" on a modded load order is
-			// the case where the answer can be confidently wrong, so it has to be
-			// visible without reading the log.
+			// How it resolved, not just to what. A "node" match on a modded load
+			// order can be confidently wrong, so it has to be visible without
+			// reading the log.
 			out += ",\"matchedBy\":" + Quote(i.matchedBy);
 			out += ",\"overrideKey\":" + Quote(i.overrideKey);
-			// The attached OMODs. When nothing matches, these paths ARE the answer:
-			// they are what a user pastes into [Scopes] to teach the plugin an optic
-			// it has never seen.
+			// The attached OMODs. When nothing matches, these paths are the answer:
+			// what a user pastes into [Scopes] to teach the plugin an optic it has
+			// never seen.
 			out += ",\"mods\":{\"have\":" + std::string(i.haveMods ? "true" : "false");
 			out += ",\"error\":" + Quote(i.modsError);
 			out += ",\"stacksSeen\":" + std::to_string(i.stacksSeen);
@@ -1085,11 +1070,9 @@ namespace DevBench
 				}
 				out += Quote(i.names[n]);
 			}
-			// Keyed by model PATH, not by node name. Three rows share the node name
-			// "LaserScope", so a name-keyed JSON object dropped two of them in every
-			// parser that read this — the object form was itself asserting a
-			// uniqueness the data does not have. Paths are unique by construction
-			// (the census fails loudly if they ever are not).
+			// Keyed by model path, not by node name: three rows share the node name
+			// "LaserScope", so a name-keyed object would drop two of them. Paths are
+			// unique by construction (the census fails loudly if they ever are not).
 			out += "],\"table\":{";
 			bool first = true;
 			for (const auto& e : TrueScopes::ScopeIdent::Table()) {
@@ -1106,13 +1089,12 @@ namespace DevBench
 			return out;
 		}
 
-		// v0.2.108 — /attach?omod=HEX[&detach=1]: attach an OMOD to the equipped
-		// weapon on the game's main thread (F4SE task queue) and wait for the
-		// outcome. The headless gate ladder's missing primitive: FO4VR's console
-		// amod cannot do this (it mods the selected reference, not the weapon).
-		// v0.2.109 — /verdict[?since=SEQ]: the tester's last controller chord.
-		// A driver script passes the seq it has already consumed; `fresh` says
-		// whether a newer verdict has arrived since.
+		// /attach?omod=HEX[&detach=1]: attach an OMOD to the equipped weapon on the
+		// game's main thread (F4SE task queue) and wait for the outcome. FO4VR's
+		// console amod cannot do this — it mods the selected reference, not the
+		// weapon. /verdict[?since=SEQ]: the tester's last controller chord. A driver
+		// script passes the seq it has already consumed; `fresh` says whether a
+		// newer verdict has arrived since.
 		std::string HandleVerdict(const Request& a_req)
 		{
 			TrueScopes::VerdictInput::RequestStart();
@@ -1244,10 +1226,8 @@ namespace DevBench
 
 	std::string Invoke(std::string_view a_path, const std::vector<std::pair<std::string, std::string>>& a_params)
 	{
-		// Synthesise the same Request the parser would have produced and hand it to
-		// the same Route(). Nothing here interprets a path or a parameter, on purpose:
-		// the moment this function knows what "/scope" means, it can disagree with the
-		// listener about it.
+		// Synthesise a Request and hand it to the same Route() every handler hangs
+		// off. Nothing here interprets a path or a parameter, on purpose.
 		Request req;
 		req.method = "GET";
 		req.path.assign(a_path);
@@ -1256,8 +1236,8 @@ namespace DevBench
 		try {
 			return Route(req);
 		} catch (const std::exception& e) {
-			// Matches the listener's behaviour rather than letting an exception cross
-			// the C-ABI boundary, where it would unwind through devbench's frames.
+			// Never let an exception cross the C-ABI boundary, where it would unwind
+			// through devbench's frames.
 			return Err(std::string{ "handler threw: " } + e.what());
 		} catch (...) {
 			return Err("handler threw a non-standard exception");

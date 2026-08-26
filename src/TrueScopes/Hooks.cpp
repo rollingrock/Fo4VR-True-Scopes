@@ -12,20 +12,13 @@ namespace TrueScopes::Hooks
 {
 	namespace
 	{
-		// v0.3.10 - THE MOVIE-SIDE KILL, back with the RIGHT paths. Six scene-
-		// graph kills (cull, scale, world-verified epsilon, persistent detach,
-		// even zeroing the engine's own scale source) all left the pill
-		// rendering - because the pill is AUTHORED INTO the ScopeMenu movie and
-		// composited into RT 0x62 outside the lens delivery footprint; it has no
-		// dedicated scene node to kill. The one intervention that ever visibly
-		// changed it (v0.3.1's SetUpButtonBar nop, green -> white) is native
-		// STYLING of exactly this element. Ghidra: every native consumer fetches
-		// it as BSGFxObject::GetMember(root, "ButtonHintInstance") - a DIRECT
-		// child of the menu root - and FO4 menus are Scaleform AS3, whose paths
-		// root at "root." NOT AS2's "_root." (v0.3.2's paths - which is why its
-		// sticky set "succeeded" against nothing). Probe first, then set: the
-		// probe log names the real path even if the set fails. Re-armed on every
-		// scope-active edge - the menu can be recreated per scope-in.
+		// The hold-breath pill is authored into the ScopeMenu movie itself and
+		// composited into RT 0x62, so it has no scene node to kill. Native code
+		// fetches it as GetMember(root, "ButtonHintInstance"), a direct child of
+		// the menu root. The shipped fix is the zero-scaled placement in the SWF
+		// (Data/Interface); this runtime probe/set never proved effective and is
+		// kept only as a diagnostic. Re-armed per scope-in since the menu can be
+		// recreated each time.
 		std::uint32_t g_hintMovieTries = 0;
 		bool          g_hintMovieDone = false;
 
@@ -79,7 +72,7 @@ namespace TrueScopes::Hooks
 		}
 
 		bool g_installed = false;
-		bool g_verdictHookInstalled = false;  // v0.2.116: pose gate owns the verdict feed
+		bool g_verdictHookInstalled = false;  // pose gate owns the verdict feed
 
 		// Plugin-owned replacement for the "scope render armed" state that vanilla keeps
 		// in BSGraphics::Renderer+3. The real +3 stays 0 forever, so Main::Swap's frame
@@ -88,7 +81,7 @@ namespace TrueScopes::Hooks
 		// this value exactly like vanilla.
 		std::atomic_bool g_scopeActive = false;
 		std::atomic_bool g_gateRaw = false;                // the eye-gate's latest raw report
-		std::atomic<std::uint64_t> g_frames{ 0 };          // v0.2.70: game frame count (see Hooks.h)
+		std::atomic<std::uint64_t> g_frames{ 0 };          // game frame count (see Hooks.h)
 		std::atomic<std::uint64_t> g_gateOffTick{ 0 };     // tick of the last true->false gate transition
 
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
@@ -104,41 +97,34 @@ namespace TrueScopes::Hooks
 		{
 			static void thunk([[maybe_unused]] void* a_renderer, char a_on)
 			{
-				// v0.2.50 GATE HYSTERESIS — THE BLACK-BURST FIX. The vanilla eye-gate
-				// flickers off in 200-900ms windows while aiming/moving; every OFF
-				// edge plays the ScopeMenu widget's fade-to-black over the lens
-				// picture area (reticle above it stays; crescent outside it stays) =
-				// the "black bursts" chased through v0.2.41-49 (all render-side
-				// stages proven lit by three-point GPU readback; the black was never
-				// in the texture). ON propagates instantly; OFF only after the gate
-				// stayed off for scopeOffHoldMs — blips are swallowed, a real
-				// scope-lower still closes the widget, just a beat later.
-				// v0.2.51 rework: correct whether the arm write arrives per-frame or
-				// only on gate EDGES (v0.2.50 measured the hold from the last ON
-				// *call* — a no-op if calls are edge-triggered). The OFF timestamp
-				// is taken at the true->false TRANSITION only, and the actual
-				// deactivation is polled from the per-frame fill hook.
+				// Gate hysteresis: the vanilla eye-gate flickers off in 200-900 ms
+				// windows while aiming, and every off edge plays the widget's
+				// fade-to-black over the lens. On propagates instantly; off only
+				// after the gate stayed off for scopeOffHoldMs. The arm write may
+				// arrive only on gate edges, so the off timestamp is taken at the
+				// true->false transition and the actual deactivation is polled
+				// from the per-frame fill hook.
 				const bool on = a_on != 0;
 				if (on) {
 					g_gateRaw.store(true);
 					if (!g_scopeActive.exchange(true)) {
 						logger::info("scope active -> true"sv);
-						// v0.2.124: deterministic camera-smoothing reset on the
-						// scope-in edge (weapon swap may reuse the same camera
-						// node, so the dt-gap heuristic alone is not enough).
+						// camera-smoothing reset on the scope-in edge (weapon swap
+						// may reuse the same camera node, so the dt-gap heuristic
+						// alone is not enough)
 						ScopeRender::CamSmoothReset();
 						// live-tuning loop: re-read the TOML on every scope-in
 						Settings::load();
 						// ...and re-identify the scope: the weapon or its mods may have
-						// changed since we last looked. Ordered after load() so the probe
-						// resolves against the freshly parsed [Scopes] overrides.
+						// changed. Ordered after load() so the probe resolves against
+						// the freshly parsed [Scopes] overrides.
 						ScopeIdent::Request();
-						g_hintMovieTries = 240;  // v0.3.10: re-kill the movie element per menu (re)open
+						g_hintMovieTries = 240;  // re-hide the movie element per menu (re)open
 						g_hintMovieDone = false;
 						if (*Settings::retryAfterFault) {
-							// v0.3 hardening: cap retries per session - a DETERMINISTIC fault
-							// would otherwise re-fault inside the engine on every scope-in
-							// forever. Three tries separates transient from structural.
+							// cap retries per session - a deterministic fault would
+							// otherwise re-fault inside the engine on every scope-in.
+							// Three tries separates transient from structural.
 							static std::uint32_t s_faultRetries = 0;
 							if (s_faultRetries < 3 && ScopeRender::RetryAfterFault()) {
 								if (++s_faultRetries == 3) {
@@ -151,26 +137,20 @@ namespace TrueScopes::Hooks
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
 				}
 				TryHideHoldBreathMovieElement();
-				// deliberately NOT writing renderer+3
+				// deliberately not writing renderer+3
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
-		// v0.2.118 — PLUGIN-OWNED WIDGET PRESENCE. The user wants the scope
-		// widget visible the whole time the weapon is drawn (no pop-in), but
-		// feeding the enable switch a perpetual "on" (v0.2.116) also kept the
-		// player SIGHTED → ScopeMenu open → FRIK collapsed the body and blocked
-		// the Pip-Boy (field-diagnosed 2026-08-24). The widget itself is plain
-		// world geometry: the enable switch's show/hide lines are exactly
-		// SetAppCulled on THREE nodes — ScopeParent (player+0x7d0) and the
-		// WSScopeModel singleton's +0x50/+0x68 (FUN_140c8e340, decompiled: two
-		// vfunc+0x180 calls, nothing else) — and NiAVObject::SetAppCulled is a
-		// write of flag bit 0 at +0x108 (the same bit LensComposite's reticle
-		// quad hide/restore has manipulated raw since v0.2.104). So presence =
-		// keeping those three bits cleared ourselves, refreshed after every
-		// verdict call in the same call stack (vanilla's own hide-edge can't
-		// even blink it), while every piece of vanilla STATE — sighted,
-		// ScopeMenu, bit 4, Pip-Boy, FRIK — follows the pose alone.
+		// Plugin-owned widget presence: keep the widget visible while the weapon
+		// is drawn without holding the enable switch on (that also keeps the
+		// player sighted and the ScopeMenu open, which collapses FRIK's body and
+		// blocks the Pip-Boy). The switch's show/hide is just SetAppCulled - a
+		// write of flag bit 0 at node+0x108 - on three nodes: ScopeParent
+		// (player+0x7d0) and the WSScopeModel singleton's +0x50/+0x68
+		// (FUN_140c8e340). Presence keeps those bits cleared, refreshed after
+		// every verdict call in the same call stack, while vanilla's sighted and
+		// menu state follows the pose alone.
 		std::atomic_bool g_presenceShown{ false };
 
 		void SetWidgetNodesHidden(std::uintptr_t a_player, bool a_hidden)
@@ -193,12 +173,10 @@ namespace TrueScopes::Hooks
 				const auto model = *reinterpret_cast<std::uintptr_t*>(
 					REL::Module::get().base() + Addr::kWidgetModelSingleton);
 				if (model) {
-					// v0.2.121: while hideWidgetHousing is on, presence must NOT
-					// un-cull the ACTIVE-HOUSING slot (+0x50). v0.2.120's pale-ring
-					// defect was this very line: HideWidgetHousing culled the ring
-					// and this un-culled it ten lines later in the same thunk, every
-					// presentable frame — the plugin fought itself and the show ran
-					// last. The fade (+0x68) keeps its flow either way.
+					// while hideWidgetHousing is on, presence must not un-cull the
+					// active-housing slot (+0x50) - HideWidgetHousing culls it
+					// earlier in the same thunk and the show would run last. The
+					// fade (+0x68) keeps its flow either way.
 					if (!keepHousingHidden) {
 						setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), a_hidden);
 					}
@@ -209,11 +187,11 @@ namespace TrueScopes::Hooks
 			g_presenceShown.store(!a_hidden, std::memory_order_relaxed);
 		}
 
-		// v0.2.120/121 — housing suppression state, shared by the hide, the
-		// restore, and the one-shot log site in the verdict thunk. Game-thread
-		// only. The shape pointers are process-lifetime stable (the WSScopeModel
-		// clone is built exactly once — see Addresses.h kWidgetModelSingleton) but
-		// are still re-validated by NAME before every use.
+		// housing suppression state, shared by the hide, the restore, and the
+		// one-shot log site in the verdict thunk. Game-thread only. The shape
+		// pointers are process-lifetime stable (the WSScopeModel clone is built
+		// exactly once - see Addresses.h kWidgetModelSingleton) but are still
+		// re-validated by name before every use.
 		std::uintptr_t   g_housingSp = 0;
 		std::uintptr_t   g_housingHunting = 0;
 		std::uintptr_t   g_housingRecon = 0;
@@ -225,53 +203,36 @@ namespace TrueScopes::Hooks
 		std::atomic_bool g_housingRestored{ false };  // one-shot restore log latch
 		inline constexpr float kHousingHiddenScale = 1.0e-4f;
 
-		// v0.2.120 — hide the widget model's own housing meshes (`scope_Hunting:0`
-		// and `scope_recon:0` inside world_scope.nif — the pale speckled ring the
-		// field screenshots showed floating on the real scope). The real weapon
-		// provides the housing; the widget only needs its render surfaces. The
-		// engine re-shows these on scope-in edges, so this runs every eligible
-		// frame; node pointers are cached and re-validated by NAME before every
-		// use (the LensComposite reticle-quad pattern — a stale pointer that still
-		// reads as memory must never be trusted to be the same object).
-		// v0.2.121 adds the permanent layer: a one-shot epsilon LOCAL SCALE on both
-		// housing shapes ("never render"). Ghidra-proven safe: every re-show path
-		// in the binary is flags-only, WSScopeModel's placement-refresh virtual is
-		// a literal no-op, world_scope.nif ships zero controller blocks, and the
-		// clone is never rebuilt — nothing can restore a zeroed scale. The flag
-		// hide stays as belt-and-suspenders and covers the frames before the next
-		// world-transform propagation.
-		// THE HOLD-BREATH PILL - the full 2026-08-26 arc, compressed:
-		// v0.3.3 latched a HUDGlassFlat quad on 'Point002' in the wand rack
-		// (player+0x700) but its walk faulted on leaf children and silently found
-		// nothing. v0.3.4 fixed the walk with engine ground truth (children base
-		// +0x168, bound u16 +0x172 slot high-water/null holes legal per decompiled
-		// NiNode::GetObjectByName 0x141c18500; recursion gate = vtable slot +0x188
-		// == NiNode's impl, the exact ScopeIdent::IsNiNode test) - node FOUND,
-		// culled: pill unchanged. v0.3.5 added epsilon local scale: propagated to
-		// world (census read 0.0001) - pill STILL unchanged. v0.3.6's scene census
-		// then settled it by POSITION: the visible pill is a node literally named
-		// 'world_projectedHintBar.nif' - the ScopeMenu's PROJECTED BUTTON-HINT BAR
-		// (which is why the v0.3.1 SetUpButtonBar nop changed its color), hanging
-		// under PlayerWorldNode ~23 units from ScopeParent with its HUDGlassFlat
-		// display quads 5.8 units out - NOT under the wand rack at all. The rack
-		// quad the earlier versions killed was some other hint surface.
-		//
-		// v0.3.7: find the hint bar BY NAME from the empirically-climbed scene
-		// root (PillGuessParent - a candidate qword is the parent iff its children
-		// array contains the node), cache it, and suppress per pillKillMode:
-		// 1 = cull flag + epsilon local scale, 2 = parent-slot HOLE (the engine's
-		// own hide idiom; ordering- and render-path-proof). Every outcome logs.
+		// Widget housing hide: cull scope_Hunting:0 and scope_recon:0 inside
+		// world_scope.nif - the real weapon provides the housing, the widget only
+		// needs its render surfaces. The engine re-shows these on scope-in edges,
+		// so the hide runs every eligible frame, with cached node pointers
+		// re-validated by name before every use. A one-shot epsilon local scale
+		// makes it permanent: every engine re-show path is flags-only, the
+		// placement-refresh virtual is a no-op, the nif has no controller blocks,
+		// and the clone is never rebuilt, so nothing restores a zeroed scale. The
+		// flag hide covers the frames before the next world-transform propagation.
+
+		// Hold-breath pill suppression. The visible pill is a node named
+		// world_projectedHintBar.nif - the ScopeMenu's projected button-hint bar,
+		// hanging under PlayerWorldNode, not under the wand rack. Find it by name
+		// from the empirically-climbed scene root (PillGuessParent), cache it, and
+		// suppress per pillKillMode: 1 = cull flag + epsilon local scale, 2 =
+		// parent-slot hole (the engine's own hide idiom). Every outcome logs.
+		// Tree walks recurse only into real NiNodes (ScopeIdent::IsNiNode checks
+		// vtable slot +0x188 against NiNode's impl - leaf children have garbage
+		// at the children offsets).
 		std::uintptr_t g_pillNode = 0;
 		std::uintptr_t g_pillParent = 0;  // the hint bar's parent node (for mode 2)
 		std::uint32_t  g_pillMissScans = 0;   // consecutive find-loop misses; reset on find
 		bool           g_pillMissLogged = false;
 		float          g_pillSavedScale = 0.0f;  // engine-authored local scale (+0x6c), captured once
 		bool           g_pillScaleCaptured = false;
-		// v0.3.6 - rack-slot hole state (pillKillMode 2). The children array and
-		// slot index the carrier was found at; both re-validated against live
-		// memory before every poke (the array can be reallocated by the engine).
-		// v0.3.9 - source-kill state (pillKillMode 1): the engine-authored value
-		// of the wand-hint scale global, captured once with sanity bounds.
+		// rack-slot hole state (pillKillMode 2): the children array and slot the
+		// bar was found at, both re-validated against live memory before every
+		// poke (the array can be reallocated by the engine). Source-kill state
+		// (pillKillMode 1): the engine-authored value of the wand-hint scale
+		// global, captured once with sanity bounds.
 		float g_pillSrcSaved = 0.0f;
 		bool  g_pillSrcCaptured = false;
 		std::uintptr_t g_pillRackKids = 0;
@@ -279,18 +240,13 @@ namespace TrueScopes::Hooks
 		bool           g_pillHoled = false;
 		bool           g_pillCensusDone = false;
 
-		// --- v0.3.6 pill census (diagnostic; Settings::pillCensus) ---------------
-		// Both v0.3.4 (cull flag) and v0.3.5 (epsilon local scale) left the pill
-		// rendering, so either the carrier's world transform is engine-written per
-		// frame (parent scale moot) or the latched node is not the pill at all.
-		// This one-shot walk settles WHERE the pill actually is: climb from the
-		// wand rack to the scene root, then sweep the whole tree logging every
-		// HUD/Hint/Glass/Breath/Button-named node with world position, world scale
-		// and distance to ScopeParent. A floating quad next to the scope cannot
-		// hide from a position sweep, whichever subtree it hangs in.
+		// pill census (diagnostic; Settings::pillCensus). One-shot walk: climb
+		// from the wand rack to the scene root, then sweep the whole tree logging
+		// every HUD/hint/glass/breath/button-named node with world position,
+		// world scale and distance to ScopeParent.
 
-		// bounded copy of a raw engine name: never walks past kMax (the review's
-		// %.48s lesson - an unterminated name must not fault the instrument)
+		// bounded copy of a raw engine name - an unterminated name must not fault
+		// the instrument
 		void PillCopyName(const char* a_src, char (&a_out)[49])
 		{
 			int k = 0;
@@ -348,10 +304,9 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// EMPIRICAL parent discovery: the VR NiAVObject parent offset is not
-		// pinned ground truth, so instead of trusting one, a candidate qword IS
-		// the parent iff its children array contains this node - self-validating
-		// per use, no new static assumption.
+		// empirical parent discovery: the VR NiAVObject parent offset is not
+		// pinned down, so a candidate qword is taken as the parent iff its
+		// children array contains this node - self-validating per use.
 		std::uintptr_t PillGuessParent(std::uintptr_t a_node)
 		{
 			static constexpr std::uintptr_t kTries[] = { 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50 };
@@ -391,9 +346,8 @@ namespace TrueScopes::Hooks
 						const float dx = x - a_scope[0], dy = y - a_scope[1], dz = z - a_scope[2];
 						d = std::sqrt(dx * dx + dy * dy + dz * dz);
 					}
-					// v0.3.8: parent chain per hit - the v0.3.6/7 rounds were burned
-					// on GUESSED structure (the hint-bar root was detached while the
-					// visible glass pair hung elsewhere); ancestry is now explicit
+					// log the parent chain per hit so ancestry is explicit, not
+					// guessed
 					char pchain[168];
 					int  pl = 0;
 					std::uintptr_t pp = a_node;
@@ -436,8 +390,8 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.3.10 - unfiltered subtree dump: name + local scale + world scale +
-		// cull bit for every node, bounded. Diagnostic only (census knob).
+		// unfiltered subtree dump: name + local scale + world scale + cull bit
+		// for every node, bounded. Diagnostic only (census knob).
 		void PillDumpSubtree(std::uintptr_t a_node, int a_depth, std::uint32_t& a_count)
 		{
 			if (!a_node || a_depth > 4 || a_count >= 32) {
@@ -521,9 +475,7 @@ namespace TrueScopes::Hooks
 				PillCensusWalk(root, 0, visited, hits, scope, haveScope);
 				logger::info(FMT_STRING("pillcensus: done visited={} hits={} scope=({:.1f},{:.1f},{:.1f})"),
 					visited, hits, scope[0], scope[1], scope[2]);
-				// v0.3.10 - dump EVERYTHING under ScopeParent unfiltered (the
-				// widget rig's shapes were never enumerated; if the pill is a
-				// widget-surface effect this is where its footprint lives)
+				// dump everything under ScopeParent unfiltered
 				if (sp) {
 					std::uint32_t dumped = 0;
 					PillDumpSubtree(sp, 0, dumped);
@@ -533,10 +485,10 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.3.7/8 - is this node the kill target? Bounded name read (the %.48s
-		// lesson): an unterminated engine name must never fault the test. The
-		// target name is the pillKillName setting (prefix match) so the hunt can
-		// be retargeted from the TOML + a scope cycle, no rebuild.
+		// is this node the kill target? Bounded name read - an unterminated
+		// engine name must never fault the test. The target name is the
+		// pillKillName setting (prefix match) so the hunt can be retargeted from
+		// the TOML plus a scope cycle, no rebuild.
 		bool PillNameIsHintBar(std::uintptr_t a_node)
 		{
 			if (!a_node) {
@@ -589,18 +541,16 @@ namespace TrueScopes::Hooks
 					g_pillNode = 0;
 					return;
 				}
-				// v0.3.9 - THE SOURCE KILL (pillKillMode 1, the ship path). The
-				// engine's own WSPrimaryWandHUDModel::Func2 stomps the touchpad
-				// hint node's whole local transform EVERY update - scale included,
-				// copied from one float global it alone reads - then re-propagates
-				// via NiAVObject::Update. That is why every node poke of v0.3.4-8
-				// lost. So stop racing: own the SOURCE. While this runs (scoped,
-				// eligible), the global reads 0 and the ENGINE writes the pill
-				// invisible; the per-frame restore check in the fill hook puts the
-				// captured value back the moment we stop (other contexts may show
-				// other hints on the same quad). Belt: the node (model+0x10,
-				// straight off the singleton - no tree walk) also gets the cull
-				// bit + epsilon scale for any already-stomped frame.
+				// source kill (pillKillMode 1, the ship path). The engine's
+				// WSPrimaryWandHUDModel::Func2 stomps the hint node's whole local
+				// transform every update, scale included, copied from one float
+				// global it alone reads - so node pokes always lose; own the
+				// source instead. While scoped and eligible the global reads 0
+				// and the engine writes the pill invisible; the per-frame check
+				// in the fill hook restores the captured value once that stops
+				// (other contexts may show other hints on the same quad). The
+				// node (model+0x10, straight off the singleton) also gets the
+				// cull bit and epsilon scale for any already-stomped frame.
 				if (*Settings::pillKillMode == 1) {
 					auto* scaleSrc = reinterpret_cast<float*>(REL::Module::get().base() + Addr::kWandHintScaleGlobal);
 					const auto model = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + Addr::kWandHUDModelSingleton);
@@ -647,9 +597,8 @@ namespace TrueScopes::Hooks
 				}
 				if (!g_pillNode) {
 					// climb to the scene root (parent found empirically per hop),
-					// then find the hint bar by name anywhere in the tree - the
-					// v0.3.6 census proved it hangs under PlayerWorldNode, not the
-					// wand rack the earlier versions searched
+					// then find the hint bar by name anywhere in the tree - it
+					// hangs under PlayerWorldNode, not the wand rack
 					std::uintptr_t root = rig;
 					for (int hop = 0; hop < 24; ++hop) {
 						const auto p = PillGuessParent(root);
@@ -693,9 +642,9 @@ namespace TrueScopes::Hooks
 							}
 							logger::info(FMT_STRING("hold-breath pill node found: '{}' parent='{}' slot {} (visited {})"),
 								(*Settings::pillKillName).c_str(), pn[0] ? pn : "(none)", barSlot, visited);
-							// v0.3.8 - map the parent's WHOLE child rack one-shot:
-							// the kill keeps missing because structure was guessed;
-							// every sibling's name/pos/scale makes it explicit
+							// map the parent's whole child rack one-shot: every
+							// sibling's name, position and scale, so the structure
+							// is explicit instead of guessed
 							if (par) {
 								const auto pk2 = *reinterpret_cast<std::uintptr_t*>(par + 0x168);
 								const auto pc2 = *reinterpret_cast<std::uint16_t*>(par + 0x172);
@@ -721,22 +670,21 @@ namespace TrueScopes::Hooks
 							}
 						}
 					} else if (a_hidden && !g_pillMissLogged && ++g_pillMissScans >= 120) {
-						// a persistent miss must be VISIBLE: v0.3.3's only field
-						// signal was an absent log line (~120 CONSECUTIVE eligible
-						// frames; transient pre-attach misses reset on every find)
+						// a persistent miss must show in the log (~120 consecutive
+						// eligible frames; transient pre-attach misses reset on
+						// every find)
 						g_pillMissLogged = true;
 						logger::warn(FMT_STRING("projected hint bar NOT found after {} scans (root=0x{:x}, visited {})"),
 							g_pillMissScans, root, visited);
 					}
 				}
 				if (g_pillNode) {
-					// v0.3.6 - pillKillMode 2: RACK-SLOT HOLE, the engine's own hide
-					// idiom for wand-rack UI (null holes are legal per the decompiled
+					// pillKillMode 2: rack-slot hole, the engine's own hide idiom
+					// for wand-rack UI (null holes are legal per
 					// NiNode::GetObjectByName). A node not in the tree cannot draw,
-					// whoever owns its transform - the discriminator flags and scale
-					// could not be. The slot is only ever poked when the live array
-					// still matches what the find recorded; restore only into a slot
-					// that is still null. Live-settable for the in-headset A/B.
+					// whoever owns its transform. The slot is only ever poked when
+					// the live array still matches what the find recorded; restore
+					// only into a slot that is still null. Live-settable.
 					const bool wantHole = a_hidden && *Settings::pillKillMode == 2 && g_pillRackKids != 0;
 					const auto liveKids = g_pillParent ? *reinterpret_cast<std::uintptr_t*>(g_pillParent + 0x168) : 0;
 					if (g_pillHoled && !wantHole) {
@@ -750,12 +698,11 @@ namespace TrueScopes::Hooks
 							logger::warn("pill rack slot changed while holed - restore abandoned"sv);
 						}
 					} else if (wantHole) {
-						// v0.3.8 - PERSISTENT hole: the v0.3.7 single poke did not
-						// kill the pill, consistent with the engine RE-ATTACHING the
-						// bar (projected-UI placement runs per frame). Scan the
-						// parent's rack every eligible frame and null EVERY slot
-						// holding the target, wherever it re-appears; count re-holes
-						// so a per-frame re-attach fight is visible in the log.
+						// persistent hole: the engine re-attaches the bar
+						// (projected-UI placement runs per frame), so scan the
+						// parent's rack every eligible frame and null every slot
+						// holding the target, wherever it re-appears; re-holes are
+						// counted so a per-frame fight shows in the log.
 						if (liveKids) {
 							const auto pc = *reinterpret_cast<std::uint16_t*>(g_pillParent + 0x172);
 							static std::uint32_t s_holeCount = 0;
@@ -783,18 +730,14 @@ namespace TrueScopes::Hooks
 					auto* scale = reinterpret_cast<float*>(g_pillNode + 0x6c);
 					if (a_hidden) {
 						*flags |= 1;
-						// v0.3.5 - FIELD RESULT 2026-08-26: the flag alone does NOT
-						// hide the pill (node found, bit set every eligible frame,
-						// pill still rendered - chord "no"). The wand rack's own
-						// visibility idiom is attach/detach (hence the null holes),
-						// so its draw path plausibly never consults AppCulled - or
-						// re-shows after our hook. The housing answer (v0.2.121) is
-						// ordering-immune: epsilon LOCAL scale -> degenerate quad,
-						// invisible to every render path that consumes world
-						// transforms, regardless of who wins the flag fight.
-						// Captured once (sanity-bounded), re-applied idempotently
-						// per eligible frame, restored live on knob-off. The flag
-						// stays as belt-and-suspenders.
+						// the flag alone does not hide the pill - the rack's own
+						// visibility idiom is attach/detach, so its draw path may
+						// never consult AppCulled. The epsilon local scale is
+						// ordering-immune: a degenerate quad is invisible to every
+						// render path that consumes world transforms, whoever wins
+						// the flag fight. Captured once (sanity-bounded),
+						// re-applied idempotently per eligible frame, restored
+						// live on knob-off. The flag stays as belt-and-suspenders.
 						if (!g_pillScaleCaptured) {
 							const float s = *scale;
 							if (s > kHousingHiddenScale && s < 1000.0f) {
@@ -812,9 +755,9 @@ namespace TrueScopes::Hooks
 						}
 					} else {
 						*flags &= static_cast<std::uint8_t>(~1u);
-						// restore keyed on MEMORY state (sentinel still present), the
-						// RestoreWidgetHousing discipline - a missed frame can never
-						// strand the pill invisible against the user's setting
+						// restore keyed on memory state (sentinel still present) so
+						// a missed frame can never strand the pill invisible
+						// against the user's setting
 						if (g_pillScaleCaptured && *scale == kHousingHiddenScale) {
 							*scale = g_pillSavedScale;
 						}
@@ -856,12 +799,11 @@ namespace TrueScopes::Hooks
 				if (!cacheOk) {
 					s_sp = sp;
 					s_hunting = s_recon = 0;
-					// ScopeParent -> world_scope.nif -> shapes (VR NiNode: children
-					// +0x168, loop bound u16 +0x172 - the slot high-water mark
-					// NiNode::GetObjectByName itself iterates, null holes legal.
-					// v0.3.4: was +0x174 (non-null element count), which walked
-					// short of any child past a hole; both agree on a contiguous
-					// array, which is why the 2026-08-24 live check passed.)
+					// ScopeParent -> world_scope.nif -> shapes. VR NiNode: children
+					// array +0x168, loop bound u16 +0x172 (the slot high-water
+					// mark NiNode::GetObjectByName 0x141c18500 iterates; null
+					// holes legal). +0x174 is the non-null element count and
+					// undercounts across holes - not a loop bound.
 					const auto spKids = *reinterpret_cast<std::uintptr_t*>(sp + 0x168);
 					const auto spCnt = *reinterpret_cast<std::uint16_t*>(sp + 0x172);
 					for (std::uint16_t i = 0; spKids && i < spCnt && !s_hunting; ++i) {
@@ -892,12 +834,11 @@ namespace TrueScopes::Hooks
 				if (s_recon) {
 					*reinterpret_cast<std::uint8_t*>(s_recon + 0x108) |= 1;
 				}
-				// v0.2.121 — the permanent layer (see the function comment). Capture
-				// the NIF-authored scales exactly once (they never change; requiring
-				// both > sentinel and sane refuses a half-zeroed or foreign state),
-				// then hold the sentinel. The write is unconditional and idempotent:
-				// a couple of float stores per eligible frame, self-healing by
-				// construction.
+				// permanent layer: capture the NIF-authored scales exactly once
+				// (requiring both > sentinel and sane refuses a half-zeroed or
+				// foreign state), then hold the sentinel. The write is
+				// unconditional and idempotent - a couple of float stores per
+				// eligible frame, self-healing by construction.
 				if (s_hunting && s_recon && !g_housingScaleCaptured) {
 					const float h = *reinterpret_cast<const float*>(s_hunting + 0x6c);
 					const float r = *reinterpret_cast<const float*>(s_recon + 0x6c);
@@ -922,14 +863,14 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.2.121 — idempotent restore for a live hideWidgetHousing=false toggle:
-		// keyed on MEMORY state (cached shapes still name-valid AND carrying the
-		// sentinel scale), not on our own bookkeeping, so a fault or missed frame
-		// can never strand the housing invisible against the user's setting. Flags
-		// are deliberately NOT touched: un-culling both housings here would show
-		// the INACTIVE one too; visibility returns through the normal paths (the
-		// presence un-cull next frame, or vanilla's next arm edge) which only ever
-		// show the active housing.
+		// idempotent restore for a live hideWidgetHousing=false toggle: keyed on
+		// memory state (cached shapes still name-valid and carrying the sentinel
+		// scale), not on bookkeeping, so a fault or missed frame can never strand
+		// the housing invisible against the user's setting. Flags are
+		// deliberately not touched - un-culling both housings here would show the
+		// inactive one too; visibility returns through the normal paths (the
+		// presence un-cull next frame, or vanilla's next arm edge) which only
+		// ever show the active housing.
 		void RestoreWidgetHousing()
 		{
 			__try {
@@ -964,12 +905,12 @@ namespace TrueScopes::Hooks
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 		}
-		// v0.2.116 — POSE-BASED ACTIVATION. Replaces the per-frame verdict call
+		// Pose-based activation. Replaces the per-frame verdict call
 		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
-		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). Our verdict flows
+		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). The verdict flows
 		// through the untouched enable switch, whose state read/arm write are
-		// already thunked above — so the widget show/hide stays edge-triggered
-		// (single-fire; the v0.1.0 per-tick-spam crash class cannot recur) and
+		// already thunked above, so the widget show/hide stays edge-triggered
+		// (per-tick show/hide spam exhausts the input layer and crashes) and
 		// every force-off path (menus, holster, weapon change) keeps its meaning.
 		struct ScopeGateVerdictHook
 		{
@@ -978,15 +919,15 @@ namespace TrueScopes::Hooks
 				const auto player = reinterpret_cast<std::uintptr_t>(a_player);
 				const bool v = PoseGate::OnGateVerdict(player, a_verdict != 0);
 				func(a_player, v ? 1 : 0);
-				// Presence refresh (v0.2.118): AFTER the enable switch, same
-				// frame, game thread — its hide-edge culled the nodes a few
-				// instructions ago and this un-culls them before anything drew.
-				// This site only runs while the weapon is drawn, a gun,
-				// has-scope, and no blocking menu is open, so presence dies
-				// with eligibility (the stale poll hides the nodes ~1 s later).
+				// Presence refresh: after the enable switch, same frame, game
+				// thread — its hide-edge culled the nodes a few instructions ago
+				// and this un-culls them before anything drew. This site only
+				// runs while the weapon is drawn, a gun, has-scope, and no
+				// blocking menu is open, so presence dies with eligibility (the
+				// stale poll hides the nodes ~1 s later).
 				SetHoldBreathPillHidden(player, *Settings::hideHoldBreathHint);
-				// v0.3.6 diagnostic: one-shot scene census once the scope is truly
-				// up (the pill exists by then; see Settings::pillCensus)
+				// one-shot scene census once the scope is truly up (the pill
+				// exists by then; see Settings::pillCensus)
 				if (*Settings::pillCensus && g_scopeActive.load(std::memory_order_relaxed)) {
 					PillCensusRun(player);
 				}
@@ -998,20 +939,20 @@ namespace TrueScopes::Hooks
 							g_housingSavedHunting, g_housingSavedRecon);
 					}
 				} else {
-					// v0.2.121: live A/B — put the NIF scales back when the user
-					// turns the housing back on (idempotent; see the function).
+					// put the NIF scales back when the user turns the housing back
+					// on (idempotent; see RestoreWidgetHousing)
 					RestoreWidgetHousing();
 					if (g_housingRestored.exchange(false, std::memory_order_relaxed)) {
 						logger::info("widget housing scale restored (hideWidgetHousing off)"sv);
 					}
 				}
 				if (*Settings::poseWidgetAlways) {
-					// v0.2.119: only once the widget is PRESENTABLE — the fit has
-					// been applied for the current baseline (or the user disabled
-					// the fit on purpose). Without this gate a first-drawn weapon
-					// showed Bethesda's giant un-fit band until the first aim
-					// (field screenshot 20260824151656). PresenceFit() in the fill
-					// hook makes the fit land within a few frames of the draw.
+					// only once the widget is presentable — the fit has been
+					// applied for the current baseline (or the user disabled the
+					// fit on purpose). Without this gate a first-drawn weapon
+					// shows the giant un-fit band until the first aim;
+					// PresenceFit() in the fill hook makes the fit land within a
+					// few frames of the draw.
 					if (ScopeRender::WidgetPresentable()) {
 						SetWidgetNodesHidden(player, false);
 					}
@@ -1024,13 +965,13 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
 
-		// v0.2.121 — HOUSING SHOW FILTER. The ONE engine site that un-hides the
-		// widget housing (Addresses.h kHousingShowCallSite: the arm switch's
-		// edge-gated call into WSScopeModel's show-active-housing-and-fade).
-		// Passthrough first — the fade keeps vanilla flow and the arm block's
-		// later shader-cache refresh (the lens RT bind gate) is untouched — then
-		// re-cull the ACTIVE housing while hideWidgetHousing is on. With the
-		// zero-scale hide this is belt-and-suspenders; it also covers a live
+		// Housing show filter: the one engine site that un-hides the widget
+		// housing (Addresses.h kHousingShowCallSite: the arm switch's edge-gated
+		// call into WSScopeModel's show-active-housing-and-fade). Passthrough
+		// first — the fade keeps vanilla flow and the arm block's later
+		// shader-cache refresh (the lens RT bind gate) is untouched — then
+		// re-cull the active housing while hideWidgetHousing is on.
+		// Belt-and-suspenders next to the zero-scale hide; also covers a live
 		// toggle before the housing node cache has first built.
 		struct HousingShowFilterHook
 		{
@@ -1053,16 +994,15 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
 
-		// v0.2.132 - DECAL GROUP ORDER FIX (Ghidra 2026-08-25; see Addresses.h).
-		// The resolve draws deferred-decal group 5 (non-skinned: grime, posters,
-		// geometry decals) BEFORE the opaque G-buffer groups, so in our
-		// resolve-only render the opaque walls paint straight over them. While
-		// g_inOwnResolve (and the reorder setting is on) the G5 site defers and
-		// the G6 site replays group 5 first - decals land ON the walls, exactly
-		// where vanilla's frame ordering effectively puts them. Engine frames
-		// pass through untouched. The deferred flag is ASSIGNED (not
-		// accumulated) at the G5 site each entry, so a live toggle or an
-		// aborted resolve can never leak a stale replay into a later frame.
+		// Decal group order (see Addresses.h). The resolve draws deferred-decal
+		// group 5 (non-skinned: grime, posters, geometry decals) before the
+		// opaque G-buffer groups, so in a resolve-only render the opaque walls
+		// paint straight over them. While in the plugin's resolve (and the reorder
+		// setting is on) the G5 site defers and the G6 site replays group 5
+		// first, so decals land on the walls. Engine frames pass through
+		// untouched. The deferred flag is assigned, not accumulated, at the G5
+		// site each entry, so a live toggle or an aborted resolve can never leak
+		// a stale replay into a later frame.
 		std::atomic_bool g_decalG5Deferred{ false };
 
 		struct DecalG5SiteHook
@@ -1092,13 +1032,12 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(std::uintptr_t, std::uintptr_t)> func;
 		};
 
-		// Replaces the WHOLE renderer+4 reader FUN_141d947d0 (5 bytes, movzx+ret):
-		// scoped mode is answered only to our render thread while our bracket is
-		// live. Every other thread — including engine jobs racing our mid-frame
-		// render — sees "not scoped", so no phantom scoped-path actions can latch
-		// off our transient +4=1 (black-burst suspect #5). Vanilla never needs a
-		// true answer here: the arm write is suppressed, so vanilla scoped mode
-		// never engages.
+		// Replaces the whole renderer+4 reader FUN_141d947d0 (5 bytes,
+		// movzx+ret): scoped mode is answered only to the plugin's render thread
+		// while the bracket is live. Every other thread — including engine jobs
+		// racing the mid-frame render — sees "not scoped", so nothing can latch off the
+		// transient +4=1. Vanilla never needs a true answer here: the arm write
+		// is suppressed, so vanilla scoped mode never engages.
 		struct ScopePassReadHook
 		{
 			static char thunk([[maybe_unused]] void* a_renderer)
@@ -1118,26 +1057,22 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
-		// Phase 1 fill: while the scope widget is active, copy the main double-wide
-		// frame into the lens target every N frames. The engine's own per-draw slot-6
-		// bind displays it whenever the widget material draws. Phase 2 replaces the Copy
-		// with our own mono world render from PrimaryWeaponScopeCamera into a temp RT,
-		// then Copy(temp, 0x62) (recipe: ROUTE_B_STATIC_MAP_2026-08-06.md section 3.2).
+		// Per-frame fill: while the scope widget is active, render the mono world
+		// view into the lens target every N frames (falling back to a copy of
+		// the main double-wide frame). The engine's own per-draw slot-6 bind
+		// displays it whenever the widget material draws.
 		struct RenderFillHook
 		{
 			static void thunk()
 			{
-				// v0.2.70 perf instrument: this hook is per-frame and runs regardless of
-				// scope state, so it is the game's frame counter. Must stay first and
-				// unconditional — an early return below would otherwise undercount and
-				// silently bias the very measurement it exists to make.
+				// this hook is per-frame and runs regardless of scope state, so it
+				// is the game's frame counter. Must stay first and unconditional —
+				// an early return below would undercount and bias the measurement.
 				g_frames.fetch_add(1, std::memory_order_relaxed);
-				// v0.2.51 hysteresis poll (runs every frame): honor a gate-OFF only
-				// after it persisted scopeOffHoldMs; an ON in between cancels it.
-				// v0.2.116: when the pose gate owns the verdict, its enter/exit
-				// threshold pairs ARE the hysteresis, and a time-hold here would
-				// just replay the enable switch's off-block every frame for the
-				// hold window — the time-hold applies to the vanilla gate only.
+				// hysteresis poll: honor a gate-off only after it persisted
+				// scopeOffHoldMs; an on in between cancels it. When the pose gate
+				// owns the verdict its enter/exit thresholds are the hysteresis,
+				// so the time-hold applies to the vanilla gate only.
 				if (g_installed && g_scopeActive.load() && !g_gateRaw.load()) {
 					const auto holdMs = (g_verdictHookInstalled && *Settings::poseGateEnabled)
 					                        ? 0ull
@@ -1148,14 +1083,14 @@ namespace TrueScopes::Hooks
 						logger::info("scope active -> false (held)"sv);
 					}
 				}
-				// v0.2.117 — stale-verdict deactivation (review finding). Vanilla's
-				// per-frame force-off reads the REAL renderer+3 (always 0 for us),
-				// so it never reaches our state — and a mid-unequip re-arm from an
-				// unhooked equip-path caller can latch g_gateRaw+g_scopeActive true
-				// for the whole holstered period. Then the next draw fires no
-				// OFF->ON edge and the TOML reload + scope re-ident silently skip.
-				// The verdict site going quiet for ~1 s IS the holster/menu signal
-				// (it runs per frame while eligible), so force the off edge here.
+				// stale-verdict deactivation: vanilla's per-frame force-off reads
+				// the real renderer+3 (always 0 here), so it never reaches this
+				// state — and a mid-unequip re-arm from an unhooked equip-path
+				// caller can latch the gate true for the whole holstered period,
+				// after which the next draw fires no off->on edge and the TOML
+				// reload plus scope re-ident silently skip. The verdict site going
+				// quiet for ~1 s is the holster/menu signal (it runs per frame
+				// while eligible), so force the off edge here.
 				if (g_installed && g_verdictHookInstalled && *Settings::poseGateEnabled &&
 					g_scopeActive.load() && PoseGate::VerdictStale(90)) {
 					g_gateRaw.store(false);
@@ -1163,9 +1098,9 @@ namespace TrueScopes::Hooks
 					LensComposite::RestoreReticleQuad();
 					logger::info("scope active -> false (verdict stale: holstered or menu)"sv);
 				}
-				// v0.2.118: widget presence dies with eligibility too — the verdict
-				// site going quiet (holster / blocking menu) is the hide signal.
-				// Same raw flag writes the show path uses; idempotent.
+				// widget presence dies with eligibility too — the verdict site
+				// going quiet (holster / blocking menu) is the hide signal. Same
+				// raw flag writes the show path uses; idempotent.
 				if (g_installed && g_presenceShown.load(std::memory_order_relaxed) &&
 					PoseGate::SiteStale(90)) {
 					const auto player = *reinterpret_cast<std::uintptr_t*>(
@@ -1173,19 +1108,17 @@ namespace TrueScopes::Hooks
 					SetWidgetNodesHidden(player, true);
 					logger::info("widget presence -> hidden (verdict stale)"sv);
 				}
-				// v0.2.109: controller verdict chords, polled per frame.
+				// controller verdict chords, polled per frame
 				if (g_installed) {
 					VerdictInput::Poll();
 				}
-				// v0.2.106: run a pending scope-ident probe from the per-frame hook,
-				// not only from RenderImpl. RenderImpl runs only while the scope is
-				// RAISED, so headless (null driver, no scope-in ever) a /scope?probe=1
-				// waited its 3 s and returned last cycle's latched answer — the
-				// "probed:false, weapon 0x0" trap hit on 2026-08-23. This thread IS
-				// the render thread the probe expects, the request flag makes the two
-				// call sites idempotent, and an un-requested frame costs one atomic
-				// read. Makes the whole ident chain testable with no headset AND no
-				// scope raise: additem + equipitem + /scope?probe=1.
+				// run a pending scope-ident probe from the per-frame hook, not only
+				// from RenderImpl — that one runs only while the scope is raised,
+				// so a headless probe would return a stale answer. This thread is
+				// the render thread the probe expects, the request flag makes the
+				// two call sites idempotent, and an un-requested frame costs one
+				// atomic read. Makes the ident chain testable with no headset and
+				// no scope raise.
 				if (g_installed) {
 					if (const auto player = *reinterpret_cast<std::uintptr_t*>(
 							REL::Module::get().base() + Addr::kPlayerGlobal)) {
@@ -1193,21 +1126,21 @@ namespace TrueScopes::Hooks
 					}
 				}
 
-				// v0.2.119: while plugin-owned presence wants the widget (weapon
-				// drawn, verdict site alive), keep the ident + widget fit current
-				// even when no live fill runs — a save-load or first draw fits
-				// within a few frames instead of waiting for the first aim.
-				// Cheap: ApplyWidgetFit no-ops when nothing changed.
+				// while plugin-owned presence wants the widget (weapon drawn,
+				// verdict site alive), keep the ident + widget fit current even
+				// when no live fill runs — a save-load or first draw fits within a
+				// few frames instead of waiting for the first aim. Cheap:
+				// ApplyWidgetFit no-ops when nothing changed.
 				if (g_installed && *Settings::poseWidgetAlways && !PoseGate::SiteStale(90)) {
 					ScopeRender::PresenceFit();
 				}
 
 
-				// v0.3.9 - source-kill hygiene: the wand-hint scale global must not
-				// stay zeroed outside scoped eligibility (the same quad can carry
-				// other contexts' hints). This runs every presentable frame, so the
-				// engine value returns within a frame of the scope dropping or the
-				// knob going off. Writing module .data - no SEH needed.
+				// source-kill hygiene: the wand-hint scale global must not stay
+				// zeroed outside scoped eligibility (the same quad can carry other
+				// contexts' hints). This runs every frame, so the engine value
+				// returns within a frame of the scope dropping or the knob going
+				// off. Writing module .data - no SEH needed.
 				if (g_pillSrcCaptured &&
 					!(*Settings::hideHoldBreathHint && *Settings::pillKillMode == 1 &&
 						g_scopeActive.load(std::memory_order_relaxed))) {
@@ -1218,18 +1151,17 @@ namespace TrueScopes::Hooks
 				}
 
 				if (g_installed && *Settings::fillEnabled) {
-					// v0.2.125: last time anything filled the lens (live or prime).
+					// last time anything filled the lens (live or prime)
 					static std::uint64_t s_lastLensFillTick = 0;
-					// v0.2.116 — POSE FREEZE. While the widget is up but the pose
-					// says the eye is not at the tube, the lens FREEZES: no fill,
-					// RT 0x62 persists, so the last live picture stays. A one-shot
-					// dim keeps stale from reading as live; thawing needs no
-					// special-case — the next fill overwrites the whole delivery
-					// footprint. v0.2.117 (review finding): the dim re-arms ONLY
-					// after a live fill actually repainted the lens — arming it in
-					// the widget-off branch let every widget off/on cycle while
-					// still frozen multiply the same picture by poseFrozenDim
-					// (menu open/close x4 ~= black lens).
+					// pose freeze: while the widget is up but the pose says the eye
+					// is not at the tube, the lens freezes — no fill, RT 0x62
+					// persists, the last live picture stays. A one-shot dim keeps
+					// stale from reading as live; thawing needs no special-case —
+					// the next fill overwrites the whole delivery footprint. The
+					// dim re-arms only after a live fill actually repainted the
+					// lens: arming it in the widget-off branch would multiply the
+					// same frozen picture by poseFrozenDim on every widget off/on
+					// cycle (menu open/close x4 ~= black lens).
 					static bool s_dimPending = false;
 					const bool  poseLive = PoseGate::FillLive();
 					if (g_scopeActive.load() && poseLive) {
@@ -1243,28 +1175,25 @@ namespace TrueScopes::Hooks
 							if (!rendered && *Settings::lensMode != 0) {
 								ImageSpaceCopy()(Addr::kRT_MainFrame, Addr::kRT_ScopeLens);
 							}
-							// v0.2.125: a live fill supersedes any pending prime.
+							// a live fill supersedes any pending prime
 							ScopeRender::LensPrimeDone();
 							s_lastLensFillTick = ::GetTickCount64();
 						}
 					} else if (g_scopeActive.load() ||
 					           (g_presenceShown.load(std::memory_order_relaxed) && *Settings::poseWidgetAlways)) {
 						// widget up (armed, or presence-kept after the pose
-						// off-edge dropped the arm — v0.2.118) -> frozen
+						// off-edge dropped the arm) -> frozen
 						//
-						// v0.2.125 — LENS PRIMING + IDLE REFRESH. Field 21:07: the
-						// placement chain converged 314 ms after load, but nothing
-						// ever fills RT 0x62 until the first pose activation, so
-						// the disc sat BLACK for 33 s ("didn't see the lens
-						// start"). Prime = one fill when presence is up and the
+						// Lens priming + idle refresh: nothing fills RT 0x62 until
+						// the first pose activation, so the disc would sit black
+						// until then. Prime = one fill when presence is up and the
 						// lens has no live picture (per equip baseline), then dim
 						// to the frozen look so it reads as a frozen picture, not
 						// a live one. Idle refresh (default off) re-fills the
 						// frozen lens every N seconds — costs one render-length
-						// frame hitch per refresh, so it is an opt-in A/B knob.
-						// Render() is scope-state independent (verified: no
-						// g_scopeActive reads in ScopeRender.cpp); SiteStale keeps
-						// this out of menus/holster beyond the ~1 s grace.
+						// frame hitch per refresh, so it is opt-in. Render() is
+						// scope-state independent; SiteStale keeps this out of
+						// menus/holster beyond the ~1 s grace.
 						if (!g_scopeActive.load() && *Settings::lensMode >= 2 &&
 							!PoseGate::SiteStale(90) && ScopeRender::WidgetPresentable() &&
 							ScopeRender::Available()) {
@@ -1296,8 +1225,8 @@ namespace TrueScopes::Hooks
 							}
 						}
 					} else {
-						// widget off: deliberately do NOT re-arm the dim — only a
-						// live fill does (see the v0.2.117 note above).
+						// widget off: deliberately do not re-arm the dim — only a
+						// live fill does (see above)
 					}
 				}
 				func();
@@ -1305,27 +1234,28 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<decltype(&thunk)> func;
 		};
 
-		// The deferred resolve's two light-accum bind sites (slot 0 = 0x24/0x6a, slot 1 =
-		// 0x25/0x6b) pass bind mode 0 = clear-on-apply. While OUR resolve call is on the
-		// stack we force mode 3 (no clear) so the sun BSDFLightDir pass we pre-drew into
-		// 0x6a/0x6b survives for the composite. Engine frames pass through untouched.
+		// The deferred resolve's two light-accum bind sites (slot 0 = 0x24/0x6a,
+		// slot 1 = 0x25/0x6b) pass bind mode 0 = clear-on-apply. While the
+		// plugin's resolve call is on the stack, force mode 3 (no clear) so the sun
+		// BSDFLightDir pass pre-drawn into 0x6a/0x6b survives for the composite.
+		// Engine frames pass through untouched.
 		struct ResolveAccumBind0Hook
 		{
 			static void thunk(std::uintptr_t a_rtm, std::uint32_t a_slot, std::int32_t a_rt, std::uint32_t a_mode)
 			{
-				// v0.2.133: the decal stage runs BEFORE the accum bind - the
-				// G-buffer set is still bound (the stage reads AND writes it),
-				// and its exit binding is bitwise what the resolve expects here.
+				// the decal stage runs before the accum bind - the G-buffer set
+				// is still bound (the stage reads and writes it), and its exit
+				// binding is bitwise what the resolve expects here
 				if (ScopeRender::InOwnResolve()) {
 					ScopeRender::RunPendingDecalStage();
 				}
 				func(a_rtm, a_slot, a_rt, ScopeRender::InOwnResolve() ? 3 : a_mode);
-				// v0.2.78: this is the moment the resolve binds the light-accumulation
-				// buffer -- AFTER the G-buffer geometry is drawn and BEFORE the light
-				// volumes. That ordering is the entire fix for §3.1: run from Render()
-				// (before the resolve) the sun shades a G-buffer that is still the black
-				// clear, so it contributes exactly zero. No-op unless the render deferred
-				// one, so engine frames and the old placement are untouched.
+				// this is the moment the resolve binds the light-accumulation
+				// buffer -- after the G-buffer geometry is drawn and before the
+				// light volumes. Run earlier (from Render(), before the resolve)
+				// the sun shades a G-buffer that is still the black clear and
+				// contributes exactly zero. No-op unless the render deferred one,
+				// so engine frames are untouched.
 				if (ScopeRender::InOwnResolve()) {
 					ScopeRender::RunPendingSunExec();
 				}
@@ -1390,9 +1320,9 @@ namespace TrueScopes::Hooks
 		pstl::write_thunk_call<RenderFillHook>(fillSite.address());
 		logger::info(FMT_STRING("render fill hook installed at {:016X}"), fillSite.address());
 
-		// v0.2.116: pose-gate verdict hook — the per-frame proximity verdict feed
-		// into the enable switch. Non-fatal: without it poseGateEnabled is inert
-		// and the vanilla eye-gate keeps deciding (v0.2.115 behavior).
+		// pose-gate verdict hook — the per-frame proximity verdict feed into the
+		// enable switch. Non-fatal: without it poseGateEnabled is inert and the
+		// vanilla eye-gate keeps deciding.
 		{
 			REL::Relocation<std::uintptr_t> verdictSite{ REL::Offset(Addr::kScopeGateVerdictCallSite) };
 			static constexpr std::uint8_t kVerdictOrig[] = { 0xE8, 0x3C, 0x25, 0x00, 0x00 };
@@ -1405,9 +1335,9 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.2.121: housing-show filter — the one engine un-hide of the widget
-		// housing (arm-switch edge). Non-fatal: without it the zero-scale hide
-		// still stands; only the flag-level re-show returns.
+		// housing-show filter — the one engine un-hide of the widget housing
+		// (arm-switch edge). Non-fatal: without it the zero-scale hide still
+		// stands; only the flag-level re-show returns.
 		{
 			REL::Relocation<std::uintptr_t> housingShow{ REL::Offset(Addr::kHousingShowCallSite) };
 			static constexpr std::uint8_t   kHousingShowOrig[] = { 0xE8, 0x49, 0x38, 0xD9, 0xFF };
@@ -1419,8 +1349,8 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.2.132: decal group-order hooks (see the structs). Non-fatal: without
-		// them placed decals stay overwritten in the lens, nothing else changes.
+		// decal group-order hooks (see the structs). Non-fatal: without them
+		// placed decals stay overwritten in the lens, nothing else changes.
 		{
 			REL::Relocation<std::uintptr_t> g5site{ REL::Offset(Addr::kResolveDecalG5CallSite) };
 			REL::Relocation<std::uintptr_t> g6site{ REL::Offset(Addr::kResolveDecalG6CallSite) };
@@ -1436,7 +1366,7 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.2.48: renderer+4 reader replacement (thread-scoped scoped-mode answer).
+		// renderer+4 reader replacement (thread-scoped scoped-mode answer).
 		{
 			REL::Relocation<std::uintptr_t> passReadFn{ REL::Offset(Addr::kScopePassReadFn) };
 			static constexpr std::uint8_t kPassReadOrig[] = { 0x0F, 0xB6, 0x41, 0x04, 0xC3 };
@@ -1448,8 +1378,8 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// Resolve accum-bind hooks (sun pass survival). Non-fatal: without them the sun
-		// pre-draw is skipped and everything else behaves like v0.2.25.
+		// Resolve accum-bind hooks (sun pass survival). Non-fatal: without them
+		// the sun pre-draw is skipped and nothing else changes.
 		{
 			REL::Relocation<std::uintptr_t> bind0{ REL::Offset(Addr::kResolveAccumBind0CallSite) };
 			REL::Relocation<std::uintptr_t> bind1{ REL::Offset(Addr::kResolveAccumBind1CallSite) };
@@ -1487,9 +1417,9 @@ namespace TrueScopes::Hooks
 			}
 		}
 		if (*Settings::hideHoldBreathHint) {
-			// v0.3.1 - the "GRAB Hold Breath" pill is the ScopeMenu movie's
-			// ButtonHintBar; skipping SetUpButtonBar in the ctor is the standard
-			// no-bar menu configuration (see Addr::kScopeMenuButtonBarCallSite).
+			// the "GRAB Hold Breath" pill is the ScopeMenu movie's ButtonHintBar;
+			// skipping SetUpButtonBar in the ctor is the standard no-bar menu
+			// configuration (see Addr::kScopeMenuButtonBarCallSite)
 			static constexpr std::uint8_t kBarCallOrig[] = { 0xE8, 0x21, 0xC3, 0xF8, 0xFF };
 			REL::Relocation<std::uintptr_t> siteD{ REL::Offset(Addr::kScopeMenuButtonBarCallSite) };
 			if (VerifyBytes(siteD, { kBarCallOrig, 5 }, "scope button-hint bar site"sv)) {

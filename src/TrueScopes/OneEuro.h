@@ -1,22 +1,22 @@
 #pragma once
 
-// v0.2.124 — quaternion One Euro filter (Casiez et al. 2012) for the scope
-// camera's world orientation (STATUS 3.7d: magnification amplifies hand
-// tremor ~6x at 4x zoom; a speed-adaptive cutoff crushes at-rest tremor
-// without lagging deliberate pans — a fixed EMA cannot do both).
+// Quaternion One Euro filter (Casiez et al. 2012) for the scope camera's
+// world orientation. Magnification amplifies hand tremor (~6x at 4x zoom);
+// a speed-adaptive cutoff crushes at-rest tremor without lagging deliberate
+// pans, which a fixed EMA cannot do.
 //
-// Numerics per the adversarial review: ALL angle computations use the
-// chord/atan2 form (2*atan2(|vec(dq)|, |w(dq)|)) — the naive 2*acos(|dot|)
-// quantizes in ~0.03 rad/s steps at tremor scale in float32 and pollutes the
-// adaptive derivative. |w| makes every angle double-cover-invariant, so no
-// explicit hemisphere management is needed outside Slerp (which aligns
-// internally). Header-only, POD, render-thread single-consumer.
+// All angle computations use the chord/atan2 form
+// (2*atan2(|vec(dq)|, |w(dq)|)) - the naive 2*acos(|dot|) quantizes in
+// ~0.03 rad/s steps at tremor scale in float32 and pollutes the adaptive
+// derivative. |w| makes every angle double-cover-invariant, so no explicit
+// hemisphere management is needed outside Slerp (which aligns internally).
+// Header-only, POD, render-thread single-consumer.
 //
 // Basis convention: the 9 rotation floats live in NiPoint4 rows at +0x00,
 // +0x10, +0x20 of the matrix block (m[0..2], m[4..6], m[8..10]); the pad
-// floats m[3]/m[7]/m[11] are NEVER written. QuatFromBasis/BasisFromQuat are
-// exact inverses over that layout, which is all correctness requires — the
-// project's transposed-on-read question is conjugation-invariant here.
+// floats m[3]/m[7]/m[11] are never written. QuatFromBasis/BasisFromQuat are
+// exact inverses over that layout, which is all correctness requires - the
+// transposed-on-read question is conjugation-invariant here.
 
 #include <cmath>
 #include <cstring>
@@ -79,7 +79,7 @@ namespace OneEuro
 		Normalize(a_q);
 	}
 
-	// Writes ONLY the 9 rotation floats; pads m[3]/m[7]/m[11] untouched.
+	// Writes only the 9 rotation floats; pads m[3]/m[7]/m[11] untouched.
 	inline void BasisFromQuat(const float* a_q, float* a_m) noexcept
 	{
 		const float x = a_q[0], y = a_q[1], z = a_q[2], w = a_q[3];

@@ -7,11 +7,10 @@ namespace TrueScopes::PoseGate
 {
 	namespace
 	{
-		// Pose sources — the same live-verified ground truth LensComposite's
-		// EyeLateral uses (v0.2.114): PlayerCamera singleton [base+0x5930608],
-		// camera root at +0x20; NiAVObject world rotate +0x70 (NiMatrix3 = 3 rows
-		// of NiPoint4, transposed on read: R[r][c] = m[c*4+r], verified against
-		// ScopeIdent::OcularFaceWorld 2026-08-11), world translate +0xa0.
+		// Pose sources - the same ground truth LensComposite's EyeLateral uses:
+		// PlayerCamera singleton [base+0x5930608], camera root at +0x20;
+		// NiAVObject world rotate +0x70 (NiMatrix3 = 3 rows of NiPoint4,
+		// transposed on read: R[r][c] = m[c*4+r]), world translate +0xa0.
 		constexpr std::uintptr_t kPlayerCameraGlobal = 0x5930608;
 		constexpr std::uintptr_t kCameraRoot = 0x20;
 		constexpr std::uintptr_t kWorldRotate = 0x70;
@@ -26,9 +25,9 @@ namespace TrueScopes::PoseGate
 		std::atomic<float>         g_lateral{ 0.0f };
 		std::atomic<float>         g_lookDeg{ 0.0f };
 		std::atomic<std::uint32_t> g_evals{ 0 };
-		std::atomic<std::uint64_t> g_evalFrame{ 0 };  // game frame of the last POSE eval (freshness)
-		std::atomic<std::uint64_t> g_siteFrame{ 0 };  // game frame of the last verdict-site CALL,
-		                                              // updated even when the pose gate is disabled —
+		std::atomic<std::uint64_t> g_evalFrame{ 0 };  // game frame of the last pose eval (freshness)
+		std::atomic<std::uint64_t> g_siteFrame{ 0 };  // game frame of the last verdict-site call,
+		                                              // updated even when the pose gate is disabled -
 		                                              // "is the site alive" (weapon drawn, eligible)
 		// Hysteresis memory. Game thread only (the verdict site is per-frame from
 		// Main::OnIdle), so no atomicity needed for the read-modify-write.
@@ -76,15 +75,14 @@ namespace TrueScopes::PoseGate
 			}
 
 			// Ocular point = the ScopeParent origin (the vanilla widget anchor,
-			// engine-owned, re-read through the player every frame — can never
-			// dangle). Deliberately NOT ScopeIdent::OcularFaceWorld here: that
+			// engine-owned, re-read through the player every frame - can never
+			// dangle). Deliberately not ScopeIdent::OcularFaceWorld here: that
 			// walks node pointers cached at probe time, which dangle for a frame
 			// or more after every weapon/mod swap, and this is a per-frame
-			// GAME-thread path with no SEH bracket (v0.2.116 review finding —
-			// the render-thread consumers are all inside RenderGuarded's __try).
-			// The two points differ by at most a couple of units on the same
-			// eyepiece; against 6–9-unit lateral and 90–100-unit distance
-			// thresholds the precision difference is noise.
+			// game-thread path with no SEH bracket (the render-thread consumers
+			// are all inside RenderGuarded's __try). The two points differ by at
+			// most a couple of units on the same eyepiece - noise against the
+			// lateral and distance thresholds.
 			float       D[3];
 			const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
 			D[0] = t[0];
@@ -98,9 +96,8 @@ namespace TrueScopes::PoseGate
 			const float headX[3] = { camRot[0], camRot[1], camRot[2] };
 			const float headFwd[3] = { camRot[4], camRot[5], camRot[6] };
 
-			// Both real eyes (camera root is the HMD CENTRE); keep whichever sits
-			// closer to the tube axis — the aiming eye, no dominance setting
-			// (v0.2.114 pattern).
+			// Both real eyes (camera root is the HMD centre); keep whichever sits
+			// closer to the tube axis - the aiming eye, no dominance setting.
 			const float halfIpd = 0.5f * static_cast<float>(*Settings::eyeBoxIpdUnits);
 			float       bestLat = -1.0f, bestDist = 0.0f;
 			for (const float side : { -1.0f, 1.0f }) {
@@ -110,7 +107,7 @@ namespace TrueScopes::PoseGate
 				const float v[3] = { D[0] - e[0], D[1] - e[1], D[2] - e[2] };
 				const float axial = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
 				if (!(axial > 0.0f)) {
-					// The eye must be BEHIND the ocular, looking down-range — an
+					// The eye must be behind the ocular, looking down-range - an
 					// eye in front of the eyepiece is never "looking through".
 					continue;
 				}
@@ -126,7 +123,7 @@ namespace TrueScopes::PoseGate
 				}
 			}
 			if (bestLat < 0.0f) {
-				// Pose sources are fine — the answer is simply "not looking
+				// Pose sources are fine - the answer is simply "not looking
 				// through" (both eyes in front of, or level with, the ocular).
 				s.valid = true;
 				s.dist = 1.0e9f;
@@ -177,9 +174,8 @@ namespace TrueScopes::PoseGate
 		const bool was = g_liveState;
 		// Effective exit = max(exit, enter): the hysteresis invariant. Editing a
 		// pair one knob at a time over DevBench can momentarily invert it
-		// (exit < current < enter), which oscillates live/frozen every eval —
-		// and each flap cost a dim pass in the v0.2.116 field test. Clamped,
-		// any edit order produces at most one clean transition.
+		// (exit < current < enter), which oscillates live/frozen every eval.
+		// Clamped, any edit order produces at most one clean transition.
 		const auto band = [was](double a_enter, double a_exit) {
 			return static_cast<float>(was ? std::max<double>(a_exit, a_enter) : a_enter);
 		};
@@ -200,15 +196,13 @@ namespace TrueScopes::PoseGate
 		g_owned.store(true, std::memory_order_relaxed);
 		g_fillLive.store(live, std::memory_order_relaxed);
 
-		// v0.2.118: the verdict fed to vanilla is ALWAYS the pose. Feeding a
-		// perpetual "true" (the v0.2.116 poseWidgetAlways) kept the player
-		// SIGHTED the whole time the weapon was drawn — the enable switch's
-		// ActorState call drives the sighted state, sighted opens ScopeMenu,
-		// and FRIK reacts to ScopeMenu by collapsing the body root
-		// (hideHands: scale 0.00001) and blocking all Pip-Boy interaction.
-		// Field-diagnosed 2026-08-24 (stretched-body screenshot + dead
-		// Pip-Boy). Widget permanence is now plugin-owned node visibility in
-		// Hooks.cpp (WidgetPresence), which vanilla state never sees.
+		// The verdict fed to vanilla is always the pose. Feeding a perpetual
+		// "true" keeps the player sighted the whole time the weapon is drawn -
+		// the enable switch's ActorState call drives the sighted state, sighted
+		// opens ScopeMenu, and FRIK reacts to ScopeMenu by collapsing the body
+		// root and blocking all Pip-Boy interaction. Widget permanence is
+		// plugin-owned node visibility in Hooks.cpp (WidgetPresence), which
+		// vanilla state never sees.
 		return live;
 	}
 
@@ -225,9 +219,9 @@ namespace TrueScopes::PoseGate
 	bool SiteStale(std::uint64_t a_maxFrames)
 	{
 		// Unlike VerdictStale this needs no pose ownership: it answers "has the
-		// verdict SITE run recently" (weapon drawn + eligible), which is what
-		// plugin-owned widget presence keys its hide on — it must work the same
-		// with the pose gate disabled (v0.2.118).
+		// verdict site run recently" (weapon drawn + eligible), which is what
+		// plugin-owned widget presence keys its hide on - it must work the same
+		// with the pose gate disabled.
 		const auto last = g_siteFrame.load(std::memory_order_relaxed);
 		const auto now = Hooks::FrameCount();
 		return last != 0 && now > last && now - last > a_maxFrames;
@@ -240,10 +234,10 @@ namespace TrueScopes::PoseGate
 		}
 		// Freshness guard: the verdict site stops running the moment the weapon
 		// is holstered or a blocking menu opens (vanilla eligibility), and the
-		// last verdict would otherwise stick. Found headless 2026-08-24: an
-		// unhooked equip-path caller re-arms the widget during unequip, and the
-		// stale `live` kept the fill running on a holstered weapon. If no eval
-		// landed within the last ~half second of frames, the lens freezes.
+		// last verdict would otherwise stick - an unhooked equip-path caller
+		// re-arms the widget during unequip, and a stale `live` keeps the fill
+		// running on a holstered weapon. If no eval landed within the last
+		// ~half second of frames, the lens freezes.
 		const auto last = g_evalFrame.load(std::memory_order_relaxed);
 		const auto now = Hooks::FrameCount();
 		if (now > last && now - last > 45) {
@@ -257,10 +251,8 @@ namespace TrueScopes::PoseGate
 		Diag d{};
 		d.enabled = *Settings::poseGateEnabled;
 		d.owned = g_owned.load(std::memory_order_relaxed);
-		// The EFFECTIVE answer (freshness guard included), not the raw stored
-		// flag — the first headless run reported fillLive=true while the fill
-		// was demonstrably frozen by staleness, which is exactly the blind-
-		// instrument genre this project keeps a ledger of.
+		// The effective answer (freshness guard included), not the raw stored
+		// flag, which can read true while the fill is frozen by staleness.
 		d.fillLive = FillLive();
 		d.dist = g_dist.load(std::memory_order_relaxed);
 		d.lateral = g_lateral.load(std::memory_order_relaxed);
