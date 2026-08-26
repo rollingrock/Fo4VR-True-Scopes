@@ -508,6 +508,11 @@ namespace Settings
 	// recreate the looks INSIDE the lens composite (nv*/recon* knobs below), keyed
 	// off the zoom's imod identity. Old TOML key disableScopeBlackout still loads.
 	MAKE_SETTING(bSetting, "TrueScopesVR", suppressScopeImods, true);
+	// v0.3.1 - suppress the vanilla "GRAB Hold Breath" pill (the ScopeMenu movie's
+	// ButtonHintBar, visible floating on the scope body). Nops the ctor's
+	// SetUpButtonBar call, so the bar object is never created. LOAD-TIME PATCH:
+	// changing this requires a game restart.
+	MAKE_SETTING(bSetting, "TrueScopesVR", hideHoldBreathHint, true);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, true);
 
@@ -787,6 +792,7 @@ namespace Settings
 		LOAD(retryAfterFault);
 		LOAD(sunExecEnabled);
 		LOAD(suppressScopeImods);
+		LOAD(hideHoldBreathHint);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
 		// v0.3 hardening: name every unrecognized key once, so a typo is a log
 		// line instead of a silent no-op. disableScopeBlackout is the known alias.

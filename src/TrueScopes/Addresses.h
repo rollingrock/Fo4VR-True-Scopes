@@ -79,6 +79,14 @@ namespace TrueScopes::Addr
 	inline constexpr std::uintptr_t kScopeBlackoutImodSiteB = 0xbc80cc;  // ScopeMenu::ProcessMessage
 	inline constexpr std::uintptr_t kScopeApproachFadeSite = 0xef861c;   // aim controller proximity fade
 
+	// ScopeMenu ctor's GameMenuBase::SetUpButtonBar(menu, root, "ButtonHintInstance", 2)
+	// call @ 0x140bc7d1a (Ghidra 2026-08-26): E8 21 C3 F8 FF -> 0x140b54040. The bar IS
+	// the floating green "GRAB Hold Breath" pill (drawn by the world_ScopeMenu movie).
+	// SetUpButtonBar is per-menu opt-in - a dozen menus call it, GameMenuBase inits the
+	// bar slot (+0x90) null and every consumer guards it - so nopping the call is the
+	// standard "menu without a button bar" configuration. [GHIDRA, byte-verified]
+	inline constexpr std::uintptr_t kScopeMenuButtonBarCallSite = 0xbc7d1a;
+
 	// ImageSpaceManager::Copy(uint32 srcRT, uint32 dstRT) — self-contained fullscreen
 	// RT-to-RT copy (fetches its own singleton; binds dst, samples src, restores state).
 	// Vanilla precedent: Main::Swap calls Copy(0, 0x44) for screenshots. [LIVE-exercised]

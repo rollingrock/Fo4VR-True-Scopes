@@ -82,6 +82,10 @@ retryAfterFault = true
 # world + scope at the same time.
 suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks are recreated in-lens
 
+# Hide the vanilla floating "GRAB Hold Breath" pill next to the scope (the
+# ScopeMenu button-hint bar). Load-time patch: restart to change.
+hideHoldBreathHint = true
+
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
 # Eye-box / exit pupil: the picture clips and dims as your head drifts off the tube
 # axis, from the real head-to-scope pose. The signature "real scope" feel.

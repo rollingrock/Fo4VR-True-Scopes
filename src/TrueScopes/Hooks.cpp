@@ -803,6 +803,17 @@ namespace TrueScopes::Hooks
 				logger::info("scope blackout imod suppressed"sv);
 			}
 		}
+		if (*Settings::hideHoldBreathHint) {
+			// v0.3.1 - the "GRAB Hold Breath" pill is the ScopeMenu movie's
+			// ButtonHintBar; skipping SetUpButtonBar in the ctor is the standard
+			// no-bar menu configuration (see Addr::kScopeMenuButtonBarCallSite).
+			static constexpr std::uint8_t kBarCallOrig[] = { 0xE8, 0x21, 0xC3, 0xF8, 0xFF };
+			REL::Relocation<std::uintptr_t> siteD{ REL::Offset(Addr::kScopeMenuButtonBarCallSite) };
+			if (VerifyBytes(siteD, { kBarCallOrig, 5 }, "scope button-hint bar site"sv)) {
+				REL::safe_write(siteD.address(), kNopPatch, sizeof(kNopPatch));
+				logger::info("hold-breath button hint suppressed"sv);
+			}
+		}
 		if (*Settings::disableApproachFade) {
 			REL::Relocation<std::uintptr_t> siteC{ REL::Offset(Addr::kScopeApproachFadeSite) };
 			if (VerifyBytes(siteC, { kFadeSiteOrig, 5 }, "approach fade site"sv)) {
