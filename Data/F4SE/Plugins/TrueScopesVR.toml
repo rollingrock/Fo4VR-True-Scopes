@@ -83,7 +83,7 @@ retryAfterFault = true
 suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks are recreated in-lens
 
 # Hide the vanilla floating "GRAB Hold Breath" pill next to the scope (the
-# ScopeMenu button-hint bar). Load-time patch: restart to change.
+# ScopeMenu button-hint bar + the movie element). Restart to fully revert.
 hideHoldBreathHint = true
 
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them

@@ -12,6 +12,44 @@ namespace TrueScopes::Hooks
 {
 	namespace
 	{
+		// v0.3.2 - hide the ScopeMenu movie's authored button-hint element (the
+		// "GRAB Hold Breath" pill). v0.3.1 nopped the ctor's SetUpButtonBar, which
+		// removed the native wrapper (green HUD filter) but the element is AUTHORED
+		// INTO world_ScopeMenu.swf and self-renders unstyled (field: pill turned
+		// white/grey). _visible=false at the movie level wins regardless of who
+		// populates it. Armed on every scope-active edge; retried for a window
+		// because the menu opens a few frames after the gate.
+		std::uint32_t g_hintHideTries = 0;
+		bool          g_hintHideLogged = false;
+
+		void TryHideHoldBreathHint()
+		{
+			if (!g_hintHideTries || !*Settings::hideHoldBreathHint) {
+				return;
+			}
+			--g_hintHideTries;
+			const auto ui = RE::UI::GetSingleton();
+			if (!ui) {
+				return;
+			}
+			const auto menu = ui->GetMenu("ScopeMenu");
+			if (!menu || !menu->uiMovie) {
+				return;
+			}
+			const RE::Scaleform::GFx::Value off{ false };
+			bool ok = menu->uiMovie->SetVariable("_root.ScopeMenuInstance.ButtonHintInstance._visible", off);
+			if (!ok) {
+				ok = menu->uiMovie->SetVariable("ButtonHintInstance._visible", off);
+			}
+			if (ok) {
+				g_hintHideTries = 0;
+				if (!g_hintHideLogged) {
+					g_hintHideLogged = true;
+					logger::info("hold-breath hint element hidden in the ScopeMenu movie"sv);
+				}
+			}
+		}
+
 		bool g_installed = false;
 		bool g_verdictHookInstalled = false;  // v0.2.116: pose gate owns the verdict feed
 
@@ -67,6 +105,7 @@ namespace TrueScopes::Hooks
 						// changed since we last looked. Ordered after load() so the probe
 						// resolves against the freshly parsed [Scopes] overrides.
 						ScopeIdent::Request();
+						g_hintHideTries = 240;  // v0.3.2: re-hide the hint on every menu (re)open
 						if (*Settings::retryAfterFault) {
 							// v0.3 hardening: cap retries per session - a DETERMINISTIC fault
 							// would otherwise re-fault inside the engine on every scope-in
@@ -82,6 +121,7 @@ namespace TrueScopes::Hooks
 				} else if (g_gateRaw.exchange(false)) {
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
 				}
+				TryHideHoldBreathHint();
 				// deliberately NOT writing renderer+3
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
