@@ -8,6 +8,7 @@ namespace TrueScopes::VerdictInput
 {
 	namespace
 	{
+		std::atomic_bool g_requested{ false };
 		// ---- IVRSystem_017 ABI (openvr 1.0.10; the version string inside FO4VR's
 		// shipped openvr_api.dll is exactly "IVRSystem_017") -----------------------
 		//
@@ -97,7 +98,7 @@ namespace TrueScopes::VerdictInput
 
 	void Poll() noexcept
 	{
-		if (!*Settings::verdictInputEnabled) {
+		if (!*Settings::verdictInputEnabled && !g_requested.load(std::memory_order_relaxed)) {
 			return;
 		}
 		ResolveOnce();
@@ -148,6 +149,13 @@ namespace TrueScopes::VerdictInput
 		e.verdict = static_cast<Verdict>(g_lastVerdict.load());
 		e.tickMs = g_lastTick.load();
 		return e;
+	}
+
+	void RequestStart() noexcept
+	{
+		if (!g_requested.exchange(true, std::memory_order_relaxed)) {
+			logger::info("VerdictInput: armed by tool request"sv);
+		}
 	}
 
 	bool Available() noexcept

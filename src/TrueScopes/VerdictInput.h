@@ -41,5 +41,9 @@ namespace TrueScopes::VerdictInput
 	[[nodiscard]] Event Latest() noexcept;
 
 	// Diagnostics: did the IVRSystem_017 lookup succeed?
+	// Arm the poller at runtime (first 'verdict' tool call) even when
+	// verdictInputEnabled is false - the drivers need chords without a TOML edit.
+	void RequestStart() noexcept;
+
 	[[nodiscard]] bool Available() noexcept;
 }

@@ -26,15 +26,11 @@
 
 namespace DevBench
 {
-	// Start the listener thread. No-op (returns false) when devbenchEnabled is
-	// off. Safe to call once, from F4SEPlugin_Load.
-	bool Start();
-
-	// Ask the listener to stop and join it. Safe to call if Start() failed.
-	void Stop();
-
-	// Port actually bound (0 = not listening).
-	std::uint16_t Port();
+	// One-time init (uptime baseline + the settings post-load hook). The HTTP
+	// listener was retired in v0.2.138: every route is now served exclusively
+	// through the 'scope' tool registered on the devbench host (:8931) via
+	// DevBenchClient. Safe to call once, from F4SEPlugin_Load.
+	void Init();
 
 	// Run one request and return its JSON body, WITHOUT going through HTTP.
 	//

@@ -284,18 +284,7 @@ diagPauseTint = false
 # fade-to-black over the lens (the black bursts). 0 = vanilla behavior.
 scopeOffHoldMs = 1500
 
-# --- DevBench (dev tooling; NOT a gameplay feature) ---------------------------
-# Localhost query server so an agent (or a script, or curl) can read live state,
-# flip any setting above, and tail the log WITHOUT a rebuild + relaunch + headset
-# cycle. Browse it with:  curl http://127.0.0.1:8930/
-#
-# Loopback-only, no auth; /read can read arbitrary process memory. That is fine
-# here: this is the research repo and it never ships. The production mod will be
-# a brand-new repo rebuilt with only shipping code.
-devbenchEnabled = true
 
-# First port tried; the server walks up to +15 if busy and logs the bound port.
-devbenchPort = 8930
 
 # v0.2.72 — THE PERF FIX (VR-confirmed: our render 27.3 ms -> 13.6 ms, passes
 # ~14,400 -> ~700 at Diamond City). Cull the scope render to its own frustum.

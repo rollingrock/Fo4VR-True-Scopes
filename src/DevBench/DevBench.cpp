@@ -1,6 +1,5 @@
 #include "DevBench/DevBench.h"
 
-#include <WinSock2.h>
 #include <WS2tcpip.h>
 
 #include <atomic>
@@ -17,16 +16,11 @@
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 
-#pragma comment(lib, "Ws2_32.lib")
 
 namespace DevBench
 {
 	namespace
 	{
-		std::atomic_bool   g_running{ false };
-		std::atomic<SOCKET> g_listen{ INVALID_SOCKET };
-		std::thread        g_thread;
-		std::uint16_t      g_port = 0;
 		std::uint64_t      g_startTick = 0;
 		std::atomic<std::uint64_t> g_requests{ 0 };
 
@@ -91,21 +85,6 @@ namespace DevBench
 			}
 		}
 
-		// v0.2.72: the write counterpart, for /poke. Read-only diagnostics have
-		// repeatedly forced a rebuild + relaunch + walk-back-to-the-bench cycle just
-		// to flip one engine byte and see what happens — the 2026-08-09 culling hunt
-		// stalled on exactly that. One guarded write turns those into live A/Bs.
-		// Deliberately unrestricted as to target: this is the research repo's dev
-		// bench on a loopback socket and it never ships (see STATUS §3B).
-		bool SafeWriteBytes(void* a_dst, const void* a_src, std::size_t a_len) noexcept
-		{
-			__try {
-				std::memcpy(a_dst, a_src, a_len);
-				return true;
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				return false;
-			}
-		}
 
 		// v0.2.66: the module's true extent, so a heap pointer that merely happens to
 		// sit above the image base is not reported with a meaningless RVA. Live test
@@ -447,66 +426,7 @@ namespace DevBench
 			}
 		};
 
-		std::string UrlDecode(std::string_view a_in)
-		{
-			std::string out;
-			out.reserve(a_in.size());
-			for (std::size_t i = 0; i < a_in.size(); ++i) {
-				if (a_in[i] == '%' && i + 2 < a_in.size()) {
-					const auto hex = [](char c) -> int {
-						if (c >= '0' && c <= '9') return c - '0';
-						if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-						if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-						return -1;
-					};
-					const int hi = hex(a_in[i + 1]);
-					const int lo = hex(a_in[i + 2]);
-					if (hi >= 0 && lo >= 0) {
-						out += static_cast<char>((hi << 4) | lo);
-						i += 2;
-						continue;
-					}
-				}
-				out += (a_in[i] == '+') ? ' ' : a_in[i];
-			}
-			return out;
-		}
 
-		bool ParseRequest(std::string_view a_raw, Request& a_out)
-		{
-			const auto eol = a_raw.find("\r\n");
-			if (eol == std::string_view::npos) return false;
-			const auto line = a_raw.substr(0, eol);
-
-			const auto sp1 = line.find(' ');
-			if (sp1 == std::string_view::npos) return false;
-			const auto sp2 = line.find(' ', sp1 + 1);
-			if (sp2 == std::string_view::npos) return false;
-
-			a_out.method = std::string{ line.substr(0, sp1) };
-			auto target = line.substr(sp1 + 1, sp2 - sp1 - 1);
-
-			const auto q = target.find('?');
-			if (q == std::string_view::npos) {
-				a_out.path = std::string{ target };
-			} else {
-				a_out.path = std::string{ target.substr(0, q) };
-				auto qs = target.substr(q + 1);
-				while (!qs.empty()) {
-					const auto amp = qs.find('&');
-					const auto pair = (amp == std::string_view::npos) ? qs : qs.substr(0, amp);
-					const auto eq = pair.find('=');
-					if (eq != std::string_view::npos) {
-						a_out.query.emplace_back(UrlDecode(pair.substr(0, eq)), UrlDecode(pair.substr(eq + 1)));
-					} else if (!pair.empty()) {
-						a_out.query.emplace_back(UrlDecode(pair), std::string{});
-					}
-					if (amp == std::string_view::npos) break;
-					qs = qs.substr(amp + 1);
-				}
-			}
-			return true;
-		}
 
 		// ------------------------------------------------------------- handlers
 
@@ -525,8 +445,6 @@ namespace DevBench
 				"{\"path\":\"/config/set\",\"desc\":\"?key=NAME&value=V - set one setting live, no scope-cycle needed\"},"
 				"{\"path\":\"/config/reload\",\"desc\":\"re-read TrueScopesVR.toml now\"},"
 				"{\"path\":\"/resolve\",\"desc\":\"?addr=EXPR - resolve an address expression to a VA + RVA\"},"
-				"{\"path\":\"/read\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64|ptr|bytes|cstr&count=N\"},"
-				"{\"path\":\"/poke\",\"desc\":\"?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V - write one scalar, SEH-guarded; echoes before/after so you have an undo\"},"
 				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"},"
 				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the ATTACHED OMOD model paths, the aperture in use and whether it resolved by path or by node name\"},"
 				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"}"
@@ -539,7 +457,6 @@ namespace DevBench
 			out += ",\"plugin\":\"TrueScopesVR\"";
 			out += ",\"version\":\"" + std::string{ Version::NAME } + "\"";
 			out += ",\"pid\":" + std::to_string(::GetCurrentProcessId());
-			out += ",\"port\":" + std::to_string(g_port);
 			out += ",\"uptimeMs\":" + std::to_string(::GetTickCount64() - g_startTick);
 			out += ",\"requests\":" + std::to_string(g_requests.load());
 			out += "}";
@@ -877,157 +794,6 @@ namespace DevBench
 			out += ",\"va\":" + Quote(Hex(va));
 			out += ",\"base\":" + Quote(Hex(base));
 			if (va >= base) out += ",\"rva\":" + Quote(Hex(va - base));
-			out += "}";
-			return out;
-		}
-
-		std::string HandleRead(const Request& a_req)
-		{
-			const auto* expr = a_req.Get("addr");
-			if (!expr) return Err("need ?addr=EXPR");
-
-			std::uint64_t va = 0;
-			std::string   err;
-			if (!ResolveAddress(*expr, va, err)) return Err(err);
-
-			const std::string type = a_req.GetOr("type", "u32");
-			std::int64_t      count = 1;
-			{
-				const std::string c = a_req.GetOr("count", "1");
-				std::from_chars(c.data(), c.data() + c.size(), count);
-			}
-			// A bench read that can allocate hundreds of MB is a footgun, not a
-			// feature. Cap and report the cap rather than silently truncating.
-			constexpr std::int64_t kMaxCount = 4096;
-			const bool             capped = count > kMaxCount;
-			if (capped) count = kMaxCount;
-			if (count < 1) count = 1;
-
-			std::size_t stride = 4;
-			if (type == "u8" || type == "bytes" || type == "cstr") stride = 1;
-			else if (type == "u16") stride = 2;
-			else if (type == "u32" || type == "i32" || type == "f32") stride = 4;
-			else if (type == "u64" || type == "i64" || type == "f64" || type == "ptr") stride = 8;
-			else return Err("unknown type '" + type + "'");
-
-			if (type == "cstr") {
-				char        buf[512]{};
-				std::size_t n = static_cast<std::size_t>(count);
-				if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
-				if (!SafeReadBytes(reinterpret_cast<const void*>(va), buf, n)) {
-					return Err("read faulted at " + Hex(va));
-				}
-				buf[n] = '\0';
-				return "{\"ok\":true,\"addr\":" + Quote(Hex(va)) + ",\"type\":\"cstr\",\"value\":" + Quote(buf) + "}";
-			}
-
-			std::vector<std::uint8_t> raw(static_cast<std::size_t>(count) * stride);
-			if (!SafeReadBytes(reinterpret_cast<const void*>(va), raw.data(), raw.size())) {
-				// Report the faulting address, not just "failed" --- a probe whose
-				// only outcomes are "the answer" and "unreadable" cannot tell a
-				// wrong pointer from an absent one.
-				return Err("read of " + std::to_string(raw.size()) + " bytes faulted at " + Hex(va));
-			}
-
-			std::string out = "{\"ok\":true,\"addr\":" + Quote(Hex(va));
-			out += ",\"type\":" + Quote(type) + ",\"count\":" + std::to_string(count);
-			if (capped) out += ",\"capped\":true";
-			out += ",\"values\":[";
-			for (std::int64_t k = 0; k < count; ++k) {
-				if (k) out += ",";
-				const std::uint8_t* p = raw.data() + static_cast<std::size_t>(k) * stride;
-				char                buf[64];
-				if (type == "u8")        std::snprintf(buf, sizeof(buf), "%u", *p);
-				else if (type == "u16")  std::snprintf(buf, sizeof(buf), "%u", *reinterpret_cast<const std::uint16_t*>(p));
-				else if (type == "u32")  std::snprintf(buf, sizeof(buf), "%u", *reinterpret_cast<const std::uint32_t*>(p));
-				else if (type == "i32")  std::snprintf(buf, sizeof(buf), "%d", *reinterpret_cast<const std::int32_t*>(p));
-				else if (type == "u64")  std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(*reinterpret_cast<const std::uint64_t*>(p)));
-				else if (type == "i64")  std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(*reinterpret_cast<const std::int64_t*>(p)));
-				else if (type == "ptr")  std::snprintf(buf, sizeof(buf), "\"0x%llx\"", static_cast<unsigned long long>(*reinterpret_cast<const std::uint64_t*>(p)));
-				else if (type == "bytes") std::snprintf(buf, sizeof(buf), "%u", *p);
-				else if (type == "f32") {
-					const float f = *reinterpret_cast<const float*>(p);
-					// JSON has no NaN/Inf literal, and NaN is exactly what this
-					// bench exists to find --- emit it as a string, never as a
-					// silently-dropped null.
-					if (std::isfinite(f)) std::snprintf(buf, sizeof(buf), "%.9g", f);
-					else                  std::snprintf(buf, sizeof(buf), "\"%s\"", std::isnan(f) ? "NaN" : (f > 0 ? "Inf" : "-Inf"));
-				} else {
-					const double d = *reinterpret_cast<const double*>(p);
-					if (std::isfinite(d)) std::snprintf(buf, sizeof(buf), "%.17g", d);
-					else                  std::snprintf(buf, sizeof(buf), "\"%s\"", std::isnan(d) ? "NaN" : (d > 0 ? "Inf" : "-Inf"));
-				}
-				out += buf;
-			}
-			out += "]}";
-			return out;
-		}
-
-		// v0.2.72 — /poke?addr=EXPR&type=u8|u16|u32|u64|i32|i64|f32|f64&value=V
-		//
-		// Writes ONE scalar to process memory, SEH-guarded, and echoes the previous
-		// value so the caller has an undo without a second round-trip. Reports the
-		// before/after pair because "the write succeeded" and "the value changed" are
-		// different claims — a write to a page the engine rewrites every frame looks
-		// identical to a no-op unless you print both.
-		std::string HandlePoke(const Request& a_req)
-		{
-			const auto* expr = a_req.Get("addr");
-			if (!expr) return Err("need ?addr=EXPR");
-			const auto* valStr = a_req.Get("value");
-			if (!valStr) return Err("need ?value=V");
-
-			std::uint64_t va = 0;
-			std::string   err;
-			if (!ResolveAddress(*expr, va, err)) return Err(err);
-
-			const std::string type = a_req.GetOr("type", "u8");
-
-			std::size_t   stride = 1;
-			std::uint8_t  bytes[8]{};
-			if (type == "u8" || type == "u16" || type == "u32" || type == "u64" ||
-				type == "i32" || type == "i64") {
-				const auto v = std::strtoull(valStr->c_str(), nullptr, 0);
-				if (type == "u8")       { stride = 1; bytes[0] = static_cast<std::uint8_t>(v); }
-				else if (type == "u16") { stride = 2; const auto x = static_cast<std::uint16_t>(v); std::memcpy(bytes, &x, 2); }
-				else if (type == "u32" || type == "i32") { stride = 4; const auto x = static_cast<std::uint32_t>(v); std::memcpy(bytes, &x, 4); }
-				else                    { stride = 8; std::memcpy(bytes, &v, 8); }
-			} else if (type == "f32") {
-				stride = 4;
-				const auto f = std::strtof(valStr->c_str(), nullptr);
-				std::memcpy(bytes, &f, 4);
-			} else if (type == "f64") {
-				stride = 8;
-				const auto d = std::strtod(valStr->c_str(), nullptr);
-				std::memcpy(bytes, &d, 8);
-			} else {
-				return Err("unknown type '" + type + "' (u8/u16/u32/u64/i32/i64/f32/f64)");
-			}
-
-			std::uint8_t before[8]{};
-			if (!SafeReadBytes(reinterpret_cast<const void*>(va), before, stride)) {
-				return Err("read-back of " + Hex(va) + " faulted; refusing to write");
-			}
-			if (!SafeWriteBytes(reinterpret_cast<void*>(va), bytes, stride)) {
-				return Err("write to " + Hex(va) + " faulted (page not writable?)");
-			}
-			std::uint8_t after[8]{};
-			SafeReadBytes(reinterpret_cast<const void*>(va), after, stride);
-
-			auto hexOf = [](const std::uint8_t* p, std::size_t n) {
-				std::string s;
-				for (std::size_t i = n; i-- > 0;) {
-					char b[4];
-					std::snprintf(b, sizeof(b), "%02X", p[i]);
-					s += b;
-				}
-				return s;
-			};
-			std::string out = "{\"ok\":true,\"addr\":" + Quote(Hex(va)) + ",\"type\":" + Quote(type);
-			out += ",\"before\":" + Quote(hexOf(before, stride));
-			out += ",\"after\":" + Quote(hexOf(after, stride));
-			out += ",\"stuck\":";
-			out += (std::memcmp(after, bytes, stride) == 0 ? "false" : "true");
 			out += "}";
 			return out;
 		}
@@ -1407,6 +1173,7 @@ namespace DevBench
 		// whether a newer verdict has arrived since.
 		std::string HandleVerdict(const Request& a_req)
 		{
+			TrueScopes::VerdictInput::RequestStart();
 			const auto ev = TrueScopes::VerdictInput::Latest();
 			std::uint64_t since = 0;
 			{
@@ -1519,148 +1286,20 @@ namespace DevBench
 			if (a_req.path == "/config/set")                    return HandleConfigSet(a_req);
 			if (a_req.path == "/config/reload")                 return HandleConfigReload();
 			if (a_req.path == "/resolve")                       return HandleResolve(a_req);
-			if (a_req.path == "/read")                          return HandleRead(a_req);
-			if (a_req.path == "/poke")                          return HandlePoke(a_req);
 			if (a_req.path == "/log")                           return HandleLog(a_req);
 			if (a_req.path == "/scope")                         return HandleScope(a_req);
 			if (a_req.path == "/omods")                         return HandleOmods(a_req);
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}
 
-		// ----------------------------------------------------------- the server
-
-		void Serve(SOCKET a_client)
-		{
-			std::string raw;
-			char        buf[4096];
-			// One request per connection; the header block is all we need since
-			// every input arrives in the query string.
-			for (;;) {
-				const int n = ::recv(a_client, buf, sizeof(buf), 0);
-				if (n <= 0) break;
-				raw.append(buf, static_cast<std::size_t>(n));
-				if (raw.find("\r\n\r\n") != std::string::npos) break;
-				if (raw.size() > 64 * 1024) break;
-			}
-
-			std::string body;
-			Request     req;
-			if (raw.empty() || !ParseRequest(raw, req)) {
-				body = Err("malformed request");
-			} else {
-				g_requests.fetch_add(1);
-				try {
-					body = Route(req);
-				} catch (const std::exception& e) {
-					body = Err(std::string{ "handler threw: " } + e.what());
-				} catch (...) {
-					body = Err("handler threw an unknown exception");
-				}
-			}
-
-			std::string resp = "HTTP/1.1 200 OK\r\n";
-			resp += "Content-Type: application/json\r\n";
-			resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-			resp += "Connection: close\r\n\r\n";
-			resp += body;
-
-			std::size_t sent = 0;
-			while (sent < resp.size()) {
-				const int n = ::send(a_client, resp.data() + sent, static_cast<int>(resp.size() - sent), 0);
-				if (n <= 0) break;
-				sent += static_cast<std::size_t>(n);
-			}
-			::shutdown(a_client, SD_BOTH);
-			::closesocket(a_client);
-		}
-
-		void AcceptLoop()
-		{
-			while (g_running.load()) {
-				const SOCKET listen = g_listen.load();
-				if (listen == INVALID_SOCKET) break;
-
-				const SOCKET client = ::accept(listen, nullptr, nullptr);
-				if (client == INVALID_SOCKET) {
-					if (!g_running.load()) break;
-					std::this_thread::sleep_for(std::chrono::milliseconds(20));
-					continue;
-				}
-				// Sequential by design: an agent driver issues one call at a
-				// time, and serialising keeps the reads coherent with each other.
-				Serve(client);
-			}
-		}
 	}
 
-	bool Start()
+	void Init()
 	{
-		if (!*Settings::devbenchEnabled) {
-			logger::info("devbench: disabled by settings"sv);
-			return false;
-		}
-
-		WSADATA wsa{};
-		if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-			logger::error("devbench: WSAStartup failed"sv);
-			return false;
-		}
-
-		const SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (s == INVALID_SOCKET) {
-			logger::error("devbench: socket() failed"sv);
-			::WSACleanup();
-			return false;
-		}
-
-		// Loopback only, always. Never make this configurable: the bench reads
-		// arbitrary process memory. (The research repo needs no release gate --
-		// see DevBench.h -- but it still has no business off this machine.)
-		sockaddr_in addr{};
-		addr.sin_family = AF_INET;
-		::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-		const auto wanted = static_cast<std::uint16_t>(
-			std::clamp<std::int64_t>(*Settings::devbenchPort, 1024, 65535));
-
-		bool bound = false;
-		for (std::uint16_t p = wanted; p < wanted + 16 && p != 0; ++p) {
-			addr.sin_port = ::htons(p);
-			if (::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-				g_port = p;
-				bound = true;
-				break;
-			}
-		}
-		if (!bound || ::listen(s, 8) != 0) {
-			logger::error(FMT_STRING("devbench: could not bind 127.0.0.1:{}..{}"), wanted, wanted + 15);
-			::closesocket(s);
-			::WSACleanup();
-			return false;
-		}
-
-		g_listen.store(s);
-		g_running.store(true);
 		g_startTick = ::GetTickCount64();
 		Settings::postLoadHook = &ReapplyOverrides;
-		g_thread = std::thread(AcceptLoop);
-
-		logger::info(FMT_STRING("devbench: listening on http://127.0.0.1:{}/ (GET / for the endpoint list)"), g_port);
-		return true;
+		logger::info("devbench routes ready - served via the 'scope' tool registered on the devbench host (the :8930 HTTP listener was retired in v0.2.138)"sv);
 	}
-
-	void Stop()
-	{
-		Settings::postLoadHook = nullptr;
-		if (!g_running.exchange(false)) return;
-		const SOCKET s = g_listen.exchange(INVALID_SOCKET);
-		if (s != INVALID_SOCKET) ::closesocket(s);
-		if (g_thread.joinable()) g_thread.join();
-		::WSACleanup();
-		g_port = 0;
-	}
-
-	std::uint16_t Port() { return g_port; }
 
 	std::string Invoke(std::string_view a_path, const std::vector<std::pair<std::string, std::string>>& a_params)
 	{
@@ -1672,6 +1311,7 @@ namespace DevBench
 		req.method = "GET";
 		req.path.assign(a_path);
 		req.query = a_params;
+		g_requests.fetch_add(1);
 		try {
 			return Route(req);
 		} catch (const std::exception& e) {

@@ -553,15 +553,6 @@ namespace Settings
 	// settings above, and tail the log without a rebuild/relaunch cycle. See
 	// src/DevBench/DevBench.h.
 	//
-	// Opens a loopback-only listening socket that can read arbitrary process
-	// memory through /read. Correct trade for a local dev bench, and no release
-	// gate is needed: this repo is the RESEARCH repo and never ships. The
-	// production mod will be a brand-new repo rebuilt with only shipping code,
-	// so DevBench is simply not copied across.
-	MAKE_SETTING(bSetting, "TrueScopesVR", devbenchEnabled, true);
-	// First port tried; the server walks up to +15 if it is busy and logs the
-	// one it actually bound. 8930 keeps clear of alandtse/devbench's 8920/8921.
-	MAKE_SETTING(iSetting, "TrueScopesVR", devbenchPort, std::int64_t(8930));
 
 	// v0.2.111: back ON, with the name it earned. The per-zoom imods
 	// (zd_ScopeNightVision 0x94636, zd_ScopeTargetingRecon 0x2041b6 - standard
@@ -844,8 +835,6 @@ namespace Settings
 			}
 		}
 		LOAD(disableApproachFade);
-		LOAD(devbenchEnabled);
-		LOAD(devbenchPort);
 
 #undef LOAD
 

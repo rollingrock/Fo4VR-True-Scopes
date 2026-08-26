@@ -103,7 +103,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	}
 
 	// Dev tooling. Failure here is never fatal — the mod works without it.
-	DevBench::Start();
+	DevBench::Init();
 
 	logger::info("True Scopes VR loaded"sv);
 	return true;
