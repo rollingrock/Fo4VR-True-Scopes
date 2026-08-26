@@ -152,15 +152,16 @@ sheenDarkBoost = 3.0
 # the blacked-out eye box. 1 = reticle clips with the picture (old behavior),
 # 0 = always visible; the picture always clips fully either way.
 reticleEyeBoxFollow = 0.35
-# The eye-box black bottoms out at this flat scatter level (0 = true black,
-# which makes the reticle invisible regardless of the follow knob - field
-# lesson 2026-08-25; "between 0.05 and 0.1" judged same day).
-eyeBoxResidual = 0.07
+# The eye-box black bottoms out at this flat scatter level. NIGHT-TUNED
+# 2026-08-26: 0.0 accepted in the headset (any floor glowed at night) and the
+# daytime reticle-in-black spot-check PASSED at 0 - which contradicts the
+# 2026-08-25 "0 = reticle invisible" lesson; both results are field-real, the
+# newer targeted check ships. Re-check once in the v0.3 regression pass.
+eyeBoxResidual = 0.0
 # The scatter adapts to scene brightness (avg picture luminance x this,
-# saturated): full glow in daylight, fades toward black at night so the
-# eye-box never reads as a lit screen in the dark. 0 = constant glow.
-# NIGHT TEST PENDING.
-eyeBoxResidualAdapt = 4.0
+# saturated). INERT at residual 0 (it scales the floor); 20.0 is the value
+# accepted in the same 2026-08-26 ladder, kept faithful to the session.
+eyeBoxResidualAdapt = 20.0
 
 # Scene parity (v0.2.132): draw placed/geometry decals (grime, posters -
 # accumulator group 5) AFTER the opaque walls in our resolve, instead of the
