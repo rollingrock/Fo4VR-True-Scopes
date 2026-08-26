@@ -324,8 +324,33 @@ namespace TrueScopes::Hooks
 						const float dx = x - a_scope[0], dy = y - a_scope[1], dz = z - a_scope[2];
 						d = std::sqrt(dx * dx + dy * dy + dz * dz);
 					}
-					logger::info(FMT_STRING("pillcensus: '{}' node=0x{:x} wpos=({:.1f},{:.1f},{:.1f}) wscale={:.4f} d2scope={:.1f}"),
-						nb, a_node, x, y, z, ws, d);
+					// v0.3.8: parent chain per hit - the v0.3.6/7 rounds were burned
+					// on GUESSED structure (the hint-bar root was detached while the
+					// visible glass pair hung elsewhere); ancestry is now explicit
+					char pchain[168];
+					int  pl = 0;
+					std::uintptr_t pp = a_node;
+					for (int h = 0; h < 3; ++h) {
+						pp = PillGuessParent(pp);
+						if (!pp) {
+							break;
+						}
+						char pb[49];
+						pb[0] = '\0';
+						const auto pe = *reinterpret_cast<std::uintptr_t*>(pp + 0x10);
+						if (pe >= 0x10000) {
+							PillCopyName(reinterpret_cast<const char*>(pe + 0x18), pb);
+						}
+						const int n = std::snprintf(pchain + pl, sizeof(pchain) - pl, " < '%s'", pb[0] ? pb : "?");
+						if (n > 0 && pl + n < static_cast<int>(sizeof(pchain))) {
+							pl += n;
+						} else {
+							break;
+						}
+					}
+					pchain[pl] = '\0';
+					logger::info(FMT_STRING("pillcensus: '{}' node=0x{:x} wpos=({:.1f},{:.1f},{:.1f}) wscale={:.4f} d2scope={:.1f}{}"),
+						nb, a_node, x, y, z, ws, d, pchain);
 				}
 			}
 			if (!ScopeIdent::IsNiNode(a_node)) {
@@ -397,8 +422,10 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// v0.3.7 - is this node the projected hint bar? Bounded name read (the
-		// %.48s lesson): an unterminated engine name must never fault the test.
+		// v0.3.7/8 - is this node the kill target? Bounded name read (the %.48s
+		// lesson): an unterminated engine name must never fault the test. The
+		// target name is the pillKillName setting (prefix match) so the hunt can
+		// be retargeted from the TOML + a scope cycle, no rebuild.
 		bool PillNameIsHintBar(std::uintptr_t a_node)
 		{
 			if (!a_node) {
@@ -410,7 +437,9 @@ namespace TrueScopes::Hooks
 			}
 			char nb[49];
 			PillCopyName(reinterpret_cast<const char*>(entry + 0x18), nb);
-			return std::strncmp(nb, "world_projectedHintBar", 22) == 0;
+			const auto& tgt = *Settings::pillKillName;
+			return !tgt.empty() && tgt.size() <= 48 &&
+			       std::strncmp(nb, tgt.c_str(), tgt.size()) == 0;
 		}
 
 		std::uintptr_t PillFindHintBar(std::uintptr_t a_node, int a_depth, std::uint32_t& a_visited)
@@ -508,8 +537,34 @@ namespace TrueScopes::Hooks
 									PillCopyName(reinterpret_cast<const char*>(pe + 0x18), pn);
 								}
 							}
-							logger::info(FMT_STRING("hold-breath pill node found: 'world_projectedHintBar' parent='{}' slot {} (visited {})"),
-								pn[0] ? pn : "(none)", barSlot, visited);
+							logger::info(FMT_STRING("hold-breath pill node found: '{}' parent='{}' slot {} (visited {})"),
+								(*Settings::pillKillName).c_str(), pn[0] ? pn : "(none)", barSlot, visited);
+							// v0.3.8 - map the parent's WHOLE child rack one-shot:
+							// the kill keeps missing because structure was guessed;
+							// every sibling's name/pos/scale makes it explicit
+							if (par) {
+								const auto pk2 = *reinterpret_cast<std::uintptr_t*>(par + 0x168);
+								const auto pc2 = *reinterpret_cast<std::uint16_t*>(par + 0x172);
+								for (std::uint16_t i = 0; pk2 && i < pc2 && i < 24; ++i) {
+									const auto sib = *reinterpret_cast<std::uintptr_t*>(pk2 + 8ull * i);
+									if (!sib) {
+										logger::info(FMT_STRING("pillmap: [{}] (null hole)"), i);
+										continue;
+									}
+									char sb[49];
+									sb[0] = '\0';
+									const auto se = *reinterpret_cast<std::uintptr_t*>(sib + 0x10);
+									if (se >= 0x10000) {
+										PillCopyName(reinterpret_cast<const char*>(se + 0x18), sb);
+									}
+									logger::info(FMT_STRING("pillmap: [{}] '{}' node=0x{:x} wpos=({:.1f},{:.1f},{:.1f}) wscale={:.4f}"),
+										i, sb[0] ? sb : "(unnamed)", sib,
+										*reinterpret_cast<float*>(sib + 0xa0),
+										*reinterpret_cast<float*>(sib + 0xa4),
+										*reinterpret_cast<float*>(sib + 0xa8),
+										*reinterpret_cast<float*>(sib + 0xac));
+								}
+							}
 						}
 					} else if (a_hidden && !g_pillMissLogged && ++g_pillMissScans >= 120) {
 						// a persistent miss must be VISIBLE: v0.3.3's only field
@@ -540,15 +595,33 @@ namespace TrueScopes::Hooks
 							g_pillHoled = false;
 							logger::warn("pill rack slot changed while holed - restore abandoned"sv);
 						}
-					} else if (wantHole && !g_pillHoled) {
-						if (liveKids == g_pillRackKids &&
-							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) == g_pillNode) {
-							*reinterpret_cast<std::uintptr_t*>(g_pillRackKids + 8ull * g_pillRackSlot) = 0;
-							g_pillHoled = true;
-							static bool s_holeLogged = false;
-							if (!s_holeLogged) {
-								s_holeLogged = true;
-								logger::info(FMT_STRING("pill rack slot {} holed (pillKillMode 2)"), g_pillRackSlot);
+					} else if (wantHole) {
+						// v0.3.8 - PERSISTENT hole: the v0.3.7 single poke did not
+						// kill the pill, consistent with the engine RE-ATTACHING the
+						// bar (projected-UI placement runs per frame). Scan the
+						// parent's rack every eligible frame and null EVERY slot
+						// holding the target, wherever it re-appears; count re-holes
+						// so a per-frame re-attach fight is visible in the log.
+						if (liveKids) {
+							const auto pc = *reinterpret_cast<std::uint16_t*>(g_pillParent + 0x172);
+							static std::uint32_t s_holeCount = 0;
+							for (std::uint16_t i = 0; i < pc && i < 64; ++i) {
+								auto* slotp = reinterpret_cast<std::uintptr_t*>(liveKids + 8ull * i);
+								if (*slotp == g_pillNode) {
+									*slotp = 0;
+									++s_holeCount;
+									if (!g_pillHoled) {
+										g_pillHoled = true;
+										g_pillRackKids = liveKids;
+										g_pillRackSlot = i;
+										logger::info(FMT_STRING("pill rack slot {} holed (pillKillMode 2)"), i);
+									}
+								}
+							}
+							static bool s_refightLogged = false;
+							if (!s_refightLogged && s_holeCount > 1) {
+								s_refightLogged = true;
+								logger::warn(FMT_STRING("engine re-attaches the pill bar (re-holed {} times) - holding the hole per frame"), s_holeCount);
 							}
 						}
 					}

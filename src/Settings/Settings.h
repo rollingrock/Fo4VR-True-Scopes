@@ -523,6 +523,9 @@ namespace Settings
 	// the tree cannot draw. Pointer saved; restored when the slot is still null.
 	// Live-settable (devbench scope tool 'set') - flips apply next eligible frame.
 	MAKE_SETTING(iSetting, "TrueScopesVR", pillKillMode, std::int64_t(1));
+	// v0.3.8 - the node-name PREFIX the pill finder targets. Retarget WITHOUT a
+	// rebuild: edit + scope-cycle (TOML live-reloads on scope-in).
+	MAKE_SETTING(sSetting, "TrueScopesVR", pillKillName, std::string("world_projectedHintBar"));
 	// v0.3.6 DIAGNOSTIC - one-shot scene census at scope-in: climb from the wand
 	// rack to the scene root (parent found EMPIRICALLY - a candidate is the
 	// parent iff its children array contains the node), then walk the whole tree
@@ -811,6 +814,7 @@ namespace Settings
 		LOAD(suppressScopeImods);
 		LOAD(hideHoldBreathHint);
 		LOAD(pillKillMode);
+		LOAD(pillKillName);
 		LOAD(pillCensus);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
 		// v0.3 hardening: name every unrecognized key once, so a typo is a log

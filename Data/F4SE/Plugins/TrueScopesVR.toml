@@ -91,6 +91,7 @@ hideHoldBreathHint = true
 # live-settable). pillCensus = one-shot scene sweep at scope-in logging every HUD-ish node
 # with world position + distance to the scope, to locate the REAL pill.
 pillKillMode = 1
+pillKillName = "world_projectedHintBar"
 pillCensus = true
 
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
