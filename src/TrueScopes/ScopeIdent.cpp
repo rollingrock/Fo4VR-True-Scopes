@@ -1107,6 +1107,19 @@ namespace TrueScopes::ScopeIdent
 
 	static std::atomic<std::uint32_t> g_probeCount{ 0 };
 
+	// v0.3.4 - the internal IsNode test, exported for the pill cull (Hooks.cpp).
+	// Ghidra sweep 2026-08-26 over every *Node* vftable (1,221 checked): EXACTLY
+	// the 20-class NiNode scene family carries NiNode::GetObjectByName at +0x188
+	// (NiNode, BSFadeNode, BSOrderedNode, NiSwitchNode, BSMultiBoundNode,
+	// NiBillboardNode, ShadowSceneNode, ...) and no subclass overrides it - so
+	// this is an EXACT "safe to read the children array" test, not a heuristic.
+	// Caller must hold a non-null pointer that is (or was) a live NiObjectNET;
+	// the reads are unguarded, so call it under SEH like every other scene read.
+	bool IsNiNode(std::uintptr_t a_obj) noexcept
+	{
+		return a_obj != 0 && IsNode(a_obj);
+	}
+
 	void Request()
 	{
 		g_request.store(true);

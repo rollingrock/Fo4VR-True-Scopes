@@ -248,6 +248,14 @@ namespace TrueScopes::ScopeIdent
 		float faceFromCentre = 0.0f;     // |face - bound centre|, for the live check
 	};
 
+	// v0.3.4 - is this object a real NiNode, i.e. safe to read its children
+	// array (+0x168 base, u16 +0x172 slot count, null holes legal)? Tests the
+	// vtable slot +0x188 for NiNode::GetObjectByName itself - the exact dispatch
+	// the engine's own recursive find uses. Verified exact by a 2026-08-26
+	// Ghidra sweep: the whole 20-class NiNode family shares the slot, nothing
+	// overrides it. Reads are unguarded - call under SEH.
+	[[nodiscard]] bool IsNiNode(std::uintptr_t a_obj) noexcept;
+
 	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
 	// runs on the render thread because that is where the 3D is safe to touch.
 	void Request();

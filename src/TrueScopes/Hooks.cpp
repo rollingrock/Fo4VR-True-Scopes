@@ -12,43 +12,11 @@ namespace TrueScopes::Hooks
 {
 	namespace
 	{
-		// v0.3.2 - hide the ScopeMenu movie's authored button-hint element (the
-		// "GRAB Hold Breath" pill). v0.3.1 nopped the ctor's SetUpButtonBar, which
-		// removed the native wrapper (green HUD filter) but the element is AUTHORED
-		// INTO world_ScopeMenu.swf and self-renders unstyled (field: pill turned
-		// white/grey). _visible=false at the movie level wins regardless of who
-		// populates it. Armed on every scope-active edge; retried for a window
-		// because the menu opens a few frames after the gate.
-		std::uint32_t g_hintHideTries = 0;
-		bool          g_hintHideLogged = false;
-
-		void TryHideHoldBreathHint()
-		{
-			if (!g_hintHideTries || !*Settings::hideHoldBreathHint) {
-				return;
-			}
-			--g_hintHideTries;
-			const auto ui = RE::UI::GetSingleton();
-			if (!ui) {
-				return;
-			}
-			const auto menu = ui->GetMenu("ScopeMenu");
-			if (!menu || !menu->uiMovie) {
-				return;
-			}
-			const RE::Scaleform::GFx::Value off{ false };
-			bool ok = menu->uiMovie->SetVariable("_root.ScopeMenuInstance.ButtonHintInstance._visible", off);
-			if (!ok) {
-				ok = menu->uiMovie->SetVariable("ButtonHintInstance._visible", off);
-			}
-			if (ok) {
-				g_hintHideTries = 0;
-				if (!g_hintHideLogged) {
-					g_hintHideLogged = true;
-					logger::info("hold-breath hint element hidden in the ScopeMenu movie"sv);
-				}
-			}
-		}
+		// (v0.3.2's GFx _visible=false on the ScopeMenu movie was DELETED in
+		// v0.3.4: the pill is scene geometry - a HUDGlassFlat quad under
+		// PrimaryUIAttachNode, see SetHoldBreathPillHidden - and the movie path
+		// it sticky-set never carries it. The set "succeeded" and did nothing,
+		// field-proven 2026-08-26.)
 
 		bool g_installed = false;
 		bool g_verdictHookInstalled = false;  // v0.2.116: pose gate owns the verdict feed
@@ -105,7 +73,6 @@ namespace TrueScopes::Hooks
 						// changed since we last looked. Ordered after load() so the probe
 						// resolves against the freshly parsed [Scopes] overrides.
 						ScopeIdent::Request();
-						g_hintHideTries = 240;  // v0.3.2: re-hide the hint on every menu (re)open
 						if (*Settings::retryAfterFault) {
 							// v0.3 hardening: cap retries per session - a DETERMINISTIC fault
 							// would otherwise re-fault inside the engine on every scope-in
@@ -121,7 +88,6 @@ namespace TrueScopes::Hooks
 				} else if (g_gateRaw.exchange(false)) {
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
 				}
-				TryHideHoldBreathHint();
 				// deliberately NOT writing renderer+3
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
@@ -211,16 +177,41 @@ namespace TrueScopes::Hooks
 		// clone is never rebuilt — nothing can restore a zeroed scale. The flag
 		// hide stays as belt-and-suspenders and covers the frames before the next
 		// world-transform propagation.
-		// v0.3.3 - THE HOLD-BREATH PILL, found by live scene walk 2026-08-26: a
-		// HUDGlassFlat:0 text quad (+ HUDShadowFlat:0) under an OrderedRenderingNode
-		// on a point node (named "Point002" in the shipped rig) attached DIRECTLY to
-		// PrimaryUIAttachNode (player+0x700) - a SIBLING of ScopeParent, which is why
-		// neither the ScopeMenu movie work (v0.3.1/2) nor the widget housing hide
-		// ever touched it. Matched structurally (subtree contains HUDGlassFlat:0),
-		// NOT by the generic point name; wrist-HUD (world_primaryWand.nif) and every
-		// other sibling are skipped by name first. Flags-only cull per eligible
-		// frame; cleared when the knob goes off (live A/B like the housing).
+		// v0.3.3/4 - THE HOLD-BREATH PILL, found by live scene walk 2026-08-26: a
+		// HUDGlassFlat:0 text quad (+ HUDShadowFlat:0, both instanced from
+		// Interface/Objects/HUDGlassFlat.nif) under an OrderedRenderingNode on a
+		// point node (named "Point002" in the shipped rig) attached DIRECTLY to
+		// PrimaryUIAttachNode (player+0x700) - a SIBLING of ScopeParent, which is
+		// why neither the ScopeMenu movie work (v0.3.1/2) nor the widget housing
+		// hide ever touched it. Matched structurally (subtree contains
+		// HUDGlassFlat:0), NOT by the generic point name; the wrist HUD and menu
+		// wands instance the same glass mesh, so every known sibling is skipped by
+		// name first. Flags-only cull per eligible frame; cleared when the knob
+		// goes off (live A/B like the housing). Left culled on scope-off by
+		// design: the pill is scope-context UI, invisible unscoped either way.
+		//
+		// v0.3.4 - WHY v0.3.3 NEVER FOUND IT, and the engine ground truth. The
+		// walk read the NiNode children fields off EVERY child; on a BSTriShape
+		// leaf those offsets are garbage, the read faulted, and the function-level
+		// __except silently aborted the WHOLE search - every frame, with no log
+		// (the only field signal was the found-line's ABSENCE). Ground truth from
+		// NiNode::GetObjectByName (0x141c18500) itself:
+		//   - children base +0x168, loop bound u16 +0x172 (slot high-water mark;
+		//     NULL HOLES ARE LEGAL and the engine null-skips them. +0x174 is the
+		//     non-null element count - what v0.3.3 read - which UNDERCOUNTS across
+		//     holes, and this rack is exactly where holes appear: quickLoot and
+		//     favorites attach/detach at runtime);
+		//   - per-child dispatch through vtable slot +0x188, i.e. the engine's
+		//     own recursion gate IS the ScopeIdent::IsNiNode test (exact per the
+		//     2026-08-26 sweep: all 20 NiNode-family classes share the slot,
+		//     nothing overrides it).
+		// So v0.3.4 recurses only into real NiNodes, uses the engine's bound,
+		// SEH-isolates each candidate scan (one bad subtree costs one sibling,
+		// never the search), and LOGS a persistent miss or fault one-shot -
+		// silence is no longer an outcome.
 		std::uintptr_t g_pillNode = 0;
+		std::uint32_t  g_pillMissScans = 0;   // consecutive find-loop misses; reset on find
+		bool           g_pillMissLogged = false;
 
 		bool SubtreeHasHudGlass(std::uintptr_t a_node, int a_depth)
 		{
@@ -232,15 +223,34 @@ namespace TrueScopes::Hooks
 				std::strcmp(reinterpret_cast<const char*>(entry + 0x18), "HUDGlassFlat:0") == 0) {
 				return true;
 			}
+			if (!ScopeIdent::IsNiNode(a_node)) {
+				// leaf (BSTriShape etc.): +0x168/+0x172 are not children fields
+				// here - reading them was the v0.3.3 fault
+				return false;
+			}
 			const auto kids = *reinterpret_cast<std::uintptr_t*>(a_node + 0x168);
-			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x174);
-			for (std::uint16_t i = 0; kids && i < cnt && i < 8; ++i) {
+			const auto cnt = *reinterpret_cast<std::uint16_t*>(a_node + 0x172);
+			for (std::uint16_t i = 0; kids && i < cnt && i < 32; ++i) {
 				const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
 				if (c && SubtreeHasHudGlass(c, a_depth + 1)) {
 					return true;
 				}
 			}
 			return false;
+		}
+
+		// SEH isolation per candidate: one surprising subtree must cost ONE
+		// sibling's scan, never the whole search (v0.3.3's function-level handler
+		// turned a single bad read into a silent permanent miss). Tri-state so a
+		// faulting subtree is DISTINGUISHABLE from a genuinely glass-free one in
+		// the rack diagnostics: 1 = carries the glass, 0 = does not, -1 = FAULTED.
+		int SubtreeHasHudGlassSafe(std::uintptr_t a_node)
+		{
+			__try {
+				return SubtreeHasHudGlass(a_node, 0) ? 1 : 0;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return -1;
+			}
 		}
 
 		void SetHoldBreathPillHidden(std::uintptr_t a_player, bool a_hidden)
@@ -259,35 +269,88 @@ namespace TrueScopes::Hooks
 					return;
 				}
 				// cache is valid only while the node still carries the HUD glass subtree
-				if (g_pillNode && !SubtreeHasHudGlass(g_pillNode, 0)) {
+				if (g_pillNode && SubtreeHasHudGlassSafe(g_pillNode) != 1) {
 					g_pillNode = 0;
 				}
 				if (!g_pillNode) {
+					// rack snapshot for the miss log: 'name'(verdict) per sibling.
+					// %.48s BOUNDS THE READ (C11 7.21.6.1: a precision stops the
+					// scan even with no NUL) - an unterminated engine name that
+					// passes the head checks must not let the DIAGNOSTIC re-create
+					// the v0.3.3 whole-search abort. Truncation is marked, never
+					// silent: a partial rack that looks complete misleads exactly
+					// the investigation this log exists to serve.
+					char rack[384];
+					int  rackLen = 0;
+					bool rackFull = false;
+					const auto note = [&rack, &rackLen, &rackFull](const char* a_name, const char* a_verdict) {
+						if (rackFull) {
+							return;
+						}
+						const int n = std::snprintf(rack + rackLen, sizeof(rack) - rackLen,
+							"'%.48s'(%s) ", a_name, a_verdict);
+						if (n > 0 && rackLen + n < static_cast<int>(sizeof(rack))) {
+							rackLen += n;
+						} else {
+							rackFull = true;
+						}
+					};
 					const auto kids = *reinterpret_cast<std::uintptr_t*>(rig + 0x168);
-					const auto cnt = *reinterpret_cast<std::uint16_t*>(rig + 0x174);
-					for (std::uint16_t i = 0; kids && i < cnt; ++i) {
+					const auto cnt = *reinterpret_cast<std::uint16_t*>(rig + 0x172);
+					for (std::uint16_t i = 0; kids && i < cnt && i < 32; ++i) {
 						const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * i);
-						const char* cn = c ? nameOf(c) : nullptr;
-						if (!c || !cn) {
+						if (!c) {
+							continue;  // null hole - legal, the engine null-skips too
+						}
+						const char* cn = nameOf(c);
+						if (!cn) {
+							note("(unnamed)", "?");
 							continue;
 						}
-						// the wrist HUD also carries HUD glass materials - skip every
-						// known sibling by name and only then match structurally
+						// the wrist HUD and menu wands instance the same glass
+						// mesh - skip every known sibling by name and only then
+						// match structurally
 						if (std::strcmp(cn, "ScopeParent") == 0 ||
 							std::strcmp(cn, "world_primaryWand.nif") == 0 ||
 							std::strncmp(cn, "favorites", 9) == 0 ||
 							std::strncmp(cn, "ws_", 3) == 0 ||
 							std::strncmp(cn, "world_", 6) == 0) {
+							note(cn, "skip");
 							continue;
 						}
-						if (SubtreeHasHudGlass(c, 0)) {
+						const int v = SubtreeHasHudGlassSafe(c);
+						if (v == 1) {
 							g_pillNode = c;
-							static bool logged = false;
-							if (!logged) {
-								logged = true;
-								logger::info(FMT_STRING("hold-breath pill node found: '{}' under PrimaryUIAttachNode"), cn);
+							g_pillMissScans = 0;  // the counter measures CONSECUTIVE misses
+							static bool s_foundLogged = false;
+							if (!s_foundLogged) {
+								s_foundLogged = true;
+								logger::info(FMT_STRING("hold-breath pill node found: '{}' (slot {} of {}) under PrimaryUIAttachNode"), cn, i, cnt);
 							}
 							break;
+						}
+						if (v < 0) {
+							// a per-candidate fault is the v0.3.3 failure class -
+							// isolated now, but it must never masquerade as a
+							// benign "no-glass" verdict in the diagnostics
+							static bool s_candFaultLogged = false;
+							if (!s_candFaultLogged) {
+								s_candFaultLogged = true;
+								logger::warn(FMT_STRING("pill scan: subtree of '{}' faults (isolated; sibling skipped)"), cn);
+							}
+						}
+						note(cn, v < 0 ? "FAULT" : "no-glass");
+					}
+					if (!g_pillNode) {
+						// a persistent miss must be VISIBLE: v0.3.3's only field
+						// signal was an absent log line. ~120 CONSECUTIVE eligible
+						// frames is a scoped session well past rack construction
+						// (transient pre-attach misses reset on every find).
+						if (a_hidden && !g_pillMissLogged && ++g_pillMissScans >= 120) {
+							g_pillMissLogged = true;
+							rack[rackLen] = '\0';
+							logger::warn(FMT_STRING("hold-breath pill NOT found after {} scans; PrimaryUIAttachNode rack ({} slots{}): {}{}"),
+								g_pillMissScans, cnt, cnt > 32 ? ", scan capped at 32" : "", rack, rackFull ? "...(truncated)" : "");
 						}
 					}
 				}
@@ -301,6 +364,11 @@ namespace TrueScopes::Hooks
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				g_pillNode = 0;
+				static bool s_faultLogged = false;
+				if (!s_faultLogged) {
+					s_faultLogged = true;
+					logger::warn("hold-breath pill search faulted (one-shot log; the search retries every eligible frame)"sv);
+				}
 			}
 		}
 
@@ -331,9 +399,13 @@ namespace TrueScopes::Hooks
 					s_sp = sp;
 					s_hunting = s_recon = 0;
 					// ScopeParent -> world_scope.nif -> shapes (VR NiNode: children
-					// +0x168, count u16 +0x174; verified live 2026-08-24)
+					// +0x168, loop bound u16 +0x172 - the slot high-water mark
+					// NiNode::GetObjectByName itself iterates, null holes legal.
+					// v0.3.4: was +0x174 (non-null element count), which walked
+					// short of any child past a hole; both agree on a contiguous
+					// array, which is why the 2026-08-24 live check passed.)
 					const auto spKids = *reinterpret_cast<std::uintptr_t*>(sp + 0x168);
-					const auto spCnt = *reinterpret_cast<std::uint16_t*>(sp + 0x174);
+					const auto spCnt = *reinterpret_cast<std::uint16_t*>(sp + 0x172);
 					for (std::uint16_t i = 0; spKids && i < spCnt && !s_hunting; ++i) {
 						const auto root = *reinterpret_cast<std::uintptr_t*>(spKids + 8ull * i);
 						const char* rootName = nameOf(root);
@@ -341,7 +413,7 @@ namespace TrueScopes::Hooks
 							continue;
 						}
 						const auto kids = *reinterpret_cast<std::uintptr_t*>(root + 0x168);
-						const auto cnt = *reinterpret_cast<std::uint16_t*>(root + 0x174);
+						const auto cnt = *reinterpret_cast<std::uint16_t*>(root + 0x172);
 						for (std::uint16_t k = 0; kids && k < cnt; ++k) {
 							const auto c = *reinterpret_cast<std::uintptr_t*>(kids + 8ull * k);
 							const char* cn = nameOf(c);

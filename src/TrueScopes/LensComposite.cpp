@@ -30,10 +30,13 @@ namespace TrueScopes::LensComposite
 		constexpr std::uintptr_t kStateBlock = 0x1ee0;            // ctx + 0x1ee0: BSGraphics cached-state block
 		constexpr std::uintptr_t kStateBlockInvalidate = 0x1da6170;  // TS_BSGraphics_StateBlock_Invalidate(block)
 		constexpr std::uintptr_t kRendererRebindCBs = 0x1d94c10;     // FUN_141d94c10(renderer)
-		// NiNode (VR layout): children ptr +0x168, count u16 +0x174; NiObjectNET name +0x10;
-		// NiAVObject flags +0x108, bit 0 = hidden.
+		// NiNode (VR layout): children ptr +0x168, loop bound u16 +0x172 (slot
+		// high-water mark - what NiNode::GetObjectByName itself iterates; null
+		// holes legal and skipped. +0x174 is the non-null element count, which
+		// walks short of any child past a hole - fixed here v0.3.4);
+		// NiObjectNET name +0x10; NiAVObject flags +0x108, bit 0 = hidden.
 		constexpr std::uintptr_t kNodeChildren = 0x168;
-		constexpr std::uintptr_t kNodeChildCount = 0x174;
+		constexpr std::uintptr_t kNodeChildCount = 0x172;
 		constexpr std::uintptr_t kObjName = 0x10;
 		constexpr std::uintptr_t kObjFlags = 0x108;
 
@@ -620,11 +623,13 @@ float4 PSMain(VSOut i) : SV_Target
 				if (entry && std::strcmp(reinterpret_cast<const char*>(entry + kPoolEntryChars), "render_UI:0") == 0) {
 					return c;
 				}
-				// only NiNodes have a children array; leaf shapes' +0x168 is past their
-				// size (BSTriShape is 0x160-ish) — guard by the parent's own walk depth
-				// and by the fact that world_scope.nif's shapes sit directly under one
-				// node. We only descend into the first level's nodes.
-				if (a_depth < 1) {
+				// only NiNodes have a children array; leaf shapes' +0x168 is past
+				// their size (BSTriShape is 0x160-ish). v0.3.4: gate on the exact
+				// vtable test (ScopeIdent::IsNiNode) instead of relying on depth +
+				// "shapes sit directly under one node" - a leaf first-level child
+				// would have read garbage children fields here (the same class of
+				// bug as the v0.3.3 pill miss).
+				if (a_depth < 1 && ScopeIdent::IsNiNode(c)) {
 					if (const auto r = FindQuad(c, a_depth + 1)) {
 						return r;
 					}
