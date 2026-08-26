@@ -212,6 +212,8 @@ namespace TrueScopes::Hooks
 		std::uintptr_t g_pillNode = 0;
 		std::uint32_t  g_pillMissScans = 0;   // consecutive find-loop misses; reset on find
 		bool           g_pillMissLogged = false;
+		float          g_pillSavedScale = 0.0f;  // engine-authored local scale (+0x6c), captured once
+		bool           g_pillScaleCaptured = false;
 
 		bool SubtreeHasHudGlass(std::uintptr_t a_node, int a_depth)
 		{
@@ -356,10 +358,44 @@ namespace TrueScopes::Hooks
 				}
 				if (g_pillNode) {
 					auto* flags = reinterpret_cast<std::uint8_t*>(g_pillNode + 0x108);
+					auto* scale = reinterpret_cast<float*>(g_pillNode + 0x6c);
 					if (a_hidden) {
 						*flags |= 1;
+						// v0.3.5 - FIELD RESULT 2026-08-26: the flag alone does NOT
+						// hide the pill (node found, bit set every eligible frame,
+						// pill still rendered - chord "no"). The wand rack's own
+						// visibility idiom is attach/detach (hence the null holes),
+						// so its draw path plausibly never consults AppCulled - or
+						// re-shows after our hook. The housing answer (v0.2.121) is
+						// ordering-immune: epsilon LOCAL scale -> degenerate quad,
+						// invisible to every render path that consumes world
+						// transforms, regardless of who wins the flag fight.
+						// Captured once (sanity-bounded), re-applied idempotently
+						// per eligible frame, restored live on knob-off. The flag
+						// stays as belt-and-suspenders.
+						if (!g_pillScaleCaptured) {
+							const float s = *scale;
+							if (s > kHousingHiddenScale && s < 1000.0f) {
+								g_pillSavedScale = s;
+								g_pillScaleCaptured = true;
+							}
+						}
+						if (g_pillScaleCaptured) {
+							*scale = kHousingHiddenScale;
+							static bool s_zeroLogged = false;
+							if (!s_zeroLogged) {
+								s_zeroLogged = true;
+								logger::info(FMT_STRING("hold-breath pill zero-scaled (saved {:.3f} for restore)"), g_pillSavedScale);
+							}
+						}
 					} else {
 						*flags &= static_cast<std::uint8_t>(~1u);
+						// restore keyed on MEMORY state (sentinel still present), the
+						// RestoreWidgetHousing discipline - a missed frame can never
+						// strand the pill invisible against the user's setting
+						if (g_pillScaleCaptured && *scale == kHousingHiddenScale) {
+							*scale = g_pillSavedScale;
+						}
 					}
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
