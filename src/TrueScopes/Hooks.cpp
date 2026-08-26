@@ -496,14 +496,6 @@ namespace TrueScopes::Hooks
 					SetWidgetNodesHidden(player, true);
 					logger::info("widget presence -> hidden (verdict stale)"sv);
 				}
-				// v0.2.111 debug: headless render arming (see Settings.h).
-				if (g_installed && *Settings::forceScopeActive && !g_scopeActive.load()) {
-					g_scopeActive.store(true);
-					Settings::load();
-					ScopeIdent::Request();
-					logger::info("scope active -> true (forceScopeActive)"sv);
-					ScopeRender::CamSmoothReset();
-				}
 				// v0.2.109: controller verdict chords, polled per frame.
 				if (g_installed) {
 					VerdictInput::Poll();
@@ -533,26 +525,8 @@ namespace TrueScopes::Hooks
 					ScopeRender::PresenceFit();
 				}
 
-				// v0.2.52: sample the lens RT BEFORE we touch it — this reads what
-				// 0x62 held at the end of the previous frame, after every other
-				// writer had its turn. Must run ahead of TintLens/Render, which
-				// would overwrite the very evidence we are sampling.
-				if (g_installed && *Settings::diagLensReadback && g_scopeActive.load()) {
-					ScopeRender::SamplePreFillLens();
-				}
 
 				if (g_installed && *Settings::fillEnabled) {
-					// Burst forensics v2 (v0.2.46): the tonemap delivery repaints only
-					// its own footprint of RT 0x62 — the rounded top-left crescent is
-					// OUTSIDE it and keeps whatever was painted last (the v0.2.22-era
-					// "camera-independent rounded boundary", finally explained by the
-					// v0.2.45 red leak). That makes the crescent a per-frame status
-					// LED: pre-paint the whole lens BLUE before every fill and RED on
-					// every gate-paused frame while aiming. During a black burst the
-					// crescent color names the writer: BLUE = fills ran and delivered
-					// black (post-composite path), RED = eye-gate paused the fill,
-					// BLACK = some third party cleared the lens RT.
-					static std::uint32_t sinceFill = 1000;
 					// v0.2.125: last time anything filled the lens (live or prime).
 					static std::uint64_t s_lastLensFillTick = 0;
 					// v0.2.116 — POSE FREEZE. While the widget is up but the pose
@@ -571,10 +545,6 @@ namespace TrueScopes::Hooks
 						s_dimPending = true;
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
-							if (*Settings::diagPauseTint) {
-								ScopeRender::TintLens(0.0f, 0.0f, 0.5f);
-							}
-							sinceFill = 0;
 							const bool rendered =
 								*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
 								ScopeRender::Available() &&
@@ -585,10 +555,6 @@ namespace TrueScopes::Hooks
 							// v0.2.125: a live fill supersedes any pending prime.
 							ScopeRender::LensPrimeDone();
 							s_lastLensFillTick = ::GetTickCount64();
-						} else if (*Settings::diagPauseTint && sinceFill < 300) {
-							++sinceFill;
-							// Cadence-skipped frame -> GREEN lens.
-							ScopeRender::TintLens(0.0f, 1.0f, 0.0f);
 						}
 					} else if (g_scopeActive.load() ||
 					           (g_presenceShown.load(std::memory_order_relaxed) && *Settings::poseWidgetAlways)) {
@@ -641,13 +607,6 @@ namespace TrueScopes::Hooks
 					} else {
 						// widget off: deliberately do NOT re-arm the dim — only a
 						// live fill does (see the v0.2.117 note above).
-						if (*Settings::diagPauseTint && sinceFill < 300) {
-							++sinceFill;
-							// Eye-gate pause during active aiming -> RED lens. The
-							// sinceFill window keeps the tint from leaking into ordinary
-							// unscoped gameplay (the v0.2.45 always-red artifact).
-							ScopeRender::TintLens(1.0f, 0.0f, 0.0f);
-						}
 					}
 				}
 				func();
@@ -863,15 +822,4 @@ namespace TrueScopes::Hooks
 		return g_presenceShown.load(std::memory_order_relaxed);
 	}
 
-	void OnGameLoaded()
-	{
-		if (!g_installed) {
-			return;
-		}
-
-		REL::Relocation<std::uint8_t*> renderer{ REL::Offset(Addr::kRendererInstance) };
-		logger::info(
-			FMT_STRING("renderer flags on load: +1={} +2={} +3={} +4={} +5={}"),
-			renderer.get()[1], renderer.get()[2], renderer.get()[3], renderer.get()[4], renderer.get()[5]);
-	}
 }

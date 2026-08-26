@@ -32,9 +32,6 @@ namespace TrueScopes::ScopeRender
 	// pre-draw is skipped when they are not (it would just be cleared again).
 	void SetSunBindHooksInstalled(bool a_installed);
 
-	// Diagnostic: paint the lens RT a solid color (burst forensics — color-codes
-	// frames the fill hook skipped). Render-thread only.
-	void TintLens(float a_r, float a_g, float a_b);
 
 	// v0.2.116 — POSE FREEZE: one-shot dim of the frozen lens picture (fill hook,
 	// live->frozen edge). Builds the LensComposite inputs itself; SEH-guarded.
@@ -60,12 +57,6 @@ namespace TrueScopes::ScopeRender
 	// detects an engine rewrite by comparing the node against the values it last wrote,
 	// which needs no external event and cannot be hooked to the wrong one.)
 
-	// Diagnostic (v0.2.52): 1-pixel readback of the lens RT 0x62 at fill-hook ENTRY,
-	// i.e. what it held after every other writer in the PREVIOUS frame finished. The
-	// in-render readback only ever saw our own write; this is the one that can catch
-	// a later third-party writer. Edge-logged ("PREFILL 0x62 -> DARK/lit"), gated on
-	// diagLensReadback. Render-thread only.
-	void SamplePreFillLens();
 
 	// Thread id that currently holds the renderer+4 scoped bracket (0 = none).
 	// The +4-reader hook answers "scoped" only to this thread.
@@ -81,24 +72,6 @@ namespace TrueScopes::ScopeRender
 	// previously required grepping the heartbeat log (emitted only every 300
 	// renders) or attaching a debugger.
 
-	// Request a full-surface dump on the NEXT render, regardless of the
-	// diagDumpLensEveryNRenders cadence. Removes the "set every=N, guess a
-	// window, hope it crosses a multiple" dance — which silently produced zero
-	// files during the 2026-08-08 session because the render rate (~9/s) was far
-	// below the assumed one.
-	void RequestDump();
-
-	// Withdraw a pending RequestDump(). A request that outlives its caller's
-	// timeout would otherwise fire on some later render in a different scene.
-	void CancelDumpRequest();
-
-	// Count of completed dump EVENTS. Poll after RequestDump() to know the dump
-	// actually happened rather than assuming it did.
-	std::uint64_t DumpEventCount();
-
-	// Index (frame counter) used to name the files of the most recent dump event,
-	// i.e. the NNNNNN in <NNNNNN>_62_lens.bmp. 0 = nothing dumped yet.
-	std::uint64_t LastDumpIndex();
 
 	// Live snapshot of the render diagnostics. These are the same values the
 	// heartbeat prints, plus the engine pointers we resolve at Init() — having

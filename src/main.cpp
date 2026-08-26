@@ -51,9 +51,6 @@ void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 	if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
 		DevBenchClient::Register();
 	}
-	if (a_msg->type == F4SE::MessagingInterface::kGameLoaded) {
-		TrueScopes::Hooks::OnGameLoaded();
-	}
 }
 
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface* a_f4se, F4SE::PluginInfo* a_info)

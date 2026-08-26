@@ -158,19 +158,6 @@ namespace Settings
 	// Cost when on: 8 timestamp queries per render, collected 2-3 renders later
 	// without ever blocking. Not free, but far below the noise floor of a VR frame.
 	MAKE_SETTING(bSetting, "TrueScopesVR", perfTimers, false);
-	// LEVER 1 — render resolution. Scales the scope camera's viewport to the
-	// top-left sub-rectangle of the (engine-allocated, fixed 1024^2) scope G-buffer:
-	// 0.5 = render at 512x512, quarter the pixels. Applied AFTER SetCameraFOV, which
-	// forces the port back to full-frame {0,1,1,0} itself on every call.
-	// Port semantics verified in Ghidra (TS_BSGraphicsState_BuildViewportFromCamDataRect,
-	// 0x141d8d480): rect = {left, right, top, bottom, minDepth, maxDepth}, and
-	// viewport = (w*left, (1-top)*h, (right-left)*w, (top-bottom)*h).
-	// ⚠️ The projection is NOT touched, so the same image is squeezed into that
-	// sub-rect while the lens delivery still samples the whole surface: the lens
-	// will show the picture shrunk into one corner. THAT IS EXPECTED AND FINE for a
-	// measurement run — it tells us what the resolution is WORTH before any work is
-	// spent making the delivery sample the sub-rect. 1.0 = untouched.
-	MAKE_SETTING(fSetting, "TrueScopesVR", perfRenderScale, 1.0);
 	// LEVER 2 — light count. Clamps the two light-loop counts the deferred resolve
 	// iterates (ShadowSceneNode +0x1a8 shadowed, +0x1c0 queued) across our resolve
 	// call only, restoring them immediately after. 0 = draw no light volumes at all,
@@ -238,11 +225,6 @@ namespace Settings
 	// v0.2.109: controller verdict chords (grip+A yes / grip+B no / grip+trigger
 	// skip) for guided test passes; read passively off OpenVR, haptic ack.
 	MAKE_SETTING(bSetting, "TrueScopesVR", verdictInputEnabled, false);
-	// v0.2.111 DEBUG: arm the scope render directly, bypassing the vanilla
-	// raise detection. For HEADLESS lens verification (null driver + /dump/now):
-	// the widget rig never exists, but the render + composite + delivery all run
-	// and 0x61/0x62 dump normally. Not for gameplay.
-	MAKE_SETTING(bSetting, "TrueScopesVR", forceScopeActive, false);
 	MAKE_SETTING(bSetting, "TrueScopesVR", lensCompositeEnabled, true);
 	// Composite the reticle from the ScopeMenu renderer's offscreen RT. Hides the
 	// vanilla `render_UI:0` quad while active (restored on scope-off).
@@ -439,7 +421,7 @@ namespace Settings
 	// v0.2.123 — under-aperture sizing: multiplies the derived aperture so the
 	// picture disc sits slightly INSIDE the real housing hole and no bright
 	// pixel ever touches the seam (encapsulation layer 2). 1.0 = exact fit.
-	// Clamped to [0.8, 1.1] at use. widgetScaleOverride bypasses it (bisect tool).
+	// Clamped to [0.8, 1.1] at use.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetApertureScale, 0.97);
 	// v0.2.85: look the aperture up PER SCOPE from the node names in the equipped
 	// weapon's 3D, instead of using one number for every optic. The shipped table
@@ -454,9 +436,6 @@ namespace Settings
 	// length + weapon (~60 units). The refusal feeds PresenceFit's bounded retry
 	// (v0.2.121), which converges as soon as the transforms are real.
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetPlaceMaxEyeDist, 100.0);
-	// Bypass the aperture math and set ScopeParent's scale directly (0 = derive).
-	// For bisecting when the derived value looks wrong.
-	MAKE_SETTING(fSetting, "TrueScopesVR", widgetScaleOverride, 0.0);
 	// Local-space nudge applied on top of the engine's own ScopeParent translation
 	// (captured as a baseline, never accumulated). For sliding the shrunken widget
 	// onto the real lens once the scale is right.
@@ -478,30 +457,6 @@ namespace Settings
 	// and reported either way (log line "WIDGET AUTO-PLACE", DevBench /scope
 	// "placement"), so it can always be compared against a hand-tuned value.
 	MAKE_SETTING(bSetting, "TrueScopesVR", widgetAutoPlace, true);
-	// Black-burst forensics (v0.2.43): per-frame 1-pixel GPU readback of the light
-	// accum (0x6a) and composite (0x61); dark frames logged with raw pixel hex.
-	// Costs two GPU sync stalls per render — enable only while hunting.
-	MAKE_SETTING(bSetting, "TrueScopesVR", diagLensReadback, false);
-	// Burst forensics (v0.2.45): color-code frames the fill hook did not fill —
-	// RED = eye-gate says inactive (fill paused), GREEN = cadence skip. If a black
-	// burst shows as a color instead, the burst is a non-filled frame.
-	MAKE_SETTING(bSetting, "TrueScopesVR", diagPauseTint, false);
-	// v0.2.54: dump the FULL lens chain (0x61 composite + 0x62 delivered) to BMPs
-	// every N renders, into <Documents>/My Games/Fallout4VR/F4SE/TrueScopesDumps.
-	// 0 = off. One-pixel readbacks report "lit" in every mode while the lens is
-	// visibly black, so they can no longer distinguish "texture is fine" from
-	// "texture is black except where we sample" — this shows the whole surface,
-	// including where any black sits relative to the delivery footprint. Costs a
-	// full-surface GPU copy + map + file write on the dump frame (capped at 80
-	// files per session), so use a large N: 180 ~ every 2s at 90Hz.
-	MAKE_SETTING(iSetting, "TrueScopesVR", diagDumpLensEveryNRenders, std::int64_t(0));
-	// v0.2.56: on each dump event, also dump the intermediate deferred buffers —
-	// G-buffer albedo 0x63 / normals 0x64 and light accum diffuse 0x6a / specular
-	// 0x6b — so one capture shows WHICH stage first contains NaN (magenta) instead
-	// of needing a lensMode ladder with a separate repro per rung. Each dump event
-	// then writes 6 files (~19MB); the per-buffer NaN percentage is logged too, so
-	// the log alone identifies the stage even without opening the images.
-	MAKE_SETTING(bSetting, "TrueScopesVR", diagDumpBuffers, false);
 	// v0.2.57: skip ONLY the sun's fullscreen BSDFLightDir exec, keeping the accum
 	// clear/binds, camera state and pre-resolve G-buffer rebind that share its block.
 	// sunEnabled=false is NOT equivalent — it drops all of those too and faults the
@@ -527,23 +482,6 @@ namespace Settings
 	// drew into the still-bound G-buffer MRT (v0.2.82). With those, the lens shows a
 	// genuinely sun-lit scene. ⚠️ Coupled to accumClearScale — see the note there.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, true);
-	// v0.2.76 — THE ACCUMULATION TARGET FIELD.
-	// Ghidra 2026-08-09 (TS_DrawWorld_PreWorldLightingStage, 0x142846d60): the engine
-	// re-selects `ctx+0x1c` before EVERY pass in the pre-world lighting stage, from the
-	// renderer+4 reader:  ctx+0x1c = FUN_141d947d0(renderer) ? 0x6a : 0x24  — i.e. it is
-	// the LIGHT-ACCUMULATION TARGET, and 0xffffffff is used for "none" elsewhere in the
-	// same function. Our sun context comes from FUN_142812be0, which zeroes that field
-	// and never sets it, so we have been exec'ing the sun pass with accum target 0.
-	// -1 = leave the constructor's value alone (the pre-v0.2.76 behaviour, so the first
-	// reading is clean); 0x6a = what the engine would set for a scoped pass.
-	// Kept as an int rather than a bool so 0x24 can be tried without a rebuild.
-	MAKE_SETTING(iSetting, "TrueScopesVR", sunCtxAccumTarget, -1);
-	// v0.2.77 — sample the G-buffer (0x63 albedo / 0x64 normals) immediately before the
-	// sun exec. A deferred directional light shades by SAMPLING the G-buffer, and ours
-	// runs before the resolve that draws the G-buffer geometry — so it may be shading an
-	// empty one, which computes exactly zero. Default ON: cheap, and the ordering
-	// question is the live one.
-	MAKE_SETTING(bSetting, "TrueScopesVR", diagSunOrderProbe, false);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
 	// session-permanent). Lets a faulting config be bisected via TOML edits without
 	// restarting the game. The faulting step is logged each time.
@@ -730,6 +668,12 @@ namespace Settings
 		LOAD(lensPrimeOnPresence);
 		LOAD(poseIdleRefreshSeconds);
 		LOAD(lensMode);
+		// v0.3: diagnostic lens modes (3-8: G-buffer/accum taps, no-delivery) are
+		// removed; only 0 = off, 1 = frame copy, 2 = real render ship. Clamp so a
+		// stale TOML cannot select a removed mode.
+		if (*lensMode < 0 || *lensMode > 2) {
+			*lensMode = 2;
+		}
 		LOAD(scopeFovDegrees);
 		LOAD(scopeNearClip);
 		LOAD(scopeFarClip);
@@ -738,7 +682,6 @@ namespace Settings
 		LOAD(scopeCamOffsetZ);
 		LOAD(cullToScopeFrustum);
 		LOAD(perfTimers);
-		LOAD(perfRenderScale);
 		LOAD(perfLightsMax);
 		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
@@ -748,7 +691,6 @@ namespace Settings
 		LOAD(skyRootMask);
 		LOAD(deliveryUnbindDS);
 		LOAD(verdictInputEnabled);
-		LOAD(forceScopeActive);
 		LOAD(lensCompositeEnabled);
 		LOAD(reticleEnabled);
 		LOAD(reticleRendererName);
@@ -813,20 +755,13 @@ namespace Settings
 		LOAD(widgetApertureRadius);
 		LOAD(widgetApertureScale);
 		LOAD(perScopeAperture);
-		LOAD(widgetScaleOverride);
 		LOAD(widgetOffsetX);
 		LOAD(widgetOffsetY);
 		LOAD(widgetOffsetZ);
 		LOAD(widgetAutoPlace);
 		LOAD(widgetPlaceMaxEyeDist);
 		LOAD(retryAfterFault);
-		LOAD(diagLensReadback);
-		LOAD(diagPauseTint);
-		LOAD(diagDumpLensEveryNRenders);
-		LOAD(diagDumpBuffers);
 		LOAD(sunExecEnabled);
-		LOAD(sunCtxAccumTarget);
-		LOAD(diagSunOrderProbe);
 		LOAD(suppressScopeImods);
 		// legacy alias: pre-v0.2.111 TOMLs used the misnomer
 		if (const auto legacy = config["TrueScopesVR"]["disableScopeBlackout"]; legacy) {

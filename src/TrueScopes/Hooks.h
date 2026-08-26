@@ -10,8 +10,6 @@ namespace TrueScopes::Hooks
 	// Returns false (and leaves the game untouched) if any byte check fails.
 	bool Install();
 
-	// Called on kGameLoaded: logs the renderer flag bytes (forceAlwaysOn removed v0.2.137 - root-caused crasher).
-	void OnGameLoaded();
 
 	// v0.2.70 — PERF INSTRUMENT. Count of per-frame fill-hook invocations, i.e. the
 	// GAME's frame count. Advances whether or not the scope is up, which is the whole

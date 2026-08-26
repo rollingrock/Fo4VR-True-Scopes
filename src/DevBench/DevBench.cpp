@@ -232,7 +232,6 @@ namespace DevBench
 			using namespace Settings;
 			return {
 				{ "fillEnabled", Kind::Bool, &fillEnabled },
-				{ "forceScopeActive", Kind::Bool, &forceScopeActive },
 				{ "fillEveryNFrames", Kind::Int, &fillEveryNFrames },
 				{ "scopeOffHoldMs", Kind::Int, &scopeOffHoldMs },
 				{ "lensMode", Kind::Int, &lensMode },
@@ -245,12 +244,9 @@ namespace DevBench
 				{ "cullToScopeFrustum", Kind::Bool, &cullToScopeFrustum },
 				// v0.2.73 perf: the stopwatch (off->on resets its window) and its two levers
 				{ "perfTimers", Kind::Bool, &perfTimers },
-				{ "perfRenderScale", Kind::Float, &perfRenderScale },
 				{ "perfLightsMax", Kind::Int, &perfLightsMax },
 				{ "sunEnabled", Kind::Bool, &sunEnabled },
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
-				{ "sunCtxAccumTarget", Kind::Int, &sunCtxAccumTarget },
-				{ "diagSunOrderProbe", Kind::Bool, &diagSunOrderProbe },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
 				{ "accumClearScale", Kind::Float, &accumClearScale },
 				{ "accumClearAlpha", Kind::Float, &accumClearAlpha },
@@ -328,16 +324,11 @@ namespace DevBench
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
 				{ "perScopeAperture", Kind::Bool, &perScopeAperture },
-				{ "widgetScaleOverride", Kind::Float, &widgetScaleOverride },
 				{ "widgetOffsetX", Kind::Float, &widgetOffsetX },
 				{ "widgetOffsetY", Kind::Float, &widgetOffsetY },
 				{ "widgetOffsetZ", Kind::Float, &widgetOffsetZ },
 				{ "widgetAutoPlace", Kind::Bool, &widgetAutoPlace },
 				{ "retryAfterFault", Kind::Bool, &retryAfterFault },
-				{ "diagLensReadback", Kind::Bool, &diagLensReadback },
-				{ "diagPauseTint", Kind::Bool, &diagPauseTint },
-				{ "diagDumpLensEveryNRenders", Kind::Int, &diagDumpLensEveryNRenders },
-				{ "diagDumpBuffers", Kind::Bool, &diagDumpBuffers },
 				{ "suppressScopeImods", Kind::Bool, &suppressScopeImods },
 				{ "disableApproachFade", Kind::Bool, &disableApproachFade },
 			};
@@ -440,7 +431,6 @@ namespace DevBench
 				"{\"path\":\"/state\",\"desc\":\"full render diagnostics: fault latch, lastStep, NaN/sun/camdata counters, last-render pass+light+sky+viewport values, stageTimes (per-stage GPU+CPU ms)\"},"
 			"{\"path\":\"/perf/reset\",\"desc\":\"clear the stageTimes averaging window before the next render (also done by any perfTimers write)\"},"
 				"{\"path\":\"/addresses\",\"desc\":\"resolved engine pointers (ssn, accumulator, gfxState, render ctx, sun config, rtm, renderer, scope camera) as va+rva - feed them to /read\"},"
-				"{\"path\":\"/dump/now\",\"desc\":\"?timeoutMs=5000 - dump the lens chain on the NEXT render and wait for it; returns the file prefix. Set diagDumpBuffers=true first for the G-buffer/accum buffers\"},"
 				"{\"path\":\"/config\",\"desc\":\"every TOML setting and its live value\"},"
 				"{\"path\":\"/config/set\",\"desc\":\"?key=NAME&value=V - set one setting live, no scope-cycle needed\"},"
 				"{\"path\":\"/config/reload\",\"desc\":\"re-read TrueScopesVR.toml now\"},"
@@ -488,14 +478,8 @@ namespace DevBench
 			out += ",\"sunBindHooks\":" + b(d.sunBindHooks);
 
 			out += ",\"counters\":{";
-			out += "\"nan61\":" + std::to_string(d.nan61);
-			out += ",\"nan62\":" + std::to_string(d.nan62);
-			out += ",\"sunPreNaN\":" + std::to_string(d.sunPreNaN);
-			out += ",\"sunPostNaN\":" + std::to_string(d.sunPostNaN);
-			out += ",\"camDataBad\":" + std::to_string(d.camDataBad);
 			out += ",\"invProjRejects\":" + std::to_string(d.invProjRejects);
 			out += ",\"fogNulls\":" + std::to_string(d.fogNulls);
-			out += ",\"dumpFiles\":" + std::to_string(d.dumpFiles);
 			out += "}";
 
 			out += ",\"lastRender\":{";
@@ -647,48 +631,6 @@ namespace DevBench
 			return out;
 		}
 
-		// Dump on the NEXT render and wait for it, rather than setting a cadence and
-		// hoping the window is long enough. On 2026-08-08 a 4-second window at
-		// every=200 produced zero files because the render rate is ~9/s, and the
-		// silence looked like a broken code path.
-		std::string HandleDumpNow(const Request& a_req)
-		{
-			std::int64_t timeoutMs = 5000;
-			{
-				const std::string t = a_req.GetOr("timeoutMs", "5000");
-				std::from_chars(t.data(), t.data() + t.size(), timeoutMs);
-			}
-			timeoutMs = std::clamp<std::int64_t>(timeoutMs, 100, 30000);
-
-			const auto before = TrueScopes::ScopeRender::DumpEventCount();
-			TrueScopes::ScopeRender::RequestDump();
-
-			const auto deadline = ::GetTickCount64() + static_cast<std::uint64_t>(timeoutMs);
-			while (TrueScopes::ScopeRender::DumpEventCount() == before && ::GetTickCount64() < deadline) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(15));
-			}
-			const auto after = TrueScopes::ScopeRender::DumpEventCount();
-			if (after == before) {
-				// v0.2.66: disarm on timeout. Otherwise the request stays pending and
-				// fires on whatever render happens next — possibly minutes later, in a
-				// completely different scene, surprising whoever is looking at the dump
-				// directory. Live test hit exactly this: a timed-out probe with no
-				// render running produced a dump the moment the scope was raised.
-				TrueScopes::ScopeRender::CancelDumpRequest();
-				// Say why nothing happened instead of just failing: the overwhelmingly
-				// common cause is that no render is running (scope not raised).
-				return Err("no dump within " + std::to_string(timeoutMs) +
-						   "ms — is the scope raised and rendering? (GET /state, check `renders` advancing). Request cancelled.");
-			}
-
-			const auto index = TrueScopes::ScopeRender::LastDumpIndex();
-			char       prefix[32];
-			std::snprintf(prefix, sizeof(prefix), "%06llu", static_cast<unsigned long long>(index));
-			return "{\"ok\":true,\"index\":" + std::to_string(index) +
-				   ",\"filePrefix\":" + Quote(prefix) +
-				   ",\"events\":" + std::to_string(after) +
-				   ",\"note\":\"buffers beyond 61/62 require diagDumpBuffers=true\"}";
-		}
 
 		// Keys set live through /config/set. Re-applied after every
 		// Settings::load() (which fires on each scope-in) so an experiment keeps
@@ -1281,7 +1223,6 @@ namespace DevBench
 				return "{\"ok\":true,\"reset\":\"stageTimes\"}";
 			}
 			if (a_req.path == "/addresses")                     return HandleAddresses();
-			if (a_req.path == "/dump/now")                      return HandleDumpNow(a_req);
 			if (a_req.path == "/config")                        return HandleConfig();
 			if (a_req.path == "/config/set")                    return HandleConfigSet(a_req);
 			if (a_req.path == "/config/reload")                 return HandleConfigReload();

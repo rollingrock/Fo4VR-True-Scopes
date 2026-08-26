@@ -135,9 +135,6 @@ namespace TrueScopes::ScopeRender
 		// static, the per-render engine pointers, and the on-demand dump handshake.
 		std::uint64_t              g_renders = 0;
 		std::uintptr_t             g_lastRtm = 0, g_lastRenderer = 0, g_lastCam = 0;
-		std::atomic_bool           g_dumpRequest{ false };
-		std::atomic<std::uint64_t> g_dumpEvents{ 0 };
-		std::atomic<std::uint64_t> g_lastDumpIndex{ 0 };
 		bool g_sunBindHooksInstalled = false;      // set by Hooks::Install when the two resolve bind sites are hooked
 		// v0.2.78: the sun exec, deferred to INSIDE the resolve. Holds a lambda that
 		// closes over Render()'s locals; Render() is on the stack for the whole resolve
@@ -209,25 +206,6 @@ namespace TrueScopes::ScopeRender
 		// the mode-4 CopyResource restore uses). Each sampled render costs two
 		// Map() sync stalls — diagnostic only, off by default.
 		constexpr std::uintptr_t kD3DContextRVA = 0x6235ab0;
-		ID3D11Texture2D* g_stage61 = nullptr;
-		ID3D11Texture2D* g_stage6a = nullptr;
-		std::uint32_t g_rbFormat61 = 0;
-		std::uint32_t g_rbFormat6a = 0;
-		std::uint32_t g_rbW61 = 0, g_rbH61 = 0, g_rbW6a = 0, g_rbH6a = 0;
-		// v0.2.77 ordering probe: the G-buffer as it stands AT THE MOMENT of the sun exec.
-		// The sun is a deferred directional light -- it shades by sampling the G-buffer.
-		// Vanilla fills the G-buffer in the stages BEFORE its sun stage (FUN_14284e9e0
-		// call #22); OUR G-buffer geometry is drawn INSIDE the resolve, which we call
-		// AFTER the sun exec. If that is the defect, albedo/normals read empty here and
-		// populated after the resolve -- and a light shading an empty G-buffer contributes
-		// exactly zero, which is what 0x6a has measured all along.
-		ID3D11Texture2D* g_stage63 = nullptr;
-		ID3D11Texture2D* g_stage64 = nullptr;
-		std::uint32_t g_rbFormat63 = 0, g_rbFormat64 = 0;
-		std::uint32_t g_rbW63 = 0, g_rbH63 = 0, g_rbW64 = 0, g_rbH64 = 0;
-		std::uint64_t g_rbDark61 = 0;   // frames where the composite center pixel was near-black
-		std::uint64_t g_rbDark6a = 0;   // ... and the light-accum center pixel
-		std::uint64_t g_rbSamples = 0;
 
 		// ---- v0.2.73 THE STOPWATCH — per-stage GPU + CPU timing ------------------
 		//
@@ -474,409 +452,11 @@ namespace TrueScopes::ScopeRender
 			g_timerActive = false;
 		}
 
-		bool EnsureStaging(ID3D11DeviceContext* a_ctx, ID3D11Texture2D* a_src,
-			ID3D11Texture2D** a_stage, std::uint32_t& a_fmt, std::uint32_t& a_w, std::uint32_t& a_h) noexcept
-		{
-			if (*a_stage) {
-				return true;
-			}
-			D3D11_TEXTURE2D_DESC desc{};
-			a_src->GetDesc(&desc);
-			a_fmt = desc.Format;
-			a_w = desc.Width;
-			a_h = desc.Height;
-			D3D11_TEXTURE2D_DESC sd = desc;
-			sd.Width = 1;
-			sd.Height = 1;
-			sd.MipLevels = 1;
-			sd.ArraySize = 1;
-			sd.SampleDesc = { 1, 0 };
-			sd.Usage = D3D11_USAGE_STAGING;
-			sd.BindFlags = 0;
-			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-			sd.MiscFlags = 0;
-			ID3D11Device* dev = nullptr;
-			a_ctx->GetDevice(&dev);
-			if (!dev) {
-				return false;
-			}
-			const auto ok = SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, a_stage));
-			dev->Release();
-			return ok;
-		}
 
-		std::uint64_t SampleCenterPixel(ID3D11DeviceContext* a_ctx, ID3D11Texture2D* a_src,
-			ID3D11Texture2D* a_stage, std::uint32_t a_w, std::uint32_t a_h) noexcept
-		{
-			const D3D11_BOX box{ a_w / 2, a_h / 2, 0, a_w / 2 + 1, a_h / 2 + 1, 1 };
-			a_ctx->CopySubresourceRegion(a_stage, 0, 0, 0, 0, a_src, 0, &box);
-			D3D11_MAPPED_SUBRESOURCE m{};
-			if (FAILED(a_ctx->Map(a_stage, 0, D3D11_MAP_READ, 0, &m))) {
-				return ~0ull;
-			}
-			const auto v = *reinterpret_cast<const std::uint64_t*>(m.pData);
-			a_ctx->Unmap(a_stage, 0);
-			return v;
-		}
 
-		// Near-black test for RGBA16F-family pixels: each of R/G/B half's magnitude
-		// below ~0.03 (half 0x2A00). Raw hex is logged anyway, so a wrong format
-		// just means classification is off while the data still tells the story.
-		bool PixelDarkF16(std::uint64_t a_raw) noexcept
-		{
-			for (int c = 0; c < 3; ++c) {
-				const auto h = static_cast<std::uint16_t>(a_raw >> (16 * c)) & 0x7fff;
-				if (h >= 0x2a00) {
-					return false;
-				}
-			}
-			return true;
-		}
 
-		// v0.2.55 — THE BLIND SPOT. R11G11B10_FLOAT stores exponent 0x1f for Inf/NaN.
-		// PixelDark tests "exponent < 12", so a NaN pixel is classified LIT — which is
-		// why 12000+ readbacks across five sessions never once reported dark while the
-		// lens was visibly black. NaN reaching the display shows up as BLACK on screen
-		// but as "bright" to every probe we had. Detect it explicitly.
-		bool PixelNonFinite(std::uint32_t a_fmt, std::uint64_t a_raw) noexcept
-		{
-			switch (a_fmt) {
-			case 26: {  // R11G11B10F: 5-bit exponent per channel, all-ones = Inf/NaN
-				const auto px = static_cast<std::uint32_t>(a_raw);
-				return ((px >> 6) & 0x1f) == 0x1f || ((px >> 17) & 0x1f) == 0x1f || ((px >> 27) & 0x1f) == 0x1f;
-			}
-			case 28:
-			case 29:
-			case 87:
-			case 91:
-				return false;  // integer formats cannot hold NaN
-			default: {  // RGBA16F
-				for (int c = 0; c < 3; ++c) {
-					if ((static_cast<std::uint16_t>(a_raw >> (16 * c)) & 0x7c00) == 0x7c00) {
-						return true;
-					}
-				}
-				return false;
-			}
-			}
-		}
 
-		// Format-aware near-black test (v0.2.47): the scope chain RTs are fmt 26
-		// (R11G11B10_FLOAT, verified live); 0x62 may be an 8-bit display format.
-		bool PixelDark(std::uint32_t a_fmt, std::uint64_t a_raw) noexcept
-		{
-			switch (a_fmt) {
-			case 26: {  // R11G11B10F: dark = every channel exponent < 12 (~< 0.125)
-				const auto px = static_cast<std::uint32_t>(a_raw);
-				return ((px >> 6) & 0x1f) < 12 && ((px >> 17) & 0x1f) < 12 && ((px >> 27) & 0x1f) < 12;
-			}
-			case 28:
-			case 29:
-			case 87:
-			case 91:  // RGBA8/BGRA8 (+sRGB)
-				return (a_raw & 0xff) < 0x18 && ((a_raw >> 8) & 0xff) < 0x18 && ((a_raw >> 16) & 0xff) < 0x18;
-			default:
-				return PixelDarkF16(a_raw);
-			}
-		}
 
-		// --- v0.2.54 FULL-TEXTURE DUMP -------------------------------------------
-		// One-pixel sampling has answered "lit" in every mode while the lens is
-		// visibly black, so it has run out of information: it cannot distinguish
-		// "the texture is fine" from "the texture is black everywhere except where
-		// we happen to sample". Dumping the whole surface to a BMP settles it by
-		// inspection — including WHERE any black region sits relative to the
-		// delivery footprint and the crescent.
-		ID3D11Texture2D* g_dumpStage = nullptr;
-		std::uint32_t g_dumpW = 0, g_dumpH = 0, g_dumpFmt = 0;
-		std::uint32_t g_dumpFiles = 0;
-
-		// R11G11B10_FLOAT channel decode: 5-bit exponent (bias 15) + 6/6/5-bit
-		// mantissa, no sign bit.
-		[[nodiscard]] float DecodeSmallFloat(std::uint32_t a_bits, std::uint32_t a_mantBits) noexcept
-		{
-			const auto mantMask = (1u << a_mantBits) - 1u;
-			const auto mant = a_bits & mantMask;
-			const auto exp = (a_bits >> a_mantBits) & 0x1f;
-			if (exp == 0) {
-				return mant == 0 ? 0.0f : std::ldexp(static_cast<float>(mant) / static_cast<float>(mantMask + 1), -14);
-			}
-			if (exp == 0x1f) {
-				return 65504.0f;  // inf/nan -> clamp, we only want to LOOK at it
-			}
-			return std::ldexp(1.0f + static_cast<float>(mant) / static_cast<float>(mantMask + 1),
-				static_cast<int>(exp) - 15);
-		}
-
-		// HDR -> viewable 8-bit: Reinhard + gamma. Keeps both a dark scene and an
-		// overbright one distinguishable from true black, which is the whole point.
-		[[nodiscard]] std::uint8_t ToByte(float a_v) noexcept
-		{
-			const auto tone = a_v <= 0.0f ? 0.0f : a_v / (1.0f + a_v);
-			const auto gamma = std::pow(tone, 1.0f / 2.2f);
-			return static_cast<std::uint8_t>(std::clamp(gamma, 0.0f, 1.0f) * 255.0f + 0.5f);
-		}
-
-		// v0.2.55: NaN/Inf pixels are painted MAGENTA in the dump instead of being
-		// clamped to white — otherwise they are indistinguishable from a legitimately
-		// overbright frame, which is how the first dump session read as "blown out"
-		// rather than "full of NaN". Counted so the log states the coverage.
-		std::uint64_t g_dumpNonFinite = 0;
-
-		void WriteBMP(const std::filesystem::path& a_path, const std::uint8_t* a_rows,
-			std::uint32_t a_w, std::uint32_t a_h, std::uint32_t a_pitch, std::uint32_t a_fmt) noexcept
-		{
-			std::ofstream out(a_path, std::ios::binary);
-			if (!out) {
-				return;
-			}
-			const std::uint32_t rowBytes = ((a_w * 3u) + 3u) & ~3u;
-			const std::uint32_t imageBytes = rowBytes * a_h;
-			const std::uint32_t headerBytes = 14u + 40u;
-			const auto put16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
-			const auto put32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
-			out.write("BM", 2);
-			put32(headerBytes + imageBytes);
-			put32(0);
-			put32(headerBytes);
-			put32(40);
-			put32(a_w);
-			put32(a_h);
-			put16(1);
-			put16(24);
-			put32(0);
-			put32(imageBytes);
-			put32(2835);
-			put32(2835);
-			put32(0);
-			put32(0);
-			std::vector<std::uint8_t> row(rowBytes, 0);
-			for (std::uint32_t y = 0; y < a_h; ++y) {
-				// BMP is bottom-up.
-				const auto* src = a_rows + static_cast<std::size_t>(a_h - 1u - y) * a_pitch;
-				for (std::uint32_t x = 0; x < a_w; ++x) {
-					std::uint8_t b = 0, g = 0, r = 0;
-					switch (a_fmt) {
-					case 26: {  // R11G11B10_FLOAT
-						const auto px = *reinterpret_cast<const std::uint32_t*>(src + x * 4u);
-						if (((px >> 6) & 0x1f) == 0x1f || ((px >> 17) & 0x1f) == 0x1f ||
-							((px >> 27) & 0x1f) == 0x1f) {
-							++g_dumpNonFinite;
-							r = 255;
-							g = 0;
-							b = 255;  // MAGENTA = NaN/Inf, never a real scene color
-							break;
-						}
-						r = ToByte(DecodeSmallFloat(px & 0x7ffu, 6));
-						g = ToByte(DecodeSmallFloat((px >> 11) & 0x7ffu, 6));
-						b = ToByte(DecodeSmallFloat((px >> 22) & 0x3ffu, 5));
-						break;
-					}
-					case 28:
-					case 29: {  // R8G8B8A8
-						const auto* p = src + x * 4u;
-						r = p[0];
-						g = p[1];
-						b = p[2];
-						break;
-					}
-					case 87:
-					case 91: {  // B8G8R8A8
-						const auto* p = src + x * 4u;
-						b = p[0];
-						g = p[1];
-						r = p[2];
-						break;
-					}
-					// v0.2.59: RGBA16F is 8 BYTES per pixel, so this must never be the
-					// fallback for an unrecognized format — a 4-byte surface decoded at
-					// 8 bytes/pixel reads twice the row length and runs off the end of
-					// the mapped staging surface. That is what crashed the dump exactly
-					// 180 renders (= diagDumpLensEveryNRenders) after every scope-in,
-					// misreported as a step-17 "vanilla lens copy" fault because the
-					// dump sits inside that step's span. Unknown formats are now
-					// skipped by DumpLogicalRT before we ever map them.
-					// v0.2.65: the G-buffer NORMALS target (0x64) is DXGI format 35 =
-				// R16G16_UNORM — two channels, 4 bytes/pixel, i.e. an encoded
-				// (octahedral or hemi) normal with Z reconstructed in-shader. It had
-				// no case here, so every normals dump was silently skipped and that
-				// buffer has never actually been looked at.
-				// Shown as R=x, G=y, B=0 deliberately: no Z is reconstructed, because
-				// guessing the wrong encoding would produce a plausible-looking image
-				// that lies. Two channels of truth beat three of speculation.
-				// UNORM cannot be NaN, so this buffer never contributes to NaN%.
-				case 35: {  // R16G16_UNORM
-					const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 4u);
-					r = static_cast<std::uint8_t>(p[0] >> 8);
-					g = static_cast<std::uint8_t>(p[1] >> 8);
-					b = 0;
-					break;
-				}
-				case 10: {  // R16G16B16A16_FLOAT
-						const auto* p = reinterpret_cast<const std::uint16_t*>(src + x * 8u);
-						const auto half = [](std::uint16_t h) {
-							const auto sign = (h >> 15) & 1u;
-							const auto exp = (h >> 10) & 0x1fu;
-							const auto mant = h & 0x3ffu;
-							float v = exp == 0 ? std::ldexp(static_cast<float>(mant) / 1024.0f, -14) :
-												 std::ldexp(1.0f + static_cast<float>(mant) / 1024.0f, static_cast<int>(exp) - 15);
-							return sign ? -v : v;
-						};
-						r = ToByte(half(p[0]));
-						g = ToByte(half(p[1]));
-						b = ToByte(half(p[2]));
-						break;
-					}
-					default:
-						break;  // unreachable: DumpLogicalRT rejects unknown formats
-					}
-					row[x * 3u + 0] = b;
-					row[x * 3u + 1] = g;
-					row[x * 3u + 2] = r;
-				}
-				out.write(reinterpret_cast<const char*>(row.data()), rowBytes);
-			}
-		}
-
-		void DumpLogicalRT(std::uintptr_t a_rtm, std::uintptr_t a_renderer, std::uint32_t a_logical,
-			std::string_view a_label, std::uint64_t a_index) noexcept
-		{
-			if (g_dumpFiles >= 240) {
-				return;
-			}
-			const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
-			const auto phys = *reinterpret_cast<const std::int32_t*>(a_rtm + 0x13bc + static_cast<std::uintptr_t>(a_logical) * 4);
-			ID3D11RenderTargetView* rtv = phys >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(a_renderer + 0xa78 + static_cast<std::uintptr_t>(phys) * 0x30) : nullptr;
-			if (!d3dCtx || !rtv) {
-				return;
-			}
-			ID3D11Resource* res = nullptr;
-			rtv->GetResource(&res);
-			auto* tex = static_cast<ID3D11Texture2D*>(res);
-			if (!tex) {
-				return;
-			}
-			D3D11_TEXTURE2D_DESC desc{};
-			tex->GetDesc(&desc);
-			// v0.2.59: only decode formats whose pixel stride we actually know. The
-			// old catch-all assumed 8 bytes/pixel and walked off the end of any 4-byte
-			// surface — the crash that faulted every dump 180 renders after scope-in.
-			switch (desc.Format) {
-			case 26:  // R11G11B10_FLOAT
-			case 28:  // R8G8B8A8_UNORM
-			case 29:  // R8G8B8A8_UNORM_SRGB
-			case 87:  // B8G8R8A8_UNORM
-			case 91:  // B8G8R8A8_UNORM_SRGB
-			case 35:  // R16G16_UNORM — the G-buffer normals target (v0.2.65)
-			case 10:  // R16G16B16A16_FLOAT
-				break;
-			default: {
-				static std::uint32_t skipLogs = 0;
-				if (skipLogs < 10) {
-					++skipLogs;
-					logger::warn(FMT_STRING("DUMP {} SKIPPED — unhandled format {} ({}x{})"),
-						a_label, static_cast<std::uint32_t>(desc.Format), desc.Width, desc.Height);
-				}
-				res->Release();
-				return;
-			}
-			}
-			if (!g_dumpStage || g_dumpW != desc.Width || g_dumpH != desc.Height ||
-				g_dumpFmt != static_cast<std::uint32_t>(desc.Format)) {
-				if (g_dumpStage) {
-					g_dumpStage->Release();
-					g_dumpStage = nullptr;
-				}
-				D3D11_TEXTURE2D_DESC sd = desc;
-				sd.Usage = D3D11_USAGE_STAGING;
-				sd.BindFlags = 0;
-				sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-				sd.MiscFlags = 0;
-				sd.MipLevels = 1;
-				sd.ArraySize = 1;
-				sd.SampleDesc = { 1, 0 };
-				ID3D11Device* dev = nullptr;
-				d3dCtx->GetDevice(&dev);
-				if (dev) {
-					if (SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, &g_dumpStage))) {
-						g_dumpW = desc.Width;
-						g_dumpH = desc.Height;
-						g_dumpFmt = desc.Format;
-					}
-					dev->Release();
-				}
-			}
-			if (g_dumpStage) {
-				d3dCtx->CopyResource(g_dumpStage, tex);
-				D3D11_MAPPED_SUBRESOURCE m{};
-				if (SUCCEEDED(d3dCtx->Map(g_dumpStage, 0, D3D11_MAP_READ, 0, &m))) {
-					auto path = logger::log_directory();
-					if (path) {
-						const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
-						if (!path->generic_string().ends_with(gamepath)) {
-							path = path->parent_path().append(gamepath);
-						}
-						*path /= "TrueScopesDumps";
-						std::error_code ec;
-						std::filesystem::create_directories(*path, ec);
-						*path /= fmt::format("{:06}_{}.bmp"sv, a_index, a_label);
-						g_dumpNonFinite = 0;
-						WriteBMP(*path, static_cast<const std::uint8_t*>(m.pData), g_dumpW, g_dumpH, m.RowPitch, g_dumpFmt);
-						++g_dumpFiles;
-						const auto total = static_cast<double>(g_dumpW) * static_cast<double>(g_dumpH);
-						logger::info(FMT_STRING("DUMP {} -> {} ({}x{} fmt={}) NaN/Inf={:.2f}%"),
-							a_label, path->string(), g_dumpW, g_dumpH, g_dumpFmt,
-							total > 0.0 ? static_cast<double>(g_dumpNonFinite) * 100.0 / total : 0.0);
-					}
-					d3dCtx->Unmap(g_dumpStage, 0);
-				}
-			}
-			res->Release();
-		}
-
-		// One-call sampler: logical RT -> physical (rtm+0x13bc) -> RTV (renderer+
-		// 0xa78+phys*0x30) -> GetResource -> 1px staging copy+map.
-		std::uint64_t SampleLogicalRT(std::uintptr_t a_rtm, std::uintptr_t a_renderer, std::uint32_t a_logical,
-			ID3D11Texture2D** a_stage, std::uint32_t& a_fmt, std::uint32_t& a_w, std::uint32_t& a_h) noexcept
-		{
-			const auto d3dCtx = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
-			const auto phys = *reinterpret_cast<const std::int32_t*>(a_rtm + 0x13bc + static_cast<std::uintptr_t>(a_logical) * 4);
-			ID3D11RenderTargetView* rtv = phys >= 0 ? *reinterpret_cast<ID3D11RenderTargetView**>(a_renderer + 0xa78 + static_cast<std::uintptr_t>(phys) * 0x30) : nullptr;
-			if (!d3dCtx || !rtv) {
-				static bool failLogged = false;
-				if (!failLogged) {
-					failLogged = true;
-					logger::warn(FMT_STRING("READBACK sample failed: logical={:X} phys={} ctx={} rtv={}"),
-						a_logical, phys, reinterpret_cast<const void*>(d3dCtx), reinterpret_cast<const void*>(rtv));
-				}
-				return ~0ull;
-			}
-			ID3D11Resource* res = nullptr;
-			rtv->GetResource(&res);
-			auto* tex = static_cast<ID3D11Texture2D*>(res);
-			std::uint64_t v = ~0ull;
-			if (tex && EnsureStaging(d3dCtx, tex, a_stage, a_fmt, a_w, a_h)) {
-				v = SampleCenterPixel(d3dCtx, tex, *a_stage, a_w, a_h);
-			}
-			if (res) {
-				res->Release();
-			}
-			return v;
-		}
-		ID3D11Texture2D* g_stage62 = nullptr;
-		std::uint32_t g_rbFormat62 = 0;
-		std::uint32_t g_rbW62 = 0, g_rbH62 = 0;
-		std::uint64_t g_rbDark61Sky = 0;  // 0x61 dark AFTER the sky draw (post-resolve was lit)
-		std::uint64_t g_rbDark62 = 0;     // delivered lens (0x62) dark after the tonemap copy
-		// v0.2.52: 0x62 sampled at fill-hook ENTRY = end of the PREVIOUS frame, after
-		// every other writer in the frame had its turn (see SamplePreFillLens).
-		std::uint64_t g_rbPre62Samples = 0;
-		std::uint64_t g_rbPre62Dark = 0;
-		std::int32_t g_rbPre62State = -1;  // last classified state, for edge-only logging
-		// v0.2.55: NaN/Inf counters — the state every previous probe scored as "lit".
-		std::uint64_t g_rbNaN61 = 0;
-		std::uint64_t g_rbNaN62 = 0;
-		std::int32_t g_rbNaNState = -1;
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
@@ -944,95 +524,8 @@ namespace TrueScopes::ScopeRender
 		std::uint64_t g_invProjRejects = 0;
 		std::int32_t g_invProjState = -1;
 
-		// v0.2.59: find the NaN at its SOURCE instead of inferring it from buffers.
-		// 0x6a comes out 100% NaN from a single fullscreen additive pass while every
-		// input buffer is clean, so the poison is a CONSTANT the pass reads — i.e. a
-		// non-finite float in the staging camera block or the sun light. Scan the
-		// floats we feed it, right before the exec, and name the exact offset.
-		std::uint64_t g_camDataBad = 0;
-		std::int32_t g_camDataState = -1;
 
-		[[nodiscard]] std::int32_t FirstNonFiniteFloat(std::uintptr_t a_base, std::size_t a_bytes) noexcept
-		{
-			const auto* f = reinterpret_cast<const float*>(a_base);
-			const auto n = a_bytes / sizeof(float);
-			for (std::size_t i = 0; i < n; ++i) {
-				if (!std::isfinite(f[i])) {
-					return static_cast<std::int32_t>(i * sizeof(float));
-				}
-			}
-			return -1;
-		}
 
-		// v0.2.60: bracket the sun exec with 1-pixel readbacks of the accumulation
-		// buffer. camdata=0 says the constants we FEED the pass are finite, yet 0x6a
-		// still comes out 100% NaN — so stop inferring and measure causally: sample
-		// 0x6a right after our clear (must be the fog color) and again right after the
-		// exec. Clean-then-NaN means the sun draw generates it internally, and the next
-		// stop is a breakpoint inside the pass. NaN already after the clear means the
-		// writer is something else and the sun has been a red herring throughout.
-		std::uint64_t g_sunPreNaN = 0;
-		std::uint64_t g_sunPostNaN = 0;
-		std::int32_t g_sunNaNState = -1;
-
-		// v0.2.81 — WHAT IS ACTUALLY BOUND when the sun pass draws.
-		// The sun NaNs on exactly the pixels it shades (0x6a magenta below the horizon,
-		// sky clean) from inputs that all probe healthy. The remaining per-pixel inputs
-		// are the G-buffer textures themselves -- and a pass sampling an UNBOUND SRV reads
-		// zeros, which is a fine way to divide by zero and produce NaN. Our hook fires at
-		// the resolve's light-accum BIND, which may be before the resolve has bound the
-		// G-buffer as shader resources for its own light volumes.
-		//
-		// Ask D3D rather than reason about it. Logged at BOTH call sites so the old
-		// placement is the control beside the new one (gotcha #3: always print a
-		// known-good control beside the unknown).
-		void ProbeBoundResources(std::string_view a_where) noexcept
-		{
-			// v0.2.82: budget PER LABEL. A single shared counter was consumed entirely by
-			// the control condition within 70 ms (~90 renders/s), so the case the probe
-			// existed to capture never logged at all. Same family as gotcha #5.
-			static std::map<std::string, std::uint32_t, std::less<>> logs;
-			if (auto it = logs.find(a_where); it != logs.end()) {
-				if (it->second >= 4) {
-					return;
-				}
-				++it->second;
-			} else {
-				logs.emplace(std::string{ a_where }, 1u);
-			}
-			auto* const d3d = *reinterpret_cast<ID3D11DeviceContext**>(REL::Module::get().base() + kD3DContextRVA);
-			if (!d3d) {
-				return;
-			}
-			ID3D11ShaderResourceView* srv[16] = {};
-			d3d->PSGetShaderResources(0, 16, srv);
-			std::string bound;
-			int count = 0;
-			for (int i = 0; i < 16; ++i) {
-				if (srv[i]) {
-					++count;
-					fmt::format_to(std::back_inserter(bound), FMT_STRING("{}{}"), bound.empty() ? "" : ",", i);
-					srv[i]->Release();  // PSGetShaderResources AddRefs every returned view
-				}
-			}
-			ID3D11RenderTargetView* rtv[4] = {};
-			ID3D11DepthStencilView* dsv = nullptr;
-			d3d->OMGetRenderTargets(4, rtv, &dsv);
-			int rtCount = 0;
-			for (auto*& r : rtv) {
-				if (r) {
-					++rtCount;
-					r->Release();
-				}
-			}
-			const bool haveDS = dsv != nullptr;
-			if (dsv) {
-				dsv->Release();
-			}
-			logger::info(
-				FMT_STRING("SUN BINDINGS [{}]: PS SRV slots bound = {} of 16 [{}], RTs bound = {}, DS bound = {} — zero SRVs here means the pass samples unbound textures"),
-				a_where, count, bound, rtCount, haveDS);
-		}
 
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
@@ -1868,21 +1361,20 @@ namespace TrueScopes::ScopeRender
 			// to the widgetApertureRadius setting for an unrecognised scope, so an
 			// optic the table has never seen behaves exactly as it did before.
 			const auto  aperture = ScopeIdent::ApertureRadius();
-			const auto  scaleOverride = static_cast<float>(*Settings::widgetScaleOverride);
 			// v0.2.123 — under-aperture sizing (encapsulation layer 2): shrink the
 			// disc slightly inside the housing hole so the seam is never a bright
 			// picture pixel. Applies after the per-scope table, so every entry
-			// keeps its relative fit; the override (a bisect tool) bypasses it.
+			// keeps its relative fit.
 			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 1.1f);
-			const float scale = scaleOverride > 0.0f ? scaleOverride : (aperture * apScale) / kVanillaRenderCircleRadius;
+			const float scale = (aperture * apScale) / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
 			// cannot tell that apart from a broken render — refuse instead of guessing.
 			if (!(scale > 0.001f && scale < 8.0f)) {
 				static bool warned = false;
 				if (!warned) {
 					warned = true;
-					logger::warn(FMT_STRING("WIDGET FIT refused: scale {} out of range (aperture={} override={})"),
-						scale, aperture, scaleOverride);
+					logger::warn(FMT_STRING("WIDGET FIT refused: scale {} out of range (aperture={})"),
+						scale, aperture);
 				}
 				return FitOutcome::kNotWritten;
 			}
@@ -2119,32 +1611,6 @@ namespace TrueScopes::ScopeRender
 			// (which it forces to full-frame {0,1,1,0} itself — do not touch +0x184,
 			// that is per-eye frustum data on this type).
 
-			// v0.2.73 LEVER 1 — RENDER RESOLUTION. Shrink the viewport to the top-left
-			// sub-rect of the fixed-size scope G-buffer. MUST come after SetCameraFOV,
-			// which rewrites this port to full-frame on every call.
-			//
-			// rect = {left, right, top, bottom} and the engine builds
-			//   X = w*left   Y = (1-top)*h   W = (right-left)*w   H = (top-bottom)*h
-			// (TS_BSGraphicsState_BuildViewportFromCamDataRect, 0x141d8d480 — read, not
-			// guessed). {0, s, 1, 1-s} therefore gives an s*w by s*h viewport anchored
-			// at the origin, which is the anchor a future delivery-UV fix wants.
-			//
-			// The PROJECTION is deliberately left alone, so this squeezes the same
-			// image into fewer pixels and the lens shows it shrunk into a corner. That
-			// makes the picture wrong and the measurement right: it prices the whole
-			// G-buffer -> lighting -> composite chain at reduced resolution before any
-			// effort is spent teaching the delivery to sample a sub-rect.
-			{
-				auto scale = static_cast<float>(*Settings::perfRenderScale);
-				if (scale < 1.0f) {
-					scale = scale < 0.05f ? 0.05f : scale;  // a 0 viewport is a D3D error, not an experiment
-					auto* const port = reinterpret_cast<float*>(cam + 0x214);
-					port[0] = 0.0f;
-					port[1] = scale;
-					port[2] = 1.0f;
-					port[3] = 1.0f - scale;
-				}
-			}
 
 			// ============================ v0.2.71 — THE PERF FIX (§3.7e) ==========
 			// Publish the frustum we just built to the slot the CULLER actually reads.
@@ -2573,61 +2039,10 @@ namespace TrueScopes::ScopeRender
 							rgb[2] *= scale;
 						}
 
-						// v0.2.59: scan the constants this pass is about to read. A
-						// fullscreen additive draw turns ALL of 0x6a to NaN only if one
-						// of its uniform inputs is already non-finite — the staging
-						// camera block (both eye slots, view/proj/viewproj + the
-						// inverse-projection at +0x1d0) or the sun light's own floats.
-						// Whatever this names is the actual root cause; the buffer-level
-						// evidence cannot narrow it further.
-						if (*Settings::diagLensReadback) {
-							const auto ctxS = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
-							const auto ctxU = ctxS ? ctxS : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
-							const auto staging = ctxU ? *reinterpret_cast<std::uintptr_t*>(ctxU + 0x25d0) : 0;
-							const auto badStaging = staging ? FirstNonFiniteFloat(staging + 0x20, 0x420) : -1;
-							const auto sunL = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248);
-							const auto niL = sunL ? *reinterpret_cast<std::uintptr_t*>(sunL + 0xb8) : 0;
-							const auto badLight = niL ? FirstNonFiniteFloat(niL + 0x16c, 12) : -1;
-							const auto anyBad = badStaging >= 0 || badLight >= 0;
-							if (anyBad) {
-								++g_camDataBad;
-							}
-							if (const auto st = anyBad ? 1 : 0; st != g_camDataState) {
-								g_camDataState = st;
-								static std::uint32_t logs = 0;
-								if (logs < 60) {
-									++logs;
-									if (anyBad) {
-										logger::warn(
-											FMT_STRING("CAMDATA non-finite BEFORE sun exec: staging+0x{:X} (rel 0x20), light+0x{:X}, count={}"),
-											badStaging >= 0 ? 0x20 + badStaging : 0, badLight >= 0 ? 0x16c + badLight : 0,
-											g_camDataBad);
-									} else {
-										logger::info(FMT_STRING("CAMDATA clean again (total bad frames={})"), g_camDataBad);
-									}
-								}
-							}
-						}
 
 						alignas(16) std::uint8_t sunCtx[0x2d0];
 						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
 
-						// v0.2.76: the accumulation target. TS_DrawWorld_PreWorldLightingStage
-						// (0x142846d60) sets ctx+0x1c = renderer+4 ? 0x6a : 0x24 before every
-						// pass it draws — six sites — and 0xffffffff where it wants none.
-						// FUN_142812be0 zeroes the field, so every sun exec we have ever done
-						// ran with accum target 0. Default -1 leaves it alone so the gate
-						// measurement below reads the historical behaviour, not a mixed change.
-						if (const auto tgt = *Settings::sunCtxAccumTarget; tgt >= 0) {
-							*reinterpret_cast<std::uint32_t*>(sunCtx + 0x1c) = static_cast<std::uint32_t>(tgt);
-						}
-						// v0.2.60 causal bracket: 0x6a immediately before the sun draw
-						// (must be the fog clear) and immediately after it.
-						std::uint64_t accumPre = 0;
-						const bool bracket = *Settings::diagLensReadback;
-						if (bracket) {
-							accumPre = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
-						}
 
 						// ⚠️ THE GATE (Ghidra 2026-08-09, FUN_142891040). This does NOT
 						// unconditionally draw. It is:
@@ -2650,24 +2065,8 @@ namespace TrueScopes::ScopeRender
 						// We discarded this byte for the entire sun arc, and reported
 						// `sunPass=1` — meaning "we called it" — in its place. Gotcha #3: a
 						// probe that cannot represent the failure will exonerate every suspect.
-						// v0.2.77 THE ORDERING PROBE. Read the G-buffer this light is about to
-						// shade from, right here, before the draw. Compare with the same two
-						// buffers after the resolve (the end-of-render dump) -- if they are
-						// empty now and populated then, our sun is shading nothing.
-						if (*Settings::diagSunOrderProbe) {
-							const auto g63 = SampleLogicalRT(rtm, renderer, 0x63, &g_stage63, g_rbFormat63, g_rbW63, g_rbH63);
-							const auto g64 = SampleLogicalRT(rtm, renderer, 0x64, &g_stage64, g_rbFormat64, g_rbW64, g_rbH64);
-							static std::uint32_t probeLogs = 0;
-							if (probeLogs < 8) {
-								++probeLogs;
-								logger::info(
-									FMT_STRING("SUN ORDER PROBE (pre-exec): 0x63 albedo={:016X} (fmt={} {}x{}) 0x64 normals={:016X} (fmt={} {}x{}) — zero/empty here means the sun is shading an unfilled G-buffer"),
-									g63, g_rbFormat63, g_rbW63, g_rbH63, g64, g_rbFormat64, g_rbW64, g_rbH64);
-							}
-						}
 
 
-						ProbeBoundResources("in-resolve"sv);
 
 						// v0.2.82 — THE FIX. Measured at the deferred call site:
 						//   pre-resolve (old) : SRV [0,1,5,6,7], RTs bound = 1
@@ -2686,7 +2085,6 @@ namespace TrueScopes::ScopeRender
 							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
 							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
 							Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-							ProbeBoundResources("in-resolve AFTER rebind"sv);
 						}
 						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
 						Fn<FlushBatch_t>(0x2891300)(sunCtx);
@@ -2700,79 +2098,12 @@ namespace TrueScopes::ScopeRender
 						if (static std::int32_t lastDrew = -1; lastDrew != g_diagSunDrew) {
 							lastDrew = g_diagSunDrew;
 							logger::info(
-								FMT_STRING("SUN EXEC {} — FUN_142891040 returned {} (technique 0x{:X}, ctxAccumTarget {}). drew={} gated={}"),
+								FMT_STRING("SUN EXEC {} — FUN_142891040 returned {} (technique 0x{:X}). drew={} gated={}"),
 								sunDrew ? "DREW" : "GATED OFF (SetupTechnique refused; nothing was rasterised)",
-								static_cast<int>(sunDrew), g_diagSunCfgFlags, *Settings::sunCtxAccumTarget,
+								static_cast<int>(sunDrew), g_diagSunCfgFlags,
 								g_sunDrewCount, g_sunGatedCount);
 						}
 
-						if (bracket) {
-							const auto accumPost =
-								SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
-							const auto preBad = PixelNonFinite(g_rbFormat6a, accumPre);
-							const auto postBad = PixelNonFinite(g_rbFormat6a, accumPost);
-							if (preBad) {
-								++g_sunPreNaN;
-							}
-							if (postBad) {
-								++g_sunPostNaN;
-							}
-							if (const auto st = (preBad ? 2 : 0) + (postBad ? 1 : 0); st != g_sunNaNState) {
-								g_sunNaNState = st;
-								static std::uint32_t logs = 0;
-								if (logs < 60) {
-									++logs;
-									logger::warn(
-										FMT_STRING("SUNBRACKET 0x6a pre={:016X}{} post={:016X}{} — {} (pre={} post={})"),
-										accumPre, preBad ? " NaN"sv : ""sv, accumPost, postBad ? " NaN"sv : ""sv,
-										!preBad && postBad ? "THE SUN DRAW CREATES IT"sv :
-											preBad         ? "already NaN before the sun draw"sv :
-															 "clean"sv,
-										g_sunPreNaN, g_sunPostNaN);
-								}
-								// v0.2.61: FINITE IS NOT NON-DEGENERATE. camdata=0 only
-								// proved no input was Inf/NaN — but normalize() of a ZERO
-								// vector is 0/0 = NaN, and a zero matrix passes isfinite on
-								// every element. BSDFLightShader::SetupGeometry builds the
-								// Dir-light constants from the staging EYE-1 view matrix
-								// (+0x260, the second 0x210-stride block), which nothing
-								// populates for our mono camera except our own memcpy
-								// mirror. A near-zero eye-1 view matrix would produce
-								// exactly what we measure: finite inputs, a NaN constant,
-								// and a 100%-NaN buffer from one fullscreen additive draw.
-								static std::uint32_t matLogs = 0;
-								if (!preBad && postBad && matLogs < 12) {
-									++matLogs;
-									const auto ctxS = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
-									const auto ctxU = ctxS ? ctxS : (g_ctxPtrB ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB) : 0);
-									if (const auto stg = ctxU ? *reinterpret_cast<std::uintptr_t*>(ctxU + 0x25d0) : 0) {
-										const auto* e0 = reinterpret_cast<const float*>(stg + 0x50);
-										const auto* e1 = reinterpret_cast<const float*>(stg + 0x260);
-										const auto mag = [](const float* m, int row) {
-											return std::sqrt(m[row * 4 + 0] * m[row * 4 + 0] +
-												m[row * 4 + 1] * m[row * 4 + 1] + m[row * 4 + 2] * m[row * 4 + 2]);
-										};
-										logger::warn(
-											FMT_STRING("  eye0 view rowmag=({:.4f},{:.4f},{:.4f}) eye1 view rowmag=({:.4f},{:.4f},{:.4f})"),
-											mag(e0, 0), mag(e0, 1), mag(e0, 2), mag(e1, 0), mag(e1, 1), mag(e1, 2));
-										logger::warn(
-											FMT_STRING("  eye1 view = [{} {} {} {}][{} {} {} {}][{} {} {} {}][{} {} {} {}]"),
-											e1[0], e1[1], e1[2], e1[3], e1[4], e1[5], e1[6], e1[7],
-											e1[8], e1[9], e1[10], e1[11], e1[12], e1[13], e1[14], e1[15]);
-										const auto* p1 = reinterpret_cast<const float*>(stg + 0x2a0);
-										logger::warn(
-											FMT_STRING("  eye1 proj diag=({},{},{},{}) eyePos0=({},{},{}) eyePos1=({},{},{})"),
-											p1[0], p1[5], p1[10], p1[15],
-											*reinterpret_cast<const float*>(ctxU + 0x2590),
-											*reinterpret_cast<const float*>(ctxU + 0x2594),
-											*reinterpret_cast<const float*>(ctxU + 0x2598),
-											*reinterpret_cast<const float*>(ctxU + 0x25a0),
-											*reinterpret_cast<const float*>(ctxU + 0x25a4),
-											*reinterpret_cast<const float*>(ctxU + 0x25a8));
-									}
-								}
-							}
-						}
 
 						if (scaling) {
 							std::memcpy(reinterpret_cast<float*>(niLight + 0x16c), savedRGB, sizeof(savedRGB));
@@ -2867,58 +2198,6 @@ namespace TrueScopes::ScopeRender
 			}
 			TimerMark(5);  // end "resolve" (G-buffer draw + light volumes + composite)
 
-			// v0.2.43 black-burst forensics: sample the center pixel of the light
-			// accum (0x6a) and the composite (0x61) right after the resolve. On a
-			// burst frame (world black, sky fine) exactly one story is possible:
-			// 0x6a dark = the lighting/clear side died; 0x6a lit but 0x61 dark = the
-			// composite consumption died. Aim at a WALL while hunting (the center
-			// pixel must be geometry, not sky).
-			// v0.2.47 three-point readback: this (post-resolve) + post-sky + post-
-			// delivery. Crescent-LED result (v0.2.46): bursts happen WITH fills
-			// running (blue crescent, black world) while post-resolve 0x61 is never
-			// dark (v0.2.44) — so the blackness enters in the sky draw or the
-			// tonemap delivery. Whichever sample goes dark first names the stage.
-			std::uint64_t rbPostResolve = ~0ull;
-			if (*Settings::diagLensReadback) {
-				rbPostResolve = SampleLogicalRT(rtm, renderer, 0x61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61);
-				const auto p6a = SampleLogicalRT(rtm, renderer, 0x6a, &g_stage6a, g_rbFormat6a, g_rbW6a, g_rbH6a);
-				++g_rbSamples;
-				// v0.2.55: NaN/Inf in the composite — scored "lit" by PixelDark (its
-				// exponent is 0x1f, far above the <12 dark cutoff) but displayed BLACK.
-				// Edge-logged with the raw pixel and the camera numbers most likely to
-				// have produced it, so one black event names its own cause.
-				if (const auto nan61 = PixelNonFinite(g_rbFormat61, rbPostResolve) ? 1 : 0;
-					nan61 != g_rbNaNState) {
-					g_rbNaNState = nan61;
-					static std::uint32_t nanLogs = 0;
-					if (nanLogs < 60) {
-						++nanLogs;
-						const auto frustum = *reinterpret_cast<const float**>(cam + 0x1a0);
-						logger::warn(
-							FMT_STRING("NaN/Inf in 0x61 -> {} (px={:016X}) camRect=({},{},{},{},{},{}) frustum(l,r,t,b,n,f)=({},{},{},{},{},{})"),
-							nan61 != 0 ? "PRESENT"sv : "gone"sv, rbPostResolve,
-							g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
-							frustum ? frustum[0] : 0.0f, frustum ? frustum[1] : 0.0f, frustum ? frustum[2] : 0.0f,
-							frustum ? frustum[3] : 0.0f, frustum ? frustum[4] : 0.0f, frustum ? frustum[5] : 0.0f);
-					}
-				}
-				if (PixelNonFinite(g_rbFormat61, rbPostResolve)) {
-					++g_rbNaN61;
-				}
-				if (PixelDark(g_rbFormat61, rbPostResolve)) {
-					++g_rbDark61;
-				}
-				if (PixelDark(g_rbFormat6a, p6a)) {
-					++g_rbDark6a;
-				}
-				static std::uint32_t baselineLogs = 0;
-				if (baselineLogs < 3) {
-					++baselineLogs;
-					logger::info(
-						FMT_STRING("READBACK baseline post-resolve: 0x61={:016X} 0x6a={:016X} (fmt61={} fmt6a={} {}x{})"),
-						rbPostResolve, p6a, g_rbFormat61, g_rbFormat6a, g_rbW61, g_rbH61);
-				}
-			}
 
 			// --- SKY accumulate + draw (post-resolve; groups corrected in v0.2.40) ---
 			// Vanilla order: composite into 0x61, THEN draw sky groups 0x11/0x12/0x13
@@ -3017,13 +2296,6 @@ namespace TrueScopes::ScopeRender
 				g_diagSkyDrawn = 1;
 			}
 
-			std::uint64_t rbPostSky = ~0ull;
-			if (*Settings::diagLensReadback) {
-				rbPostSky = SampleLogicalRT(rtm, renderer, 0x61, &g_stage61, g_rbFormat61, g_rbW61, g_rbH61);
-				if (PixelDark(g_rbFormat61, rbPostSky)) {
-					++g_rbDark61Sky;
-				}
-			}
 
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
 			TimerMark(6);  // end "sky" (sky accumulation + immediate group draw)
@@ -3178,47 +2450,9 @@ namespace TrueScopes::ScopeRender
 				Fn<SelectDS_t>(0x1db9e40)(rtm, kDS_None, 3, 0);
 				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
 			}
-			switch (*Settings::lensMode) {
-			case 3:
-				Fn<IsmCopy_t>(0x27b0880)(0x63, Addr::kRT_ScopeLens);
-				break;
-			case 4:
-				Fn<IsmCopy_t>(0x27b0880)(0x6a, Addr::kRT_ScopeLens);
-				break;
-			case 5:
-				Fn<IsmCopy_t>(0x27b0880)(0x6b, Addr::kRT_ScopeLens);
-				break;
-			case 6:
-				Fn<IsmCopy_t>(0x27b0880)(0x64, Addr::kRT_ScopeLens);
-				break;
-			case 7:
-				// Raw (un-tonemapped) composite output — separates "composite wrote
-				// darkness" from "the tonemap crushed it".
-				Fn<IsmCopy_t>(0x27b0880)(0x61, Addr::kRT_ScopeLens);
-				break;
-			case 8:
-				// v0.2.53 — RENDER WITHOUT DELIVERY. Everything above runs (the whole
-				// second world render and every piece of engine state it touches), but
-				// nothing is written into the lens RT, so the lens keeps whatever the
-				// fill hook pre-painted (use with diagPauseTint = solid blue).
-				//
-				// Splits the last two variables apart. Field ladder so far: no render +
-				// clear (mode 0) = never black; no render + raw copy (mode 1) = never
-				// black; render + tonemap (mode 2) = black; render + raw copy (mode 7) =
-				// black. Delivery path is therefore irrelevant and the render is the
-				// trigger — while every readback (0x61 post-resolve, 0x61 post-sky, 0x62
-				// post-delivery, 0x62 at next-frame entry) reads LIT through the blacks.
-				//   blue goes black here => the render's SIDE EFFECTS on engine state
-				//       blacken the lens surface; no texture we write is involved, and
-				//       the hunt moves to what our bracket leaves behind (renderer
-				//       flags, RT/DS binds, camera + viewport state, shader property
-				//       cache) at the time the lens quad draws.
-				//   blue survives here   => the black IS written into the lens RT by the
-				//       delivery, and the readback is not reading what the lens samples
-				//       (aux-vs-live texture, or a different logical target) —
-				//       an x64dbg session on the slot-6 bind settles which.
-				break;
-			default:
+			{
+				// lensMode diag rungs 3-8 removed v0.2.139; mode 2 (the shipping path)
+				// is the only one that reaches delivery - modes 0/1 divert upstream.
 				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
 				// v0.2.104 — OWN DELIVERY PASS. Composite the engine's reticle + the
 				// glass look over the tonemapped picture (LensComposite.cpp). Runs
@@ -3238,7 +2472,6 @@ namespace TrueScopes::ScopeRender
 				} else {
 					LensComposite::RestoreReticleQuad();
 				}
-				break;
 			}
 			if (unbindDS) {
 				// Restore exactly what step 16 left bound, so nothing downstream sees
@@ -3255,87 +2488,7 @@ namespace TrueScopes::ScopeRender
 			TimerMark(7);
 			TimersEnd();
 
-			// v0.2.54: full-surface dump of the composite and the delivered lens,
-			// taken at the same point the 1-pixel readback is taken (right after
-			// delivery) so the two diagnostics describe the same instant.
-			{
-				static std::uint64_t dumpSeq = 0;
-				++dumpSeq;
-				// v0.2.65: an explicit request (DevBench /dump/now) fires on the very
-				// next render regardless of cadence. The modulo path alone silently
-				// produced nothing when the probe window was shorter than the period —
-				// with the render rate ~9/s, `every=200` needs 20+ seconds to be sure.
-				const bool onDemand = g_dumpRequest.exchange(false);
-				const auto every = *Settings::diagDumpLensEveryNRenders;
-				if (onDemand || (every > 0 && (dumpSeq % static_cast<std::uint64_t>(every)) == 0)) {
-					// v0.2.55 established the composite is NaN on exactly the pixels
-					// covered by world geometry, while the (separately drawn, forward)
-					// sky stays clean — so the corruption is inside the deferred chain.
-					// These four intermediates split it by stage on a single frame:
-					//   0x63 albedo / 0x64 normals   = G-buffer (geometry pass output)
-					//   0x6a diffuse / 0x6b specular = light accumulation
-					// The first buffer showing magenta is where NaN is born; every
-					// stage upstream of it is exonerated.
-					if (*Settings::diagDumpBuffers) {
-						DumpLogicalRT(rtm, renderer, 0x63, "63_gbuf_albedo"sv, dumpSeq);
-						DumpLogicalRT(rtm, renderer, 0x64, "64_gbuf_normals"sv, dumpSeq);
-						DumpLogicalRT(rtm, renderer, 0x6a, "6a_accum_diffuse"sv, dumpSeq);
-						DumpLogicalRT(rtm, renderer, 0x6b, "6b_accum_specular"sv, dumpSeq);
-						// v0.2.75 — THE CONTROL. The MAIN VIEW's light accumulation, the
-						// same buffers ours are: renderer+4 is precisely the flag that
-						// remaps 0x24/0x25 -> 0x6a/0x6b for a scoped pass, so these two
-						// are the engine's own output of the very pass we are failing to
-						// reproduce, in the same units, on the same frame.
-						//
-						// Gotcha #3 says to always print a known-good control beside the
-						// unknown; this lighting hunt has never had one. It splits the
-						// question in a single dump:
-						//   0x24 shows real directional light, ours is flat  => our INPUTS
-						//     to the sun pass are wrong; hunt them, the model is right.
-						//   0x24 is ALSO flat                               => the sun does
-						//     NOT reach the main view through the accum either, our whole
-						//     model of where FO4VR's sunlight comes from is wrong, and the
-						//     composite's own 0x40 sun term is where to look instead.
-						// The second outcome would invalidate the entire v0.2.26-62 sun
-						// arc, which is exactly why it is worth one dump to rule out.
-						//
-						// Caveat to keep with the data: our render runs at the fill hook,
-						// so depending on where that sits in the frame these may hold the
-						// PREVIOUS frame's main-view accumulation. Adjacent frame, same
-						// scene - fine as a control, wrong as a per-frame correlation.
-						DumpLogicalRT(rtm, renderer, 0x24, "24_MAIN_accum_diffuse"sv, dumpSeq);
-						DumpLogicalRT(rtm, renderer, 0x25, "25_MAIN_accum_specular"sv, dumpSeq);
-					}
-					DumpLogicalRT(rtm, renderer, 0x61, "61_composite"sv, dumpSeq);
-					DumpLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens), "62_lens"sv, dumpSeq);
-					// Publish AFTER the files are written, so a client that polls
-					// DumpEventCount() and then reads the directory cannot race a
-					// half-written BMP.
-					g_lastDumpIndex.store(dumpSeq);
-					g_dumpEvents.fetch_add(1);
-				}
-			}
 
-			if (*Settings::diagLensReadback) {
-				const auto rbLens = SampleLogicalRT(rtm, renderer, static_cast<std::uint32_t>(Addr::kRT_ScopeLens),
-					&g_stage62, g_rbFormat62, g_rbW62, g_rbH62);
-				const bool darkLens = PixelDark(g_rbFormat62, rbLens);
-				if (PixelNonFinite(g_rbFormat62, rbLens)) {
-					++g_rbNaN62;
-				}
-				if (darkLens) {
-					++g_rbDark62;
-				}
-				if (darkLens || PixelDark(g_rbFormat61, rbPostSky) || PixelDark(g_rbFormat61, rbPostResolve)) {
-					static std::uint32_t darkLogs = 0;
-					if (darkLogs < 30) {
-						++darkLogs;
-						logger::warn(
-							FMT_STRING("READBACK DARK: postResolve61={:016X} postSky61={:016X} lens62={:016X} (fmt62={} {}x{})"),
-							rbPostResolve, rbPostSky, rbLens, g_rbFormat62, g_rbW62, g_rbH62);
-					}
-				}
-			}
 
 			RENDER_STEP(18);
 			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
@@ -3548,47 +2701,11 @@ namespace TrueScopes::ScopeRender
 			}
 		}
 		if (renders <= 5 || renders % 300 == 0) {
-			std::string groups;
-			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
-				if (g_passCounts[g] != 0) {
-					fmt::format_to(std::back_inserter(groups), FMT_STRING("{}{:X}:{}"), groups.empty() ? "" : " ", g, g_passCounts[g]);
-				}
-			}
-			std::string skyNew;
-			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
-				if (g_skyAfterCounts[g] != g_skyBaseCounts[g]) {
-					fmt::format_to(std::back_inserter(skyNew), FMT_STRING("{}{:X}:{:+}"), skyNew.empty() ? "" : " ", g,
-						static_cast<std::int64_t>(g_skyAfterCounts[g]) - static_cast<std::int64_t>(g_skyBaseCounts[g]));
-				}
-			}
 			logger::info(
-				FMT_STRING("ScopeRender #{}: passes total={} [{}] lights={}+{} fogNulls={} fog=({:.3f},{:.3f},{:.3f}) rb={}/{}/{}/{}/{} pre62={}/{} nan={}/{} invproj={} camdata={} sun6a={}/{} sky={}/{}/{}/{} skyNew=[{}] sunPass={} sunDrew={} (drew={} gated={}) sunCfgFlags={:X} sunIsSSN={} sunSlot={}/{} sunFlags={:016X} eyes={} cull={}/{} port=({},{},{},{}) camRect=({},{},{},{},{},{}) viewport=({},{},{},{},{},{}) fov={:.3f} derived={:.3f} (M={:.2f} R={:.3f} d={:.2f})"),
-				renders, g_passTotal, groups, g_diagLightsA, g_diagLightsB,
-				g_diagFogNulls, g_fogRGB[0], g_fogRGB[1], g_fogRGB[2],
-				g_rbSamples, g_rbDark61, g_rbDark6a, g_rbDark61Sky, g_rbDark62,
-				g_rbPre62Samples, g_rbPre62Dark, g_rbNaN61, g_rbNaN62, g_invProjRejects, g_camDataBad, g_sunPreNaN, g_sunPostNaN,
-				g_diagSkyEmptyPre, g_diagSkyRoots, g_diagSkyEmptyPost, g_diagSkyDrawn, skyNew,
-				g_diagSunPass, g_diagSunDrew, g_sunDrewCount, g_sunGatedCount,
-				g_diagSunCfgFlags, g_diagSunIsSSNSun,
-				g_diagSunSlotPre, g_diagSunSlotPost, g_diagSunFlags, g_diagEyeCount,
-				g_diagCullFix, g_diagFrustumAliased,
-				g_diagPort[0], g_diagPort[1], g_diagPort[2], g_diagPort[3],
-				g_diagRect[0], g_diagRect[1], g_diagRect[2], g_diagRect[3], g_diagRect[4], g_diagRect[5],
-				g_diagViewport[0], g_diagViewport[1], g_diagViewport[2], g_diagViewport[3], g_diagViewport[4], g_diagViewport[5],
-				g_lastFovDeg, g_derivedFovDeg, ScopeIdent::FovMult(), g_derivedDiscR, g_derivedEyeDist);
-
-			// v0.2.75: the sun's own inputs. A basis of zeros (or garbage) here IS the
-			// answer to "why does the sun pass add nothing" — see the note at the
-			// capture site. Printed every heartbeat so it is in the log of any run.
-			logger::info(
-				FMT_STRING("ScopeRender #{}: SUN basis=[{:.4f},{:.4f},{:.4f} | {:.4f},{:.4f},{:.4f} | {:.4f},{:.4f},{:.4f}] pos=({:.1f},{:.1f},{:.1f}) rgb=({:.3f},{:.3f},{:.3f}) scale={:.3f} exec={}"),
-				renders,
-				g_diagSunBasis[0], g_diagSunBasis[1], g_diagSunBasis[2],
-				g_diagSunBasis[3], g_diagSunBasis[4], g_diagSunBasis[5],
-				g_diagSunBasis[6], g_diagSunBasis[7], g_diagSunBasis[8],
-				g_diagSunPos[0], g_diagSunPos[1], g_diagSunPos[2],
-				g_diagSunRGB[0], g_diagSunRGB[1], g_diagSunRGB[2],
-				g_diagSunScale, *Settings::sunExecEnabled);
+				FMT_STRING("ScopeRender #{}: passes={} sky={} sun={} lensMode={} fillEveryN={} presence={} faulted={}"),
+				renders, g_passTotal, g_diagSkyDrawn, g_diagSunPass,
+				*Settings::lensMode, *Settings::fillEveryNFrames,
+				WidgetPresentable(), g_faulted);
 
 			// v0.2.73: the stage stopwatch, on its own line. Every condition that
 			// changes the numbers (clamped lights, reduced render scale, sample count,
@@ -3601,9 +2718,9 @@ namespace TrueScopes::ScopeRender
 					fmt::format_to(std::back_inserter(cpu), FMT_STRING("{}{}={:.2f}"), i ? " " : "", kStageNames[i], t.cpuMs[i]);
 				}
 				logger::info(
-					FMT_STRING("ScopeRender #{}: PERF n={}gpu/{}cpu disjoint={} renderScale={:.3f} lightsClamp={} | GPU {:.2f} ms [{}] | CPU {:.2f} ms [{}]"),
+					FMT_STRING("ScopeRender #{}: PERF n={}gpu/{}cpu disjoint={} lightsClamp={} | GPU {:.2f} ms [{}] | CPU {:.2f} ms [{}]"),
 					renders, t.gpuSamples, t.cpuSamples, t.disjoint,
-					*Settings::perfRenderScale, g_diagLightsClamp,
+					g_diagLightsClamp,
 					t.gpuTotalMs, gpu, t.cpuTotalMs, cpu);
 			}
 		}
@@ -3620,22 +2737,6 @@ namespace TrueScopes::ScopeRender
 		return g_renderTid.load();
 	}
 
-	void TintLens(float a_r, float a_g, float a_b)
-	{
-		// Diagnostic: paint the lens RT 0x62 a solid color (v0.2.23 clear pattern),
-		// then restore the same exit binds Render() leaves. Used by the fill hook to
-		// color-code non-filled frames (burst forensics): if a black burst shows as
-		// RED/GREEN instead, the burst was a non-filled frame, not a broken render.
-		const auto base = REL::Module::get().base();
-		const auto renderer = base + kRendererRVA;
-		const auto rtm = base + kRTManager;
-		Fn<SetClearColor_t>(0x1d8dc80)(renderer, a_r, a_g, a_b, 1.0f);
-		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, Addr::kRT_ScopeLens, 3);
-		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-		Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
-		Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
-		Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-	}
 
 	void CamSmoothReset() noexcept
 	{
@@ -3822,61 +2923,6 @@ namespace TrueScopes::ScopeRender
 		}
 	}
 
-	void SamplePreFillLens()
-	{
-		// v0.2.52 — THE MISSING MEASUREMENT. Every readback so far ran INSIDE the
-		// fill hook, right after our own delivery, and reported 0x62 lit (12300
-		// samples, 0 dark, across sessions containing sustained blacks). But the
-		// widget quad samples 0x62 much later in the frame, so that only ever
-		// proved "our write is lit when we write it".
-		//
-		// The tint evidence says the black is inside the texture, not over it: the
-		// crescent (a region of 0x62 outside the delivery footprint, drawn by the
-		// SAME quad) keeps its blue while the picture area goes black. Nothing
-		// opaque in front could take one and not the other. So the suspect is a
-		// LATER writer that repaints only the delivery footprint — a viewport-shaped
-		// draw (ImageSpace-style), not a clear (a ClearRenderTargetView would take
-		// the crescent too).
-		//
-		// Sampling here — at fill-hook ENTRY, before our pre-paint and delivery —
-		// reads what 0x62 held after everything else in the PREVIOUS frame finished.
-		//   pre62 DARK while the lens looks black  => a later writer exists; find it
-		//                                             (next: x64dbg conditional BP on
-		//                                             the RT bind choke point
-		//                                             FUN_141dbd380, phys index of
-		//                                             0x62, during the sustained repro).
-		//   pre62 lit while the lens looks black   => 0x62 is intact all frame and the
-		//                                             black is in how the widget draws
-		//                                             it (material / slot-6 bind / UV /
-		//                                             alpha), not in our chain at all.
-		const auto base = REL::Module::get().base();
-		const auto renderer = base + kRendererRVA;
-		const auto rtm = base + kRTManager;
-		const auto px = SampleLogicalRT(rtm, renderer, Addr::kRT_ScopeLens,
-			&g_stage62, g_rbFormat62, g_rbW62, g_rbH62);
-		if (px == ~0ull) {
-			return;
-		}
-		++g_rbPre62Samples;
-		const auto dark = PixelDark(g_rbFormat62, px) ? 1 : 0;
-		if (dark != 0) {
-			++g_rbPre62Dark;
-		}
-		// Log only STATE CHANGES: a sustained black shows up as one DARK line and
-		// one lit line seconds later, which is exactly what we need to correlate
-		// with what the user sees (and it cannot spam the log at 90 Hz).
-		if (dark != g_rbPre62State) {
-			g_rbPre62State = dark;
-			static std::uint32_t logs = 0;
-			if (logs < 120) {
-				++logs;
-				logger::info(
-					FMT_STRING("PREFILL 0x62 -> {} (px={:016X} fmt={} {}x{}) at sample #{}"),
-					dark != 0 ? "DARK"sv : "lit"sv, px, g_rbFormat62, g_rbW62, g_rbH62,
-					g_rbPre62Samples);
-			}
-		}
-	}
 
 	void RetryAfterFault()
 	{
@@ -4129,25 +3175,6 @@ namespace TrueScopes::ScopeRender
 
 	// --- DevBench surface (v0.2.65) -----------------------------------------
 
-	void RequestDump()
-	{
-		g_dumpRequest.store(true);
-	}
-
-	void CancelDumpRequest()
-	{
-		g_dumpRequest.store(false);
-	}
-
-	std::uint64_t DumpEventCount()
-	{
-		return g_dumpEvents.load();
-	}
-
-	std::uint64_t LastDumpIndex()
-	{
-		return g_lastDumpIndex.load();
-	}
 
 	FovInfo GetFovInfo()
 	{
@@ -4211,14 +3238,8 @@ namespace TrueScopes::ScopeRender
 		d.faulted = g_faulted;
 		d.sunBindHooks = g_sunBindHooksInstalled;
 
-		d.nan61 = g_rbNaN61;
-		d.nan62 = g_rbNaN62;
-		d.sunPreNaN = g_sunPreNaN;
-		d.sunPostNaN = g_sunPostNaN;
-		d.camDataBad = g_camDataBad;
 		d.invProjRejects = g_invProjRejects;
 		d.fogNulls = g_diagFogNulls;
-		d.dumpFiles = g_dumpFiles;
 
 		d.passTotal = g_passTotal;
 		d.lightsShadowed = g_diagLightsA;

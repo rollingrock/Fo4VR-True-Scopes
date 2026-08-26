@@ -272,13 +272,7 @@ poseFrozenDim = 0.55
 # activation distances (38-42 units) - now a meaningless dimming band on the way in.
 disableApproachFade = true
 
-# Black-burst hunt (v0.2.43): per-frame 1-pixel readback of accum+composite, dark
-# frames logged. Two GPU sync stalls per render - turn OFF when not hunting.
-diagLensReadback = false
 
-# Burst forensics (v0.2.45): tint non-filled frames - RED = eye-gate pause,
-# GREEN = cadence skip. A colored "burst" means the burst is a non-filled frame.
-diagPauseTint = false
 
 # Eye-gate OFF hysteresis (v0.2.50): swallow the gate blips that played the widget
 # fade-to-black over the lens (the black bursts). 0 = vanilla behavior.
@@ -306,13 +300,6 @@ cullToScopeFrustum = true
 # and in the heartbeat. Flip it false then true to reset the averaging window --
 # that is how you take a clean measurement without restarting anything.
 perfTimers = true
-# LEVER 1 -- render resolution. Scales the scope camera's viewport down to the
-# top-left sub-rect of the fixed 1024^2 scope G-buffer (0.5 = 512x512 = quarter
-# the pixels). The projection is NOT adjusted, so the lens shows the picture
-# shrunk into a corner: WRONG PICTURE, RIGHT MEASUREMENT. It prices the whole
-# G-buffer -> lighting -> composite chain at reduced resolution before any work
-# is spent teaching the delivery to sample a sub-rect. 1.0 = untouched.
-perfRenderScale = 1.0
 # LEVER 2 -- light count. Caps the two light loops the deferred resolve iterates
 # (385 shadowed + 15 queued at Diamond City) for the duration of the resolve
 # only. 0 = no light volumes drawn at all, -1 = untouched. Through a 2.4 deg
@@ -353,7 +340,6 @@ sunResolveRebindAccum = true
 widgetFitEnabled = true
 perScopeAperture = true
 widgetApertureRadius = 1.267
-widgetScaleOverride = 0.0
 # Fallback widget position for scopes with no per-scope entry below. The old
 # -1.8 here was tuned for the hunting rifle and was visibly wrong on other
 # optics (screenshots 20260810134759/...134809: the disc sat above and behind
