@@ -102,6 +102,15 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 
 	Settings::load();
 
+	if (!*Settings::enabled) {
+		logger::info(
+			"True Scopes VR disabled by TOML (enabled=false) - no hooks installed, vanilla "
+			"scopes untouched. The shipped ScopeMenu SWFs still apply (they only remove the "
+			"hold-breath pill); delete them from Data/Interface for a fully vanilla install. "
+			"Restart after re-enabling."sv);
+		return true;
+	}
+
 	// One allocation for all hook stubs (14 bytes each) - never per-hook, see the
 	// write_thunk_call note in PCH.h.
 	F4SE::AllocTrampoline(256);

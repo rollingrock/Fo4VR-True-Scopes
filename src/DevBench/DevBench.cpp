@@ -267,6 +267,7 @@ namespace DevBench
 				{ "nvEffectStrength", Kind::Float, &nvEffectStrength },
 				{ "nvGain", Kind::Float, &nvGain },
 				{ "reconEffectStrength", Kind::Float, &reconEffectStrength },
+				{ "glassFlatMode", Kind::Bool, &glassFlatMode },
 				{ "eyeBoxStrength", Kind::Float, &eyeBoxStrength },
 				{ "eyeBoxGain", Kind::Float, &eyeBoxGain },
 				{ "eyeBoxIpdUnits", Kind::Float, &eyeBoxIpdUnits },

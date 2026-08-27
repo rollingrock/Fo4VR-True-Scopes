@@ -904,16 +904,20 @@ float4 PSMain(VSOut i) : SV_Target
 		// pupil and no field curvature).
 		{
 			float ex = 0.0f, ey = 0.0f, ly = 0.0f;
-			const auto strength = static_cast<float>(*Settings::eyeBoxStrength);
+			// glassFlatMode zeroes every pose-driven term in one switch (static
+			// picture, recon-screen behavior); the static vignette/rim ring and
+			// the NV/recon looks are untouched.
+			const bool flat = *Settings::glassFlatMode;
+			const auto strength = flat ? 0.0f : static_cast<float>(*Settings::eyeBoxStrength);
 			// the pose read feeds four consumers - eye-box (gain-scaled), rim
 			// parallax, sheen, and parallax depth (all raw, so the glass effects
 			// never retune when eyeBoxGain is calibrated). Run it when any of
 			// them wants it; each consumer gates itself below.
 			const float rimStr = (std::max)(0.0f, static_cast<float>(*Settings::rimShadowStrength));
-			const float rimPll = static_cast<float>(*Settings::rimShadowParallax);
-			const float shStr = (std::max)(0.0f, static_cast<float>(*Settings::sheenStrength));
-			const float shFre = (std::max)(0.0f, static_cast<float>(*Settings::sheenFresnel));
-			const float pllxD = static_cast<float>(*Settings::parallaxDepthUnits);
+			const float rimPll = flat ? 0.0f : static_cast<float>(*Settings::rimShadowParallax);
+			const float shStr = flat ? 0.0f : (std::max)(0.0f, static_cast<float>(*Settings::sheenStrength));
+			const float shFre = flat ? 0.0f : (std::max)(0.0f, static_cast<float>(*Settings::sheenFresnel));
+			const float pllxD = flat ? 0.0f : static_cast<float>(*Settings::parallaxDepthUnits);
 			const bool wantPose = strength > 0.0f || shStr > 0.0f || shFre > 0.0f ||
 			                      pllxD > 0.0f || (rimStr > 0.0f && rimPll != 0.0f);
 			const bool havePose = wantPose && EyeLateral(a_in.scopeParent, ex, ey, ly);
@@ -992,9 +996,9 @@ float4 PSMain(VSOut i) : SV_Target
 				p.sheen2[0] = static_cast<float>(*Settings::sheenTravel);
 				p.sheen2[1] = static_cast<float>(*Settings::sheenSmudgeScale);
 			}
-			p.fx[0] = static_cast<float>(*Settings::edgeBlurStrength);
+			p.fx[0] = flat ? 0.0f : static_cast<float>(*Settings::edgeBlurStrength);
 			p.fx[1] = static_cast<float>(*Settings::edgeBlurStart);
-			p.fx[2] = static_cast<float>(*Settings::caStrength) * 0.02f;
+			p.fx[2] = flat ? 0.0f : static_cast<float>(*Settings::caStrength) * 0.02f;
 			p.fx[3] = (std::max)(0.0f, static_cast<float>(*Settings::sheenDarkBoost));
 		}
 

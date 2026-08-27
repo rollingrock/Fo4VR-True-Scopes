@@ -73,6 +73,12 @@ namespace Settings
 #define MAKE_SETTING(a_type, a_group, a_key, a_default) \
 	inline auto a_key = a_type(a_group##sv, #a_key##sv, a_default)
 
+	// Master switch. false = the plugin installs nothing at all - no hooks, no
+	// patches, no render, vanilla scope behavior untouched. Read once at load;
+	// restart to change. The shipped ScopeMenu SWFs are loose files and still
+	// apply (they only remove the hold-breath pill); delete them from
+	// Data/Interface for a fully vanilla install.
+	MAKE_SETTING(bSetting, "TrueScopesVR", enabled, true);
 	// Master switch for the per-frame lens fill.
 	MAKE_SETTING(bSetting, "TrueScopesVR", fillEnabled, true);
 	// Fill cadence: 1 = every frame, 2 = every other frame, ... RT 0x62 persists
@@ -229,6 +235,12 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", nvGain, 1.6);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reconEffectStrength, 1.0);
 	// glass effects
+	// One switch to make every glass scope act like the recon screen scopes: a
+	// static picture in the tube - no eyebox, no parallax, no sheen, no rim
+	// parallax, no edge blur, no chromatic fringe. The static vignette and rim
+	// ring stay, and NV/recon looks still apply. Equivalent to zeroing those
+	// knobs individually; they are ignored while this is on.
+	MAKE_SETTING(bSetting, "TrueScopesVR", glassFlatMode, false);
 	// All three apply to optical tubes only - screen-type optics (recon/thermal)
 	// are displays and skip them.
 	//
@@ -627,8 +639,10 @@ namespace Settings
 		}                                                                             \
 	}
 
+		LOAD(enabled);
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
+		LOAD(glassFlatMode);
 		LOAD(scopeOffHoldMs);
 		LOAD(camSmoothEnabled);
 		LOAD(camSmoothMinCutoffHz);

@@ -1,6 +1,13 @@
 # FO4VR True Scopes settings
 
 [TrueScopesVR]
+# Master off switch. false = the plugin installs nothing at all - no hooks, no
+# patches, vanilla scope behavior untouched. Read once at load; restart to
+# change. The shipped ScopeMenu SWFs are loose files and still apply (they only
+# remove the hold-breath pill); delete them from Data/Interface for a fully
+# vanilla install.
+enabled = true
+
 # Master switch for the lens fill.
 fillEnabled = true
 
@@ -77,6 +84,12 @@ suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks 
 # ScopeMenu SWFs already remove it; this also nops the native button-hint bar object.
 # Restart to fully revert.
 hideHoldBreathHint = true
+
+# One switch to make every glass scope act like the recon screen scopes: a
+# static picture in the tube - no eyebox, no parallax, no sheen, no rim
+# parallax, no edge blur, no chromatic fringe. The static vignette and rim ring
+# stay, and NV/recon looks still apply. The zeroed knobs are ignored while on.
+glassFlatMode = false
 
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
 # Eye-box / exit pupil: the picture clips and dims as your head drifts off the tube
