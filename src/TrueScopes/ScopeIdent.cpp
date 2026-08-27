@@ -1093,6 +1093,25 @@ namespace TrueScopes::ScopeIdent
 		LogInfo(info);
 	}
 
+	std::uint32_t CurrentWeaponFormID()
+	{
+		const std::scoped_lock lock(g_lock);
+		return g_info.probed ? g_info.weaponFormID : 0;
+	}
+
+	void InvalidateNodes()
+	{
+		const std::scoped_lock lock(g_lock);
+		g_info.weaponNode = 0;
+		g_info.pScopeNode = 0;
+		g_info.haveFace = false;  // OcularFaceWorld declines; placement falls back
+		g_info.haveGeom = false;  // ScopeBound declines
+		g_info.boundsSeen = 0;
+		for (auto& s : g_info.shapes) {
+			s.node = 0;
+		}
+	}
+
 	float ApertureRadius()
 	{
 		const std::scoped_lock lock(g_lock);

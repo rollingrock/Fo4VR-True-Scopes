@@ -1530,12 +1530,10 @@ namespace TrueScopes::ScopeRender
 				localTranslate[2] = static_cast<float>(*Settings::scopeCamOffsetZ);
 			}
 
-			// Identify the equipped scope. Runs only when something asked for it —
-			// scope-in, or a DevBench request — because it walks the weapon's 3D
-			// and calls into the engine's inventory code, neither of which belongs
-			// in a per-frame path. Must precede ApplyWidgetFit, which consumes the
-			// aperture it resolves.
-			ScopeIdent::RunIfRequested(player);
+			// The scope ident runs from the game-thread verdict site (the thread
+			// that owns the weapon 3D and the inventory); this render only
+			// consumes its last completed answer. A scope-in Request is served in
+			// the same frame it was made, so the fit below sees fresh data.
 
 			// Derive the FOV from the scope's real magnification and the lens
 			// geometry. Always computed so it can be compared against the
@@ -2785,7 +2783,8 @@ namespace TrueScopes::ScopeRender
 				g_lensPrimeNeeded.store(true, std::memory_order_relaxed);
 				ScopeIdent::Request();
 			}
-			ScopeIdent::RunIfRequested(player);
+			// The probe itself runs on the game thread (verdict site); this just
+			// waits for it through ProbePending below.
 			if (s_done || ScopeIdent::ProbePending()) {
 				// The disc hangs off PrimaryUIAttachNode, not the weapon, so its
 				// correct local offset changes every frame the gun moves — a

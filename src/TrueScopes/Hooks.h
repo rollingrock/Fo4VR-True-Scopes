@@ -12,6 +12,10 @@ namespace TrueScopes::Hooks
 	// Returns false (and leaves the game untouched) if any byte check fails.
 	bool Install();
 
+	// Register the unequip event sink (the teardown latch's arm signal). Once,
+	// at kGameDataReady - the event source singleton exists by then.
+	void RegisterEquipSink();
+
 
 	// Count of per-frame fill-hook invocations, i.e. the game's frame count.
 	// Advances whether or not the scope is up: ScopeRender's own `renders` counter

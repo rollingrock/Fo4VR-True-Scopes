@@ -175,8 +175,8 @@ namespace TrueScopes::ScopeIdent
 	// the slot and nothing overrides it. Reads are unguarded - call under SEH.
 	[[nodiscard]] bool IsNiNode(std::uintptr_t a_obj) noexcept;
 
-	// Ask for a probe on the next render. Cheap and idempotent; the walk itself
-	// runs on the render thread because that is where the 3D is safe to touch.
+	// Ask for a probe. Cheap and idempotent; the walk itself runs from the
+	// game-thread verdict site (see RunIfRequested).
 	void Request();
 	// Is a requested probe still waiting to run?
 	bool ProbePending();
@@ -192,8 +192,23 @@ namespace TrueScopes::ScopeIdent
 	// probe; when it did not, the retry re-Requests one.
 	bool CensusFaceResolved();
 
-	// Render-thread: run a pending probe. No-op if none was requested.
+	// Run a pending probe. No-op if none was requested. Game thread (the verdict
+	// call-site thunk) - the thread that owns the weapon 3D and the inventory,
+	// so the walk and the extra-data chain never race a teardown. The fill hook
+	// keeps a fallback call for the no-weapon-drawn DevBench case, gated on the
+	// verdict site being long dead.
 	void RunIfRequested(std::uintptr_t a_player);
+
+	// FormID of the weapon the last probe identified (0 = none / faulted). The
+	// unequip event sink filters on it.
+	std::uint32_t CurrentWeaponFormID();
+
+	// Drop every cached scene pointer (weapon node, shape nodes, census face,
+	// bounds) without touching the resolved aperture/offsets. Called from the
+	// unequip event: the pointers are about to dangle, and a name that still
+	// reads back correctly from freed-but-intact memory would pass the live
+	// re-checks. The next probe repopulates everything.
+	void InvalidateNodes();
 
 	// The aperture to fit the widget with, in mesh units. Falls back to the
 	// widgetApertureRadius setting when the equipped scope is not in the table.

@@ -25,6 +25,15 @@ namespace TrueScopes::Hooks
 		std::atomic<std::uint64_t> g_frames{ 0 };          // game frame count (see Hooks.h)
 		std::atomic<std::uint64_t> g_gateOffTick{ 0 };     // tick of the last true->false gate transition
 
+		// Teardown latch. Nothing in the hooked scope path reports an unequip -
+		// the verdict site just stops running, and until the staleness poll fired
+		// (~1 s) the per-frame fit/probe machinery kept touching a weapon that was
+		// mid-teardown from the render thread. The unequip event (game thread, at
+		// the start of teardown) arms this; the verdict site running again (weapon
+		// drawn + eligible = the new 3D is complete) clears it. While armed, every
+		// render-thread consumer of weapon 3D stands down.
+		std::atomic_bool g_teardownLatch{ false };
+
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
 
 		[[nodiscard]] ImageSpaceManagerCopy_t ImageSpaceCopy()
@@ -287,6 +296,41 @@ namespace TrueScopes::Hooks
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 		}
+		// The unequip signal. Registered once at kGameDataReady via
+		// TESObjectREFR_Events::RegisterForEquip; fires on the game thread from
+		// the equip manager before the 3D comes down. Filtered to the player
+		// unequipping the weapon the probe identified - armor, grenades and NPC
+		// equips pass through.
+		struct EquipEventSink : RE::BSTEventSink<RE::TESEquipEvent>
+		{
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent& a_event, RE::BSTEventSource<RE::TESEquipEvent>*) override
+			{
+				const auto player = *reinterpret_cast<std::uintptr_t*>(
+					REL::Module::get().base() + Addr::kPlayerGlobal);
+				if (!player ||
+					reinterpret_cast<std::uintptr_t>(a_event.actor.get()) != player ||
+					a_event.equipped) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				const auto weap = ScopeIdent::CurrentWeaponFormID();
+				if (!weap || a_event.baseObject != weap) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				// Game thread; teardown starts after this returns. Stand everything
+				// down now instead of a staleness-poll second from now.
+				g_teardownLatch.store(true);
+				g_gateRaw.store(false);
+				if (g_scopeActive.exchange(false)) {
+					LensComposite::RestoreReticleQuad();
+				}
+				ScopeIdent::InvalidateNodes();
+				SetWidgetNodesHidden(player, true);
+				logger::info("weapon unequipped - teardown latch armed"sv);
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+		EquipEventSink g_equipSink;
+
 		// Pose-based activation. Replaces the per-frame verdict call
 		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
 		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). The verdict flows
@@ -299,8 +343,19 @@ namespace TrueScopes::Hooks
 			static void thunk(void* a_player, char a_verdict)
 			{
 				const auto player = reinterpret_cast<std::uintptr_t>(a_player);
+				// This site running at all means the weapon is drawn and its 3D is
+				// complete - the teardown latch's all-clear.
+				if (g_teardownLatch.exchange(false)) {
+					logger::info("teardown latch cleared (verdict site live)"sv);
+				}
 				const bool v = PoseGate::OnGateVerdict(player, a_verdict != 0);
 				func(a_player, v ? 1 : 0);
+				// Serve any pending ident probe here, on the thread that owns the
+				// weapon 3D and the inventory - a probe on the render thread raced
+				// game-thread teardown through the whole extra-data chain. A
+				// scope-in Request lands inside the enable-switch call above, so
+				// it is served in the same frame it was made.
+				ScopeIdent::RunIfRequested(player);
 				// Presence refresh: after the enable switch, same frame, game
 				// thread — its hide-edge culled the nodes a few instructions ago
 				// and this un-culls them before anything drew. This site only
@@ -488,14 +543,13 @@ namespace TrueScopes::Hooks
 				if (g_installed) {
 					VerdictInput::Poll();
 				}
-				// run a pending scope-ident probe from the per-frame hook, not only
-				// from RenderImpl — that one runs only while the scope is raised,
-				// so a headless probe would return a stale answer. This thread is
-				// the render thread the probe expects, the request flag makes the
-				// two call sites idempotent, and an un-requested frame costs one
-				// atomic read. Makes the ident chain testable with no headset and
-				// no scope raise.
-				if (g_installed) {
+				// Fallback probe site for the no-weapon-drawn case (DevBench asks
+				// with the weapon holstered; the verdict site is dead then and
+				// would never serve it). Gated on the site being long dead - a
+				// site that stopped seconds ago is a holstered weapon, not one
+				// mid-teardown - and on the latch.
+				if (g_installed && !g_teardownLatch.load(std::memory_order_relaxed) &&
+					PoseGate::SiteStale(300)) {
 					if (const auto player = *reinterpret_cast<std::uintptr_t*>(
 							REL::Module::get().base() + Addr::kPlayerGlobal)) {
 						ScopeIdent::RunIfRequested(player);
@@ -506,8 +560,13 @@ namespace TrueScopes::Hooks
 				// verdict site alive), keep the ident + widget fit current even
 				// when no live fill runs — a save-load or first draw fits within a
 				// few frames instead of waiting for the first aim. Cheap:
-				// ApplyWidgetFit no-ops when nothing changed.
-				if (g_installed && *Settings::poseWidgetAlways && !PoseGate::SiteStale(90)) {
+				// ApplyWidgetFit no-ops when nothing changed. The staleness bound
+				// is tight (~150 ms): this path writes ScopeParent and walks its
+				// subtree every frame, and a holstering weapon should stop it as
+				// soon as the site goes quiet, not a second later. A false
+				// positive from a frame hitch just pauses the fit for a frame.
+				if (g_installed && *Settings::poseWidgetAlways &&
+					!g_teardownLatch.load(std::memory_order_relaxed) && !PoseGate::SiteStale(15)) {
 					ScopeRender::PresenceFit();
 				}
 
@@ -526,7 +585,8 @@ namespace TrueScopes::Hooks
 					// cycle (menu open/close x4 ~= black lens).
 					static bool s_dimPending = false;
 					const bool  poseLive = PoseGate::FillLive();
-					if (g_scopeActive.load() && poseLive) {
+					if (g_scopeActive.load() && poseLive &&
+						!g_teardownLatch.load(std::memory_order_relaxed)) {
 						s_dimPending = true;
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
@@ -557,7 +617,8 @@ namespace TrueScopes::Hooks
 						// scope-state independent; SiteStale keeps this out of
 						// menus/holster beyond the ~1 s grace.
 						if (!g_scopeActive.load() && *Settings::lensMode >= 2 &&
-							!PoseGate::SiteStale(90) && ScopeRender::WidgetPresentable() &&
+							!g_teardownLatch.load(std::memory_order_relaxed) &&
+							!PoseGate::SiteStale(15) && ScopeRender::WidgetPresentable() &&
 							ScopeRender::Available()) {
 							const bool primeWanted =
 								*Settings::lensPrimeOnPresence && ScopeRender::LensPrimeNeeded();
@@ -799,6 +860,19 @@ namespace TrueScopes::Hooks
 
 		g_installed = true;
 		return true;
+	}
+
+	void RegisterEquipSink()
+	{
+		static bool s_done = false;
+		if (s_done) {
+			return;
+		}
+		s_done = true;
+		using Register_t = void (*)(RE::BSTEventSink<RE::TESEquipEvent>*);
+		reinterpret_cast<Register_t>(
+			REL::Module::get().base() + Addr::kRegisterForEquipSink)(&g_equipSink);
+		logger::info("unequip event sink registered (teardown latch)"sv);
 	}
 
 	std::uint64_t FrameCount()

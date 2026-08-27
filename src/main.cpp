@@ -45,6 +45,11 @@ namespace
 		// kPostLoad once the plugin list is complete; kPostPostLoad is dispatched right
 		// after kPostLoad for exactly this second-phase handshake and does not depend on
 		// load order. A no-op if devbench is absent.
+		if (a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
+			// Unequip event sink for the teardown latch. Idempotent - GameDataReady
+			// can fire more than once across save loads.
+			TrueScopes::Hooks::RegisterEquipSink();
+		}
 		if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
 			// True Scopes replaces Better Scopes - both patch the same scope pipeline
 			// and cannot coexist. The byte-verify hooks already fail soft on the

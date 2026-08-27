@@ -88,6 +88,13 @@ namespace TrueScopes::Addr
 	// without a button bar" configuration. [GHIDRA, byte-verified]
 	inline constexpr std::uintptr_t kScopeMenuButtonBarCallSite = 0xbc7d1a;
 
+	// TESObjectREFR_Events::RegisterForEquip(BSTEventSink<TESEquipEvent>*) - VR
+	// address library id 231263. The game-thread unequip signal for the teardown
+	// latch: the verdict site just stops on unequip and the ~1 s staleness poll
+	// left the per-frame fit machinery walking a weapon mid-teardown from the
+	// render thread.
+	inline constexpr std::uintptr_t kRegisterForEquipSink = 0x41e090;
+
 	// ImageSpaceManager::Copy(uint32 srcRT, uint32 dstRT) - self-contained fullscreen
 	// RT-to-RT copy (fetches its own singleton; binds dst, samples src, restores state).
 	// Vanilla precedent: Main::Swap calls Copy(0, 0x44) for screenshots. [LIVE-exercised]
