@@ -1,5 +1,14 @@
 # Review notes - 2026-08-26 style pass
 
+Status 2026-08-27: the correctness review ran (22 findings, 16 confirmed after
+adversarial verification); 15 fixes are applied in v0.3.13. Deferred with its
+own future field test: the scopeOffHoldMs gate rework (making the vanilla-
+visible state read the raw gate so an on-edge during the hold cancels it) -
+it changes field-proven core gating and was not worth coupling to this
+release. Structural items below (RenderImpl split, Settings.h split, LOAD
+registry, vcpkg prune, /W4 suppressions, log-tag sweep) remain deferred to
+the 1.0 fresh repo.
+
 Findings from the pre-publish style review (three independent passes:
 naming/API shape, structure/idioms, hygiene) against CommonLib-plugin and
 professional norms, run right after the comment overhaul. Report only -
