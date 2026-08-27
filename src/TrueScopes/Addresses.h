@@ -11,6 +11,8 @@
 // from RIP-displacement decoding of code bytes or a live memory read - never from a
 // bare DAT_ label.
 
+#include <cstdint>
+
 namespace TrueScopes::Addr
 {
 	// --- code (patch/hook sites) ---
@@ -128,23 +130,6 @@ namespace TrueScopes::Addr
 	// transforms post-load, and world_scope.nif ships zero controller blocks -
 	// which is what makes the zero-scale housing hide permanent. [LIVE]
 	inline constexpr std::uintptr_t kWidgetModelSingleton = 0x5acbf58;
-
-	// The hold-breath pill's real owner: WSPrimaryWandHUDModel, the primary-wand
-	// HUD singleton (same static-singleton block as WSScopeModel above; dtor
-	// 0x140c8d9f0 zeroes it, create-if-null accessors read/write it,
-	// TS_Player_ScopedModeArmSwitch reads it). Layout (from Func2 0x140c8d280,
-	// the per-update placement writer): +0x10 = the touchpad hint node
-	// (NiPointer - 'Point002 < PrimaryWandTouchpad'), +0x19 = hint-active flag
-	// gating the update.
-	inline constexpr std::uintptr_t kWandHUDModelSingleton = 0x5acbc80;
-	// The float Func2 writes into the hint node's local scale (+0x6c, abs-masked)
-	// on every update before calling NiAVObject::Update - the reason cull/scale
-	// pokes on the node itself lose: the engine stomps the whole local transform
-	// per frame and re-propagates. Func2 is this global's only reader, so zeroing
-	// it while scoped makes the engine write the pill invisible - no ordering
-	// fight can exist.
-	inline constexpr std::uintptr_t kWandHintScaleGlobal = 0x37bbfc8;
-
 	// The one call site in the whole binary that un-hides the widget housing:
 	// inside the enable switch FUN_140efaa60 (TS_Player_ScopedModeArmSwitch),
 	// edge-gated on the arm state, calling FUN_140c8e340

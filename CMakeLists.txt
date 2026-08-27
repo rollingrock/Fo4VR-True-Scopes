@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.3.10)
+set(VERSION 0.3.12)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
@@ -280,6 +280,14 @@ if(PACKAGE)
 		add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${ZIP_DIR}/F4SE/Plugins/")
 	endif()
+
+	# ship the TOML and the edited ScopeMenu SWFs (Data/Interface) with the dll
+	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/F4SE/Plugins/TrueScopesVR.toml" "${ZIP_DIR}/F4SE/Plugins/"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${ZIP_DIR}/Interface"
+		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/world_ScopeMenu.swf" "${ZIP_DIR}/Interface/"
+		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/ScopeMenu.swf" "${ZIP_DIR}/Interface/"
+	)
 
 	set(TARGET_ZIP "${PROJECT_NAME}_${PROJECT_VERSION}.7z")
 	message("Will zip ${ZIP_DIR} to ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_ZIP}.")

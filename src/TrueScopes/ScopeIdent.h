@@ -18,6 +18,11 @@
 // Engine entry points and layout offsets are listed with their RVAs in
 // ScopeIdent.cpp.
 
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <span>
+
 namespace TrueScopes::ScopeIdent
 {
 	// A single weapon's 3D can run past 50 nodes, so this is sized well past a

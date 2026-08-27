@@ -57,8 +57,8 @@ cbuffer Params : register(b0)
     float4 nvp;       // x nv gain, y screen aspect (h/w, 1 = square), z nv scanlines, w reticle eye-box follow
     float4 eyebox;    // xy eye lateral offset (disc units, already gain-scaled), z strength, w residual scatter floor
     float4 fx;        // x edge blur strength, y edge blur start radius, z CA strength, w sheen dark boost
-    // v0.2.123 glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
-    float4 pose;      // xy RAW eye lateral offset (disc units, UN-gained); zw smoothed parallax UV shift
+    // glass suite - unified layout (hand-mirrored in C++ Params; zero = all off):
+    float4 pose;      // xy raw eye lateral offset (disc units, un-gained); zw smoothed parallax UV shift
     float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
     float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
     float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
@@ -83,10 +83,10 @@ float4 PSMain(VSOut i) : SV_Target
 {
     float2 cuv = i.uv - 0.5;
     float  r   = length(cuv) * 2.0;      // disc units: 1.0 at the picture edge
-    // v0.2.123 parallax depth: picture samples shift by pose.zw (CPU-smoothed,
-    // clamped) while every rim-anchored term (cuv/r, vignette, eye-box, rim
-    // shadow, reticle at fraction 0) stays on geometric UV - the image plane
-    // reads DEEPER than the lens plane. (0,0) = bit-exact identity.
+    // parallax depth: picture samples shift by pose.zw (CPU-smoothed, clamped)
+    // while every rim-anchored term (cuv/r, vignette, eye-box, rim shadow,
+    // reticle at fraction 0) stays on geometric UV - the image plane reads
+    // deeper than the lens plane. (0,0) = bit-exact identity.
     float2 puv = i.uv + pose.zw;
 
     float3 c;
@@ -142,17 +142,17 @@ float4 PSMain(VSOut i) : SV_Target
     if (flags.y > 0.0) {
         // screen-type optic: square soft edge instead of the radial vignette.
         // A rectangular display (aspect = h/w < 1) is delivered with the
-        // aperture sized to its half-WIDTH, so the vertical edge arrives at
+        // aperture sized to its half-width, so the vertical edge arrives at
         // "aspect" instead of 1 -- dividing y by it reuses the same ramp.
         float2 d = abs(i.uv - 0.5) * 2.0;
         d.y /= max(nvp.y, 0.05);
         float2 e = 1.0 - smoothstep(0.86, 1.02, d);
         v = e.x * e.y;
         c *= lerp(1.0, v, 0.85);
-        // The 0.85 edge leaves a 15% floor -- right where a SQUARE screen's
-        // edge meets its bezel (VR-verified), wrong past a RECTANGLE's crop
-        // line, which lies INSIDE the quad on housing pixels. Full crop there,
-        // and only there: squares (aspect 1) never take this branch.
+        // The 0.85 edge leaves a 15% floor -- right where a square screen's
+        // edge meets its bezel, but wrong past a rectangle's crop line, which
+        // lies inside the quad on housing pixels. Full crop there, and only
+        // there: squares (aspect 1) never take this branch.
         if (nvp.y < 0.999) {
             c *= 1.0 - smoothstep(0.98, 1.06, d.y);
         }
@@ -163,16 +163,16 @@ float4 PSMain(VSOut i) : SV_Target
         c *= lerp(1.0, v, saturate(vignette.z));
     }
 
-    // --- eye-box / exit pupil (optical tubes only), BEFORE the reticle as of
-    // v0.2.129: the PICTURE clips fully as approved, but the reticle gets its
-    // own, weaker response (real-scope observation 2026-08-25: the reticle
-    // stays faintly visible inside the blacked-out eye box, silhouetted
-    // against residual scatter - which the dark-adaptive sheen now provides).
-    // nvp.w = reticleEyeBoxFollow: 1 = reticle clips with the picture (the
-    // old behavior), 0 = reticle immune. eyebox.xy is the eye's real lateral
-    // offset from the tube axis in disc units (computed per frame on the CPU,
-    // gain-scaled). The exit pupil SHIFTS OPPOSITE the eye and SHRINKS as the
-    // eye moves off axis; on axis it is larger than the picture = no-op.
+    // --- eye-box / exit pupil (optical tubes only), applied before the
+    // reticle: the picture clips fully, but the reticle gets its own, weaker
+    // response - on a real scope the reticle stays faintly visible inside the
+    // blacked-out eye box, silhouetted against residual scatter (which the
+    // dark-adaptive sheen provides). nvp.w = reticleEyeBoxFollow: 1 = reticle
+    // clips with the picture, 0 = reticle immune. eyebox.xy is the eye's real
+    // lateral offset from the tube axis in disc units (computed per frame on
+    // the CPU, gain-scaled). The exit pupil shifts opposite the eye and
+    // shrinks as the eye moves off axis; on axis it is larger than the
+    // picture = no-op.
     float ebMul = 1.0;
     if (eyebox.z > 0.0 && flags.y == 0.0) {
         float2 p   = cuv * 2.0;
@@ -181,14 +181,14 @@ float4 PSMain(VSOut i) : SV_Target
         float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
         ebMul = lerp(1.0, vis, saturate(eyebox.z));
     }
-    // v0.2.130: the clip bottoms out at a faint FLAT scatter (eyebox.w), not
-    // pure black - what a dark reticle silhouettes against in a real tube.
-    // v0.2.131: the scatter ADAPTS to scene brightness (field concern: a
-    // constant glow at night reads as a screen again). Residual scatter IS
-    // scene light diffused in the tube, so scale it by the picture's average
-    // luminance - five FIXED taps, identical for every pixel, so no scene
-    // structure can leak into the glow; it only breathes with overall
-    // brightness. glass2.x = 0 restores the constant v0.2.130 behavior.
+    // The clip bottoms out at a faint flat scatter (eyebox.w), not pure
+    // black - what a dark reticle silhouettes against in a real tube. The
+    // scatter adapts to scene brightness (a constant glow at night reads as
+    // a screen): residual scatter is scene light diffused in the tube, so
+    // scale it by the picture's average luminance - five fixed taps,
+    // identical for every pixel, so no scene structure can leak into the
+    // glow; it only breathes with overall brightness. glass2.x = 0 keeps
+    // the scatter constant.
     float resid = eyebox.w;
     if (resid > 0.0 && glass2.x > 0.0 && ebMul < 0.999) {
         float3 lw = float3(0.299, 0.587, 0.114);
@@ -209,13 +209,13 @@ float4 PSMain(VSOut i) : SV_Target
         }
     }
 
-    // --- v0.2.123 HOUSING RIM SHADOW (optical tubes only): a hard near-black
-    // annulus that reads as the ocular tube WALL - distinct from the soft
+    // --- housing rim shadow (optical tubes only): a hard near-black annulus
+    // that reads as the ocular tube wall - distinct from the soft
     // photographic vignette above. Last in the multiply chain: the wall
     // occludes picture, phosphor, and reticle alike. Two asymmetries make it
-    // 3D: a top bias (real tube interiors are lit from above; note it rides
-    // the disc, so it cants with the weapon) and a parallax shift opposite
-    // the eye (the rim is NEAR geometry against the far image). The combined
+    // 3D: a top bias (real tube interiors are lit from above; it rides the
+    // disc, so it cants with the weapon) and a parallax shift opposite the
+    // eye (the rim is near geometry against the far image). The combined
     // center shift is clamped so the band can never slide off one side.
     if (rim.z > 0.0 && flags.y == 0.0) {
         float2 ctr = float2(0.0, rim.w) - pose.xy * sheen2.w;
@@ -226,14 +226,14 @@ float4 PSMain(VSOut i) : SV_Target
         c *= 1.0 - saturate(rim.z) * smoothstep(rim.x, max(rim.y, rim.x + 0.001), rr);
     }
 
-    // --- v0.2.123 GLASS SHEEN: light on the eyepiece surface, in FRONT of
-    // everything - strictly additive, so it never occludes. A broad Gaussian
-    // glint at the mirror point of the eye offset (head right -> glint left),
-    // modulated by a fixed procedural smudge pattern (smudge only CARVES the
-    // glint, never brightens; invisible except where the glint rakes it - the
-    // strongest "physical surface" cue), plus a tiny fresnel rim lift that
-    // grows off-axis. Applies to screen optics too: their front window is
-    // still glass. Faint AR-coating green tint.
+    // --- glass sheen: light on the eyepiece surface, in front of everything -
+    // strictly additive, so it never occludes. A broad Gaussian glint at the
+    // mirror point of the eye offset (head right -> glint left), modulated by
+    // a fixed procedural smudge pattern (smudge only carves the glint, never
+    // brightens; invisible except where the glint rakes it - the strongest
+    // physical-surface cue), plus a tiny fresnel rim lift that grows off-axis.
+    // Applies to screen optics too: their front window is still glass. Faint
+    // AR-coating green tint.
     if (sheen.x > 0.0 || sheen.z > 0.0) {
         float2 eo  = pose.xy;
         float2 p2  = cuv * 2.0;
@@ -248,12 +248,11 @@ float4 PSMain(VSOut i) : SV_Target
             smu = max(0.0, 1.0 - sheen.w * (0.5 - 0.33 * n));
         }
         float fr = sheen.z * pow(saturate(r), 3.0) * (0.35 + 0.65 * saturate(length(eo)));
-        // v0.2.126 DARK-ADAPTIVE (field 2026-08-25: "the overall screen when
-        // showing black just looks like a screen and not glass"): real glass
-        // shows its surface reflections against a DARK scene and loses them
-        // against a bright one. Boost the whole glass term as the composed
-        // picture darkens - the eye-box clip and frozen dim stop reading as a
-        // dead LCD. fx.w = 0 keeps this off (Dim constraint).
+        // dark-adaptive boost: real glass shows its surface reflections
+        // against a dark scene and loses them against a bright one. Boost the
+        // whole glass term as the composed picture darkens - the eye-box clip
+        // and frozen dim stop reading as a dead LCD. fx.w = 0 keeps this off
+        // (Dim constraint).
         float lum = dot(c, float3(0.299, 0.587, 0.114));
         float dk  = 1.0 + fx.w * saturate(1.0 - lum * 2.0);
         c += float3(0.92, 1.0, 0.97) * (sheen.x * gl * smu + fr) * dk;

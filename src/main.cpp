@@ -4,55 +4,58 @@
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeRender.h"
 
-void InitializeLog()
+namespace
 {
-	auto path = logger::log_directory();
-	if (!path) {
-		// Broken install (no Documents redirection?): run without a log file
-		// rather than CTD before logging exists.
-		return;
-	}
-	const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
-	if (!path.value().generic_string().ends_with(gamepath)) {
-		// handle bug where game directory is missing
-		path = path.value().parent_path().append(gamepath);
-	}
-
-	*path /= fmt::format("{}.log"sv, "TrueScopesVR"sv);
-	auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
-
-	const auto level = spdlog::level::trace;
-
-	auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
-	log->set_level(level);
-	log->flush_on(level);
-
-	spdlog::set_default_logger(std::move(log));
-	spdlog::set_pattern("[%Y-%m-%d %T.%e][%-16s:%-4#][%L]: %v"s);
-}
-
-void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
-{
-	if (!a_msg) {
-		return;
-	}
-	// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.
-	// F4SEVR's RegisterListener(sender = nullptr) snapshots the listener slots that
-	// exist at that moment and Dispatch only walks the sender's own slot, so a plugin
-	// loading after devbench can dispatch into an empty list. devbench re-registers at
-	// kPostLoad once the plugin list is complete; kPostPostLoad is dispatched right
-	// after kPostLoad for exactly this second-phase handshake and does not depend on
-	// load order. A no-op if devbench is absent.
-	if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
-		// True Scopes replaces Better Scopes - both patch the same scope pipeline
-		// and cannot coexist. The byte-verify hooks already fail soft on the
-		// conflict; this names the cause.
-		if (::GetModuleHandleW(L"BetterScopesVR.dll")) {
-			logger::critical(
-				"BetterScopesVR.dll is loaded - True Scopes REPLACES Better Scopes and they "
-				"cannot coexist. Disable one of them. Expect scope hooks to have declined."sv);
+	void InitializeLog()
+	{
+		auto path = logger::log_directory();
+		if (!path) {
+			// Broken install (no Documents redirection?): run without a log file
+			// rather than CTD before logging exists.
+			return;
 		}
-		DevBenchClient::Register();
+		const auto gamepath = REL::Module::IsVR() ? "Fallout4VR/F4SE" : "Fallout4/F4SE";
+		if (!path.value().generic_string().ends_with(gamepath)) {
+			// handle bug where game directory is missing
+			path = path.value().parent_path().append(gamepath);
+		}
+
+		*path /= fmt::format("{}.log"sv, "TrueScopesVR"sv);
+		auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+
+		const auto level = spdlog::level::trace;
+
+		auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
+		log->set_level(level);
+		log->flush_on(level);
+
+		spdlog::set_default_logger(std::move(log));
+		spdlog::set_pattern("[%Y-%m-%d %T.%e][%-16s:%-4#][%L]: %v"s);
+	}
+
+	void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
+	{
+		if (!a_msg) {
+			return;
+		}
+		// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.
+		// F4SEVR's RegisterListener(sender = nullptr) snapshots the listener slots that
+		// exist at that moment and Dispatch only walks the sender's own slot, so a plugin
+		// loading after devbench can dispatch into an empty list. devbench re-registers at
+		// kPostLoad once the plugin list is complete; kPostPostLoad is dispatched right
+		// after kPostLoad for exactly this second-phase handshake and does not depend on
+		// load order. A no-op if devbench is absent.
+		if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
+			// True Scopes replaces Better Scopes - both patch the same scope pipeline
+			// and cannot coexist. The byte-verify hooks already fail soft on the
+			// conflict; this names the cause.
+			if (::GetModuleHandleW(L"BetterScopesVR.dll")) {
+				logger::critical(
+					"BetterScopesVR.dll is loaded - True Scopes REPLACES Better Scopes and they "
+					"cannot coexist. Disable one of them. Expect scope hooks to have declined."sv);
+			}
+			DevBenchClient::Register();
+		}
 	}
 }
 

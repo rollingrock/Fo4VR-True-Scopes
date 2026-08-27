@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
 namespace TrueScopes::ScopeRender
 {
 	// Resolve addresses (RIP-decoded from verified code anchors) and allocate the

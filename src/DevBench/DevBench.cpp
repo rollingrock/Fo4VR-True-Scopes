@@ -1,11 +1,9 @@
 #include "DevBench/DevBench.h"
 
-#include <WS2tcpip.h>
 
 #include <atomic>
 #include <charconv>
 #include <fstream>
-#include <thread>
 #include <vector>
 
 #include "Settings/Settings.h"
@@ -428,14 +426,17 @@ namespace DevBench
 				"{\"path\":\"/health\",\"desc\":\"liveness + identity; answered without touching game state\"},"
 				"{\"path\":\"/state\",\"desc\":\"full render diagnostics: fault latch, lastStep, NaN/sun/camdata counters, last-render pass+light+sky+viewport values, stageTimes (per-stage GPU+CPU ms)\"},"
 			"{\"path\":\"/perf/reset\",\"desc\":\"clear the stageTimes averaging window before the next render (also done by any perfTimers write)\"},"
-				"{\"path\":\"/addresses\",\"desc\":\"resolved engine pointers (ssn, accumulator, gfxState, render ctx, sun config, rtm, renderer, scope camera) as va+rva - feed them to /read\"},"
+				"{\"path\":\"/addresses\",\"desc\":\"resolved engine pointers (ssn, accumulator, gfxState, render ctx, sun config, rtm, renderer, scope camera) as va+rva - feed them to the devbench memory tool\"},"
 				"{\"path\":\"/config\",\"desc\":\"every TOML setting and its live value\"},"
 				"{\"path\":\"/config/set\",\"desc\":\"?key=NAME&value=V - set one setting live, no scope-cycle needed\"},"
 				"{\"path\":\"/config/reload\",\"desc\":\"re-read TrueScopesVR.toml now\"},"
 				"{\"path\":\"/resolve\",\"desc\":\"?addr=EXPR - resolve an address expression to a VA + RVA\"},"
 				"{\"path\":\"/log\",\"desc\":\"?tail=N&grep=SUBSTR - last N lines of TrueScopesVR.log\"},"
 				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the ATTACHED OMOD model paths, the aperture in use and whether it resolved by path or by node name\"},"
-				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"}"
+				"{\"path\":\"/scope/lookup\",\"desc\":\"?path=MODELPATH - resolve a model path against the aperture table; no game state touched\"},"
+				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"},"
+				"{\"path\":\"/verdict\",\"desc\":\"?since=SEQ - the tester's last controller chord (grip+A yes, grip+B no, grip+trigger skip); polling arms on the first call\"},"
+				"{\"path\":\"/attach\",\"desc\":\"?omod=HEX&detach=1 - attach (or detach) an OMOD on the equipped weapon, via the game's main thread\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
 		}
 
@@ -1221,7 +1222,7 @@ namespace DevBench
 	{
 		g_startTick = ::GetTickCount64();
 		Settings::postLoadHook = &ReapplyOverrides;
-		logger::info("devbench routes ready - served via the 'scope' tool registered on the devbench host (the :8930 HTTP listener was retired in v0.2.138)"sv);
+		logger::info("devbench routes ready - served via the 'scope' tool registered on the devbench host"sv);
 	}
 
 	std::string Invoke(std::string_view a_path, const std::vector<std::pair<std::string, std::string>>& a_params)

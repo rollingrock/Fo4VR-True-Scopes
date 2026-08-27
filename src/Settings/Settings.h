@@ -1,5 +1,21 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <functional>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 namespace Settings
 {
 	// Every declared key, for load()'s unknown-key warning - a misspelled TOML
@@ -415,29 +431,10 @@ namespace Settings
 	// looks are recreated inside the lens composite (nv*/recon* knobs), keyed
 	// off the zoom's imod identity. Old TOML key disableScopeBlackout still loads.
 	MAKE_SETTING(bSetting, "TrueScopesVR", suppressScopeImods, true);
-	// Suppress the vanilla "GRAB Hold Breath" pill (the ScopeMenu movie's
-	// ButtonHintBar, visible floating on the scope body). Nops the ctor's
-	// SetUpButtonBar call, so the bar object is never created. Load-time patch:
-	// changing this requires a game restart.
+	// Hide the vanilla floating "GRAB Hold Breath" pill next to the scope. The
+	// shipped ScopeMenu SWFs remove it (zero-scaled placement); this also nops
+	// the ScopeMenu ctor's SetUpButtonBar call. Load-time patch: restart to revert.
 	MAKE_SETTING(bSetting, "TrueScopesVR", hideHoldBreathHint, true);
-	// Diagnostic - how the found pill carrier is suppressed. 1 = cull flag +
-	// epsilon local scale (insufficient alone when the engine rewrites the
-	// carrier's world transform per frame). 2 = rack-slot hole: null the
-	// carrier's slot in PrimaryUIAttachNode's children array - the engine's own
-	// hide idiom for rack UI (null holes are legal per NiNode::GetObjectByName),
-	// ordering- and render-path-proof: a node not in the tree cannot draw.
-	// Pointer saved; restored when the slot is still null. Live-settable
-	// (devbench scope tool 'set') - flips apply next eligible frame.
-	MAKE_SETTING(iSetting, "TrueScopesVR", pillKillMode, std::int64_t(1));
-	// The node-name prefix the pill finder targets. Retarget without a rebuild:
-	// edit + scope-cycle (the TOML live-reloads on scope-in).
-	MAKE_SETTING(sSetting, "TrueScopesVR", pillKillName, std::string("world_projectedHintBar"));
-	// Diagnostic - one-shot scene census at scope-in: climb from the wand rack
-	// to the scene root (a candidate is the parent iff its children array
-	// contains the node), then walk the whole tree logging every
-	// HUD/Hint/Glass/Breath-named node with world position, world scale and
-	// distance to ScopeParent.
-	MAKE_SETTING(bSetting, "TrueScopesVR", pillCensus, true);
 	// Also suppress the eye-approach dimming fade (cosmetic; vanilla feel if left on).
 	MAKE_SETTING(bSetting, "TrueScopesVR", disableApproachFade, true);
 
@@ -712,9 +709,6 @@ namespace Settings
 		LOAD(sunExecEnabled);
 		LOAD(suppressScopeImods);
 		LOAD(hideHoldBreathHint);
-		LOAD(pillKillMode);
-		LOAD(pillKillName);
-		LOAD(pillCensus);
 		// Name every unrecognized key once, so a typo is a log line instead of a
 		// silent no-op. disableScopeBlackout is a known legacy alias.
 		if (const auto* tbl = config["TrueScopesVR"].as_table(); tbl) {

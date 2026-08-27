@@ -82,17 +82,10 @@ retryAfterFault = true
 # world + scope at the same time.
 suppressScopeImods = true # v0.2.111: fullscreen zoom imods off; NV/recon looks are recreated in-lens
 
-# Hide the vanilla floating "GRAB Hold Breath" pill next to the scope: nops the
-# ScopeMenu button-hint bar (restart to revert that part) and culls the pill quad
-# under PrimaryUIAttachNode (reverts live when turned off).
+# Hide the vanilla floating "GRAB Hold Breath" pill next to the scope. The shipped
+# ScopeMenu SWFs already remove it; this also nops the native button-hint bar object.
+# Restart to fully revert.
 hideHoldBreathHint = true
-# v0.3.6 diagnostic pair (temporary; will be removed once the pill is confirmed dead):
-# pillKillMode 1 = cull+shrink the found carrier, 2 = pull its rack slot (engine hide idiom,
-# live-settable). pillCensus = one-shot scene sweep at scope-in logging every HUD-ish node
-# with world position + distance to the scope, to locate the REAL pill.
-pillKillMode = 1
-pillKillName = "world_projectedHintBar"
-pillCensus = true
 
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
 # Eye-box / exit pupil: the picture clips and dims as your head drifts off the tube

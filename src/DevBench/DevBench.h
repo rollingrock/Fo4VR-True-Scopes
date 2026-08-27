@@ -2,13 +2,20 @@
 
 // DevBench - the plugin's diagnostic routes (config, state, addresses, log
 // tail, scope probe, OMOD enumeration), so a debug question does not cost a
-// rebuild + relaunch + headset-on cycle.
+// rebuild + relaunch + headset-on cycle. Ships with the plugin: a debugging
+// interface served through the devbench host when one is present, inert
+// otherwise.
 //
 // Modelled on alandtse/devbench, which is GPL-3.0-or-later, so none of its
 // source is vendored here - only the shape of the idea: a name->handler
 // registry answering hand-built JSON, no JSON library, inputs pre-decoded as
-// key/value pairs. Some routes read arbitrary process memory; this is dev
-// tooling, not shipping code.
+// key/value pairs. Some routes read arbitrary process memory; they are
+// reachable only through a locally installed devbench host.
+
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace DevBench
 {

@@ -3,7 +3,6 @@
 #include <DirectXMath.h>
 #include <d3d11.h>
 
-#include <fstream>
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
@@ -86,6 +85,42 @@ namespace TrueScopes::ScopeRender
 		using NiAVObjectUpdate_t = void (*)(std::uintptr_t, void*);                                    // 0x1c22fb0  NiAVObject::Update(obj, NiUpdateData) — recomputes world transforms down the subtree
 		using FlushBatch_t = void (*)(void*);                                                          // 0x2891300  flush batched instances for the context
 
+		// Call-site RVAs; facts on the typedef and call-site comments.
+		constexpr std::uintptr_t kAccumCtor = 0x281b790;
+		constexpr std::uintptr_t kCullCtor = 0x1d4d8e0;
+		constexpr std::uintptr_t kCullDtor = 0x1d4d960;
+		constexpr std::uintptr_t kCullSetAccumulator = 0x1d4d9c0;
+		constexpr std::uintptr_t kCullSetFrustum = 0x1c452b0;
+		constexpr std::uintptr_t kSetCameraFOV = 0x2804a90;
+		constexpr std::uintptr_t kClearPrevCamCache = 0x1d95240;
+		constexpr std::uintptr_t kRendererResetState = 0x1d94990;
+		constexpr std::uintptr_t kAccumulateScene = 0x27ff370;
+		constexpr std::uintptr_t kDeferredResolve = 0x27ff8b0;
+		constexpr std::uintptr_t kFinishAccum = 0x281e750;
+		constexpr std::uintptr_t kGroupEmpty = 0x281f2c0;
+		constexpr std::uintptr_t kDrawGroupNow = 0x281e400;
+		constexpr std::uintptr_t kCommitTargets = 0x1db9f80;
+		constexpr std::uintptr_t kVanillaLensCopy = 0x27b08c0;
+		constexpr std::uintptr_t kSetCurrentRenderTarget = 0x1db9dd0;
+		constexpr std::uintptr_t kSelectDepthStencil = 0x1db9e40;
+		constexpr std::uintptr_t kRendererFlush = 0x1d8dc70;
+		constexpr std::uintptr_t kSetClearColor = 0x1d8dc80;
+		constexpr std::uintptr_t kClearColorNow = 0x1d8dd80;
+		constexpr std::uintptr_t kStateSetCamData = 0x1da8c40;
+		constexpr std::uintptr_t kStateSetViewport = 0x1da8bf0;
+		constexpr std::uintptr_t kSetDepthMode = 0x1d8dd60;
+		constexpr std::uintptr_t kSetTextureMode = 0x1d8de10;
+		constexpr std::uintptr_t kRenderCtxCtor = 0x2812be0;
+		constexpr std::uintptr_t kFindCamBlock = 0x1daaf30;
+		constexpr std::uintptr_t kExecPassConfig = 0x2891040;
+		constexpr std::uintptr_t kNiAVObjectUpdate = 0x1c22fb0;
+		constexpr std::uintptr_t kFlushBatch = 0x2891300;
+		constexpr std::uintptr_t kProcessQueuedLights = 0x27eab40;
+		constexpr std::uintptr_t kClearPassGroup = 0x281ecb0;
+		constexpr std::uintptr_t kGetShadowedLight = 0x27ec150;
+		constexpr std::uintptr_t kGetFogSingleton = 0x27aeeb0;
+		constexpr std::uintptr_t kRebindConstantBuffers = 0x1d94c10;
+
 		template <class T>
 		[[nodiscard]] T Fn(std::uintptr_t a_rva)
 		{
@@ -94,8 +129,7 @@ namespace TrueScopes::ScopeRender
 
 		// --- data (fixed, byte/live-verified) ---
 		constexpr std::uintptr_t kPlayerGlobal = Addr::kPlayerGlobal;
-		constexpr std::uintptr_t kRTManager = 0x38ac010;         // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
-		constexpr std::uintptr_t kRendererRVA = 0x6239340;       // BSGraphics::Renderer (live-verified)
+		constexpr std::uintptr_t kRTManagerRVA = 0x38ac010;      // RenderTargetManager (decoded from SetCurrentRenderTarget + slot-6 bind call sites)
 		constexpr std::uintptr_t kIsmInstanceRVA = 0x68789e8;    // ImageSpaceManager::pInstance (RIP-decoded from FUN_1427b08c0 +0x63)
 		constexpr std::uintptr_t kCamOffsetInPlayer = 0x720;     // PrimaryWeaponScopeCamera (VR camera type: eye count +0x208, port +0x214, frusta array +0x1a0)
 
@@ -203,6 +237,8 @@ namespace TrueScopes::ScopeRender
 		// accum+0x18; per-group sub-bucket counts at +0x608 + i*0x18 + 0x10 (i = 0..3).
 		// Captured POD-side inside the SEH frame, logged from Render() afterwards.
 		constexpr std::uint32_t kPassGroupCount = 38;
+		constexpr std::uintptr_t kAccumGroupBase = 0x18;
+		constexpr std::uintptr_t kAccumGroupStride = 0x678;
 		std::uint32_t g_passCounts[kPassGroupCount] = {};
 		std::uint32_t g_passTotal = 0;
 
@@ -500,7 +536,7 @@ namespace TrueScopes::ScopeRender
 		{
 			a_total = 0;
 			for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
-				const auto groupBase = a_accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678;
+				const auto groupBase = a_accum + kAccumGroupBase + static_cast<std::uintptr_t>(g) * kAccumGroupStride;
 				std::uint32_t n = 0;
 				for (std::uint32_t i = 0; i < 4; ++i) {
 					n += *reinterpret_cast<const std::uint32_t*>(groupBase + 0x608 + i * 0x18 + 0x10);
@@ -548,7 +584,7 @@ namespace TrueScopes::ScopeRender
 		void WriteInverseProj(std::uintptr_t a_state, std::uintptr_t a_cam)
 		{
 			using namespace DirectX;
-			const auto block = Fn<FindCamBlock_t>(0x1daaf30)(a_state, a_cam, 1);
+			const auto block = Fn<FindCamBlock_t>(kFindCamBlock)(a_state, a_cam, 1);
 			if (!block) {
 				return;
 			}
@@ -696,7 +732,7 @@ namespace TrueScopes::ScopeRender
 			// NiUpdateData, zeroed — the engine's own call site builds a zeroed block of
 			// this shape before calling. Oversized on purpose; zeros are safe.
 			alignas(16) std::uint8_t upd[0x30]{};
-			Fn<NiAVObjectUpdate_t>(0x1c22fb0)(a_sp, upd);
+			Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
 		}
 
 		// --- derived scope FOV ---------------------------------------------------
@@ -1438,8 +1474,8 @@ namespace TrueScopes::ScopeRender
 		void RenderImpl(float a_fovDeg)
 		{
 			const auto base = REL::Module::get().base();
-			const auto rtm = base + kRTManager;
-			const auto renderer = base + kRendererRVA;
+			const auto rtm = base + kRTManagerRVA;
+			const auto renderer = base + Addr::kRendererInstance;
 
 			const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
 			if (!player) {
@@ -1514,7 +1550,7 @@ namespace TrueScopes::ScopeRender
 			// everywhere (proj z-row f/(f-n) in FUN_141da8e60, DS clear = 1.0,
 			// geometry depth mode 3 = LESS_EQUAL + write), so a swapped pair builds
 			// a reversed projection where the farthest fragment always wins.
-			Fn<SetCameraFOV_t>(0x2804a90)(
+			Fn<SetCameraFOV_t>(kSetCameraFOV)(
 				cam, a_fovDeg,
 				static_cast<float>(*Settings::scopeFarClip),
 				static_cast<float>(*Settings::scopeNearClip));
@@ -1615,7 +1651,7 @@ namespace TrueScopes::ScopeRender
 			// sets cull+0x18 = camera, FUN_14284e370).
 			RENDER_STEP(3);
 			alignas(16) std::uint8_t cullBuf[0x1a0];
-			Fn<CullCtor_t>(0x1d4d8e0)(cullBuf, 0);
+			Fn<CullCtor_t>(kCullCtor)(cullBuf, 0);
 			*reinterpret_cast<std::uintptr_t*>(cullBuf + 0x18) = cam;
 			// Also give the culling process its own frustum, exactly as the engine's
 			// cull helper FUN_141d4dc50 does (set +0x18, then SetFrustum). The ctor
@@ -1627,14 +1663,14 @@ namespace TrueScopes::ScopeRender
 			// so an A/B stays single-flag.
 			if (*Settings::cullToScopeFrustum) {
 				if (const auto* const eye0 = *reinterpret_cast<const float**>(cam + 0x1a0)) {
-					Fn<CullSetFrustum_t>(0x1c452b0)(cullBuf, eye0);
+					Fn<CullSetFrustum_t>(kCullSetFrustum)(cullBuf, eye0);
 				}
 			}
 			RENDER_STEP(4);
-			Fn<CullSetAccum_t>(0x1d4d9c0)(cullBuf, g_accum);
+			Fn<CullSetAccum_t>(kCullSetAccumulator)(cullBuf, g_accum);
 
 			RENDER_STEP(5);
-			Fn<ClearPrevCam_t>(0x1d95240)(renderer);
+			Fn<ClearPrevCam_t>(kClearPrevCamCache)(renderer);
 
 			// Scope G-buffer setup, decoded from the world path's own +4 remap site
 			// (FUN_142844180): when renderer+4 is set the engine binds the dedicated
@@ -1643,25 +1679,25 @@ namespace TrueScopes::ScopeRender
 			// mono DS 0xC is an RTV/DSV size mismatch D3D11 rejects silently —
 			// nothing draws.
 			RENDER_STEP(6);
-			Fn<ClearPrevCam_t>(0x1d94990)(renderer);  // Renderer::ResetState
+			Fn<ClearPrevCam_t>(kRendererResetState)(renderer);  // Renderer::ResetState
 
 			// Pre-clear the composite target. The resolve binds 0x61 mode 3 (never
 			// clears) and the composite only shades G-buffer-covered pixels — empty
 			// regions would otherwise keep stale frames (ghosting). Engine pattern
 			// (FUN_1401f8bb0): bind + ClearColor.
-			Fn<SetClearColor_t>(0x1d8dc80)(renderer, 0.0f, 0.0f, 0.0f, 1.0f);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
-			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-			Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+			Fn<SetClearColor_t>(kSetClearColor)(renderer, 0.0f, 0.0f, 0.0f, 1.0f);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x61, 3);
+			Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
+			Fn<ClearColorNow_t>(kClearColorNow)(renderer);
 
-			Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 0, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x66, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x67, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x68, 0);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 0);
-			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+			Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 0xc, 0, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x63, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, 0x64, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 2, 0x66, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 3, 0x67, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 4, 0x68, 0);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 5, 0x69, 0);
+			Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 
 			// Re-fit the lights for our camera. The main frame's light update fitted
 			// every light's screen proxy volume to the main camera; drawn through
@@ -1671,7 +1707,7 @@ namespace TrueScopes::ScopeRender
 			TimerMark(1);  // end "setup" (camera, binds, clears)
 			RENDER_STEP(7);
 			using ProcessLights_t = void (*)(std::uintptr_t, void*);
-			Fn<ProcessLights_t>(0x27eab40)(ssn0, cullBuf);
+			Fn<ProcessLights_t>(kProcessQueuedLights)(ssn0, cullBuf);
 			TimerMark(2);  // end "lights" (ProcessQueuedLights)
 
 			// Previs bypass. Inside AccumulateScene the per-object frustum test is
@@ -1707,7 +1743,7 @@ namespace TrueScopes::ScopeRender
 			}
 
 			RENDER_STEP(8);
-			Fn<AccumScene_t>(0x27ff370)(cam, ssn0, cullBuf, 1);
+			Fn<AccumScene_t>(kAccumulateScene)(cam, ssn0, cullBuf, 1);
 
 			// Restore immediately: this is a process-global the main view reads too.
 			// Worst case a concurrent engine cull sees it disabled for a few hundred
@@ -1731,24 +1767,24 @@ namespace TrueScopes::ScopeRender
 			RENDER_STEP(10);
 			using ClearGroup_t = void (*)(std::uintptr_t);
 			for (const std::uint32_t g : { 9u, 0x11u, 0x12u, 0x13u }) {
-				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + static_cast<std::uintptr_t>(g) * 0x678);
+				Fn<ClearGroup_t>(kClearPassGroup)(accum + kAccumGroupBase + static_cast<std::uintptr_t>(g) * kAccumGroupStride);
 			}
 			if (*Settings::dropSunGlareGroup) {
-				Fn<ClearGroup_t>(0x281ecb0)(accum + 0x18 + 0x17u * 0x678);
+				Fn<ClearGroup_t>(kClearPassGroup)(accum + kAccumGroupBase + 0x17u * kAccumGroupStride);
 			}
 
 			// Sun diagnostics: shadowed light 0 (accessor FUN_1427ec150) — the resolve
 			// skips any light whose +0x18 shadow-map slot is 0xff.
 			using GetShadowedLight_t = std::uintptr_t (*)(std::uintptr_t, std::uint32_t);
 			if (*reinterpret_cast<const std::int16_t*>(ssn0 + 0x1a8) > 0) {
-				if (const auto sun = Fn<GetShadowedLight_t>(0x27ec150)(ssn0, 0)) {
+				if (const auto sun = Fn<GetShadowedLight_t>(kGetShadowedLight)(ssn0, 0)) {
 					g_diagSunSlotPre = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
 					g_diagSunFlags = *reinterpret_cast<const std::uint64_t*>(sun + 0x108);
 				}
 			}
 
 			RENDER_STEP(11);
-			Fn<Flush_t>(0x1d8dc70)(renderer);
+			Fn<Flush_t>(kRendererFlush)(renderer);
 
 			// --- sky group check ---
 			// Sky is not group 0xC (that is the refraction group).
@@ -1763,8 +1799,8 @@ namespace TrueScopes::ScopeRender
 			// passes (the resolve draws 0x11/9 internally). Fresh ones are
 			// re-registered post-resolve and drawn here.
 			RENDER_STEP(12);
-			const auto skyGroup = accum + 0x18 + 0x11 * 0x678;
-			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
+			const auto skyGroup = accum + kAccumGroupBase + 0x11 * kAccumGroupStride;
+			g_diagSkyEmptyPre = static_cast<std::int32_t>(Fn<GroupEmpty_t>(kGroupEmpty)(skyGroup));
 
 			// --- sun ---
 			// Pre-draw the sun's BSDFLightDir pass into the scope light-accum MRT.
@@ -1798,7 +1834,7 @@ namespace TrueScopes::ScopeRender
 					// near-black except sun-facing surfaces.
 					{
 						using GetFogSingleton_t = std::uintptr_t (*)();
-						const auto fog = Fn<GetFogSingleton_t>(0x27aeeb0)();
+						const auto fog = Fn<GetFogSingleton_t>(kGetFogSingleton)();
 						// This clear is the scope's entire ambient light level, so a
 						// null fog singleton (transient during streaming/weather
 						// churn) must not fall back to zero — that paints whole
@@ -1812,16 +1848,16 @@ namespace TrueScopes::ScopeRender
 						} else {
 							++g_diagFogNulls;
 						}
-						Fn<SetClearColor_t>(0x1d8dc80)(renderer,
+						Fn<SetClearColor_t>(kSetClearColor)(renderer,
 							g_fogRGB[0] * cs, g_fogRGB[1] * cs, g_fogRGB[2] * cs,
 							static_cast<float>(*Settings::accumClearAlpha));
 					}
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6b, 3);
-					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-					Fn<ClearColorNow_t>(0x1d8dd80)(renderer);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x6a, 3);
+					Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
+					Fn<ClearColorNow_t>(kClearColorNow)(renderer);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x6b, 3);
+					Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
+					Fn<ClearColorNow_t>(kClearColorNow)(renderer);
 
 					// Bind the accum MRT (no clear now) with our scene depth, targets
 					// 2..5 unbound like the resolve. Specular is left unbound: the
@@ -1829,26 +1865,26 @@ namespace TrueScopes::ScopeRender
 					// sun contributes diffuse only while 0x6b stays cleared, which
 					// the composite reads as "no sun specular" (correct-looking minus
 					// highlights).
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
-					Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 3);
-					Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
-					Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x6a, 3);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, -1, 3);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 2, -1, 3);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 3, -1, 3);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 4, -1, 3);
+					Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 5, -1, 3);
+					Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 0xc, 3, 0);
+					Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 
 					// Camera state exactly as the resolve sets it before its light loops,
 					// plus the manual inverse-projection write the engine's scene
 					// renderers do (specular/world-pos reconstruction input; see
 					// WriteInverseProj).
-					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
-					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0.0f, 1.0f);
+					Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 1);
+					Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 0);
+					Fn<StateSetViewport_t>(kStateSetViewport)(g_gfxState, cam, 1, 0.0f, 1.0f);
 					WriteInverseProj(g_gfxState, cam);  // after the commit (see note above)
-					Fn<DepthMode_t>(0x1d8dd60)(renderer, 0);
-					Fn<Flush_t>(0x1d8dc70)(renderer);
-					Fn<DepthMode_t>(0x1d8de10)(renderer, 2);
+					Fn<DepthMode_t>(kSetDepthMode)(renderer, 0);
+					Fn<Flush_t>(kRendererFlush)(renderer);
+					Fn<DepthMode_t>(kSetTextureMode)(renderer, 2);
 					accumSetup = true;
 
 					// Sun exec gate: only when the engine's cached config is usable at
@@ -1919,7 +1955,7 @@ namespace TrueScopes::ScopeRender
 
 
 						alignas(16) std::uint8_t sunCtx[0x2d0];
-						Fn<CtxCtor_t>(0x2812be0)(sunCtx, cam, accum);
+						Fn<CtxCtor_t>(kRenderCtxCtor)(sunCtx, cam, accum);
 
 
 						// The gate: FUN_142891040 does not unconditionally draw. It is:
@@ -1948,12 +1984,12 @@ namespace TrueScopes::ScopeRender
 						// accumulation MRT and commit it here, the same way the
 						// pre-resolve path does.
 						{  // accum rebind — always on
-							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x6a, 3);
-							Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
-							Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+							Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x6a, 3);
+							Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, -1, 3);
+							Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 						}
-						const auto sunDrew = Fn<ExecPassConfig_t>(0x2891040)(g_sunConfig, 0, sunCtx);
-						Fn<FlushBatch_t>(0x2891300)(sunCtx);
+						const auto sunDrew = Fn<ExecPassConfig_t>(kExecPassConfig)(g_sunConfig, 0, sunCtx);
+						Fn<FlushBatch_t>(kFlushBatch)(sunCtx);
 						g_diagSunDrew = sunDrew ? 1 : 0;
 						if (sunDrew) {
 							++g_sunDrewCount;
@@ -1997,8 +2033,8 @@ namespace TrueScopes::ScopeRender
 			// lighting/composite too. The resolve re-commits the camera internally,
 			// but the commit never touches staging+0x1d0, so this write survives it.
 			if (g_gfxState) {
-				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
-				Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
+				Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 1);
+				Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 0);
 				WriteInverseProj(g_gfxState, cam);
 			}
 
@@ -2010,14 +2046,14 @@ namespace TrueScopes::ScopeRender
 			// samples out of footprint, garbage UV scaling on screen-space terms).
 			// Rebind the G-buffer (no clear) before the call.
 			if (accumSetup) {
-				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x63, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x64, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, 0x66, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, 0x67, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, 0x68, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, 0x69, 3);
-				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 0xc, 3, 0);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x63, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, 0x64, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 2, 0x66, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 3, 0x67, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 4, 0x68, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 5, 0x69, 3);
+				Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 			}
 			// Clamp the two light loop counts the resolve iterates, for the duration
 			// of the resolve only. The resolve draws a light volume per entry
@@ -2053,7 +2089,7 @@ namespace TrueScopes::ScopeRender
 			g_decalStageCam = cam;
 			g_pendingDecalStage.store(accumSetup && *Settings::decalStageEnabled);
 			g_inOwnResolve.store(accumSetup);
-			Fn<DeferredResolve_t>(0x27ff8b0)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
+			Fn<DeferredResolve_t>(kDeferredResolve)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 			g_pendingSunExec = nullptr;  // never let a stale closure outlive this frame
 			g_pendingDecalStage.store(false);
@@ -2120,42 +2156,42 @@ namespace TrueScopes::ScopeRender
 					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = 1;
 					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 1);
-					Fn<AccumScene_t>(0x27ff370)(cam, root, cullBuf, 0);
+					Fn<AccumScene_t>(kAccumulateScene)(cam, root, cullBuf, 0);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 0);
 					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = savedCullMode;
 					++g_diagSkyRoots;
 				}
 				CapturePassCountsInto(accum, g_skyAfterCounts, g_skyAfterTotal);
-				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(0x281f2c0)(skyGroup));
+				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(kGroupEmpty)(skyGroup));
 			}
 			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
 				// Vanilla sky-stage binds (FUN_14284d680, scoped values): slot 0 stays
 				// 0x61 (the composited scene), slot 1 = aux RT 0x69, DS 0xC, no clears.
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, 0x69, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 3);
-				Fn<SelectDS_t>(0x1db9e40)(rtm, 0xc, 3, 0);
-				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x61, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, 0x69, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 2, -1, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 3, -1, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 4, -1, 3);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 5, -1, 3);
+				Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 0xc, 3, 0);
+				Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 				if (g_gfxState) {
-					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 1);
-					Fn<StateSetCamData_t>(0x1da8c40)(g_gfxState, cam, 0);
-					Fn<StateSetViewport_t>(0x1da8bf0)(g_gfxState, cam, 1, 0.0f, 1.0f);
+					Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 1);
+					Fn<StateSetCamData_t>(kStateSetCamData)(g_gfxState, cam, 0);
+					Fn<StateSetViewport_t>(kStateSetViewport)(g_gfxState, cam, 1, 0.0f, 1.0f);
 					WriteInverseProj(g_gfxState, cam);
 				}
 				alignas(16) std::uint8_t skyCtx[0x2e0];
-				Fn<CtxCtor_t>(0x2812be0)(skyCtx, cam, accum);
+				Fn<CtxCtor_t>(kRenderCtxCtor)(skyCtx, cam, accum);
 				// Draw order + exec flags = vanilla's: 0x11 (dome/sun/stars/moons,
 				// flag 1), 0x12 (clouds, flag 0), 0x13 (flag 0). Vanilla's queued 0x11
 				// uses a sorted pass builder (FUN_14281df50); e400's default order is
 				// the known gap if sky objects layer wrongly (sun behind dome etc.).
-				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x11, skyCtx, 1);
-				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x12, skyCtx, 0);
-				Fn<DrawGroupNow_t>(0x281e400)(g_accum, 0x13, skyCtx, 0);
-				Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
-				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				Fn<DrawGroupNow_t>(kDrawGroupNow)(g_accum, 0x11, skyCtx, 1);
+				Fn<DrawGroupNow_t>(kDrawGroupNow)(g_accum, 0x12, skyCtx, 0);
+				Fn<DrawGroupNow_t>(kDrawGroupNow)(g_accum, 0x13, skyCtx, 0);
+				Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, -1, 3);
+				Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 				g_diagSkyDrawn = 1;
 			}
 
@@ -2163,15 +2199,15 @@ namespace TrueScopes::ScopeRender
 			// Unbind (FUN_140b03d60's post-resolve pattern), then finish our accumulator.
 			TimerMark(6);  // end "sky" (sky accumulation + immediate group draw)
 			RENDER_STEP(16);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 0, 0x61, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 1, -1, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 2, -1, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 3, -1, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 4, -1, 3);
-			Fn<SetCurRT_t>(0x1db9dd0)(rtm, 5, -1, 0);
-			Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
-			Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
-			Fn<FinishAccum_t>(0x281e750)(g_accum);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 0, 0x61, 3);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 1, -1, 3);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 2, -1, 3);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 3, -1, 3);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 4, -1, 3);
+			Fn<SetCurRT_t>(kSetCurrentRenderTarget)(rtm, 5, -1, 0);
+			Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 1, 3, 0);
+			Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
+			Fn<FinishAccum_t>(kFinishAccum)(g_accum);
 
 			// Capture what the resolve actually rendered with: camera eye count/port,
 			// the camera-data rect that feeds viewport computation, and the last
@@ -2179,7 +2215,7 @@ namespace TrueScopes::ScopeRender
 			g_diagLightsA = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1a8);
 			g_diagLightsB = *reinterpret_cast<const std::int16_t*>(ssn0 + 0x1c0);
 			if (g_diagLightsA > 0) {
-				if (const auto sun = Fn<GetShadowedLight_t>(0x27ec150)(ssn0, 0)) {
+				if (const auto sun = Fn<GetShadowedLight_t>(kGetShadowedLight)(ssn0, 0)) {
 					g_diagSunSlotPost = *reinterpret_cast<const std::int32_t*>(sun + 0x18);
 				}
 			}
@@ -2290,13 +2326,13 @@ namespace TrueScopes::ScopeRender
 				}
 			}
 			if (unbindDS) {
-				Fn<SelectDS_t>(0x1db9e40)(rtm, kDS_None, 3, 0);
-				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				Fn<SelectDS_t>(kSelectDepthStencil)(rtm, kDS_None, 3, 0);
+				Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 			}
 			{
 				// Mode 2 (the shipping path) is the only lensMode that reaches
 				// delivery — modes 0/1 divert upstream.
-				Fn<VanillaLensCopy_t>(0x27b08c0)(0x61, Addr::kRT_ScopeLens, 0);
+				Fn<VanillaLensCopy_t>(kVanillaLensCopy)(0x61, Addr::kRT_ScopeLens, 0);
 				// Own delivery pass: composite the engine's reticle + the glass look
 				// over the tonemapped picture (LensComposite.cpp). Runs with the
 				// delivery's DS unbound and the ISM busy byte forced, same as the
@@ -2319,8 +2355,8 @@ namespace TrueScopes::ScopeRender
 			if (unbindDS) {
 				// Restore exactly what step 16 left bound, so nothing downstream sees
 				// a DS we removed.
-				Fn<SelectDS_t>(0x1db9e40)(rtm, 1, 3, 0);
-				Fn<CommitTargetsAlt_t>(0x1db9f80)(rtm);
+				Fn<SelectDS_t>(kSelectDepthStencil)(rtm, 1, 3, 0);
+				Fn<CommitTargetsAlt_t>(kCommitTargets)(rtm);
 			}
 			if (ismMgr) {
 				*reinterpret_cast<std::uint8_t*>(ismMgr + 0x60) = savedIsmBusy;
@@ -2334,7 +2370,7 @@ namespace TrueScopes::ScopeRender
 
 
 			RENDER_STEP(18);
-			Fn<CullDtor_t>(0x1d4d960)(cullBuf);
+			Fn<CullDtor_t>(kCullDtor)(cullBuf);
 			RENDER_STEP(19);
 		}
 
@@ -2420,7 +2456,7 @@ namespace TrueScopes::ScopeRender
 			return false;
 		}
 		std::memset(g_accum, 0, 0xf6e0);
-		Fn<AccumCtor_t>(0x281b790)(g_accum);
+		Fn<AccumCtor_t>(kAccumCtor)(g_accum);
 		InterlockedIncrement(reinterpret_cast<volatile long*>(reinterpret_cast<std::uintptr_t>(g_accum) + 8));
 
 		logger::info(
@@ -2449,7 +2485,7 @@ namespace TrueScopes::ScopeRender
 		// ~30 siblings) unconditionally re-writes +2=1 mid-resolve, which composites
 		// stereo-instanced with stale view-1 data (a split lens). +1 is never
 		// touched by pass setup.
-		const auto renderer = REL::Module::get().base() + kRendererRVA;
+		const auto renderer = REL::Module::get().base() + Addr::kRendererInstance;
 		using RendererFn_t = void (*)(std::uintptr_t);
 		auto* scopePassFlag = reinterpret_cast<std::uint8_t*>(renderer + 4);
 		auto* stereoMaster = reinterpret_cast<std::uint8_t*>(renderer + 1);
@@ -2460,15 +2496,15 @@ namespace TrueScopes::ScopeRender
 		g_renderTid.store(::GetCurrentThreadId());
 		*scopePassFlag = 1;
 		*stereoMaster = 0;
-		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind CBs (stereo b8 included)
+		Fn<RendererFn_t>(kRebindConstantBuffers)(renderer);  // rebind CBs (stereo b8 included)
 		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		g_inOwnResolve.store(false);  // fault path may have skipped the in-function reset
 		g_pendingSunExec = nullptr;
 		*scopePassFlag = savedFlag;
 		*stereoMaster = savedStereo;
 		g_renderTid.store(0);
-		Fn<RendererFn_t>(0x1d94c10)(renderer);  // rebind for the rest of the frame
-		Fn<RendererFn_t>(0x1d95240)(renderer);  // clear prev-cam cache (vanilla does)
+		Fn<RendererFn_t>(kRebindConstantBuffers)(renderer);  // rebind for the rest of the frame
+		Fn<RendererFn_t>(kClearPrevCamCache)(renderer);  // clear prev-cam cache (vanilla does)
 
 		if (!ok) {
 			RestoreArmedEngineState();  // undo any bracket the fault skipped
@@ -2736,8 +2772,8 @@ namespace TrueScopes::ScopeRender
 		// and invalidates the engine's cached-state block itself.
 		const auto base = REL::Module::get().base();
 		LensComposite::Inputs in{};
-		in.renderer = base + kRendererRVA;
-		in.rtm = base + kRTManager;
+		in.renderer = base + Addr::kRendererInstance;
+		in.rtm = base + kRTManagerRVA;
 		in.ctx = g_ctxPtrA ? *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrA) : 0;
 		if (!in.ctx && g_ctxPtrB) {
 			in.ctx = *reinterpret_cast<const std::uintptr_t*>(g_ctxPtrB);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace TrueScopes::Hooks
 {
 	// Verifies original bytes at both patch sites, then installs:

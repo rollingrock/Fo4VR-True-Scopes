@@ -7,4 +7,9 @@ set(headers ${headers}
 	src/TrueScopes/Hooks.h
 	src/TrueScopes/ScopeRender.h
 	src/Settings/Settings.h
+	src/TrueScopes/PoseGate.h
+	src/TrueScopes/VerdictInput.h
+	src/TrueScopes/LensComposite.h
+	src/TrueScopes/ScopeIdent.h
+	src/TrueScopes/OneEuro.h
 )
