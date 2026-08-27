@@ -1398,8 +1398,13 @@ namespace TrueScopes::ScopeRender
 			}
 			// One frame of weapon motion is a legitimate part of this, so the
 			// threshold is loose: it is looking for a broken transform, not tenths of
-			// a unit. The lens is ~1.3 units in radius.
-			if (err > 2.0f && !g_place.warnedResidual) {
+			// a unit. The lens is ~1.3 units in radius. The per-placement latch
+			// resets every census relatch (per frame while tracking), so a global
+			// rate limit carries the actual spam control.
+			static std::uint64_t s_residualWarnTick = 0;
+			const auto           nowTick = ::GetTickCount64();
+			if (err > 2.0f && !g_place.warnedResidual && nowTick - s_residualWarnTick >= 5000) {
+				s_residualWarnTick = nowTick;
 				g_place.warnedResidual = true;
 				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: disc landed {:.2f} units from its target "
 				                        "(offset=({:.2f},{:.2f},{:.2f})). Some of that is one frame of "
@@ -1534,7 +1539,16 @@ namespace TrueScopes::ScopeRender
 			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
 			if (relatch || g_place.eyeIndependent) {
 				ComputeAutoPlacement(a_player);
-				if (relatch)
+				// A decline keeps relatch true every frame until the transforms
+				// settle - cap the line at 2/s so a settle burst is a few lines,
+				// not dozens.
+				static std::uint64_t s_relatchLogTick = 0;
+				const auto           relatchNow = ::GetTickCount64();
+				const bool           logRelatch = relatch && relatchNow - s_relatchLogTick >= 500;
+				if (logRelatch) {
+					s_relatchLogTick = relatchNow;
+				}
+				if (logRelatch)
 				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} via {} offset=({:.2f},{:.2f},{:.2f}) "
 				                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
 					g_place.valid ? "candidate" : "declined", g_place.method,
@@ -1546,7 +1560,7 @@ namespace TrueScopes::ScopeRender
 				// with its local translate — i.e. the layout is not what this code
 				// believes. The number is here so that is diagnosed rather than
 				// inferred from a misplaced disc.
-				if (relatch && g_place.valid && g_place.parentResidual >= 0.0f) {
+				if (logRelatch && g_place.valid && g_place.parentResidual >= 0.0f) {
 					logger::info(FMT_STRING("WIDGET AUTO-PLACE: parent-transform residual {:.3f} "
 					                        "(0 = ScopeParent.world matches parent o local; large = the "
 					                        "assumed +0x28 parent / matrix layout is wrong)"),
@@ -1555,7 +1569,7 @@ namespace TrueScopes::ScopeRender
 				// The gap between the two independent targets is the only honest
 				// estimate of the heuristic's error, and the heuristic is what every
 				// modded scope falls back on. Worth a line whenever both exist.
-				if (relatch && g_place.haveBoth) {
+				if (logRelatch && g_place.haveBoth) {
 					logger::info(FMT_STRING("WIDGET AUTO-PLACE: census and bound-heuristic targets differ "
 					                        "by {:.2f} units"),
 						g_place.agreement);
@@ -1610,15 +1624,20 @@ namespace TrueScopes::ScopeRender
 			g_widget.applied = true;
 			g_fitAppliedAtomic.store(true, std::memory_order_relaxed);
 			// The census path recomputes per frame, so the write stays per-frame
-			// (that is the live tracking) but the log only speaks when something
-			// meaningful changed: a rebaseline, a scale change, or the offset
-			// moving more than a quarter unit since the last logged value.
-			static float s_logScale = -1.0f, s_logOx = 0.0f, s_logOy = 0.0f, s_logOz = 0.0f;
+			// (that is the live tracking) but the log only speaks on a rebaseline,
+			// a scale change, or - for ordinary offset motion - at most once a
+			// second. The quarter-unit threshold alone put 1,264 of the first
+			// field log's 1,632 lines here: a moving gun crosses it every frame.
+			static float         s_logScale = -1.0f, s_logOx = 0.0f, s_logOy = 0.0f, s_logOz = 0.0f;
+			static std::uint64_t s_logTick = 0;
+			const bool moved = std::fabs(ox - s_logOx) > 0.25f ||
+			                   std::fabs(oy - s_logOy) > 0.25f ||
+			                   std::fabs(oz - s_logOz) > 0.25f;
+			const auto nowTick = ::GetTickCount64();
 			const bool logWorthy = rebaselined || scale != s_logScale ||
-			                       std::fabs(ox - s_logOx) > 0.25f ||
-			                       std::fabs(oy - s_logOy) > 0.25f ||
-			                       std::fabs(oz - s_logOz) > 0.25f;
+			                       (moved && nowTick - s_logTick >= 1000);
 			if (logWorthy) {
+				s_logTick = nowTick;
 				s_logScale = scale;
 				s_logOx = ox;
 				s_logOy = oy;
