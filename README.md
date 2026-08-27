@@ -26,7 +26,15 @@ Install the archive as a normal MO2 mod. It contains:
 F4SE/Plugins/truescopes_vr.dll
 F4SE/Plugins/truescopes_vr.pdb   (keep it — it makes your crash dumps readable)
 F4SE/Plugins/TrueScopesVR.toml
+Interface/ScopeMenu.swf
+Interface/world_ScopeMenu.swf
 ```
+
+The two SWFs are the vanilla ScopeMenu movies with one change: the floating
+"GRAB Hold Breath" pill is removed at the source (its placement is zero-scaled;
+nothing else in the movie is touched). They will conflict with any other mod
+that also edits ScopeMenu.swf — rare, but if you have one, load this mod after
+it or the pill comes back.
 
 No ESP. Uninstall = remove the mod.
 
