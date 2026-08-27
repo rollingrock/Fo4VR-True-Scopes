@@ -92,6 +92,13 @@ eyeBoxStrength = 1.0
 # jitter is magnified at distance). Raise it back for a stricter scope.
 eyeBoxGain = 0.9
 eyeBoxIpdUnits = 4.5
+# A real eyebox is distance-dependent: widest at the scope's eye relief,
+# collapsing steeply as the eye moves closer in, forgiving as it backs off.
+# Effective gain = eyeBoxGain * clamp((eyeBoxReliefUnits / eyeRelief)^power,
+# 0.35, 3): unchanged at the relief distance, tighter closer, looser farther.
+# reliefUnits 0 = the old fixed gain. 1 unit ~ 1.43 cm.
+eyeBoxReliefUnits = 12.0
+eyeBoxDistancePower = 1.6
 # Edge blur: field-curvature softness from edgeBlurStart (0..1 of the disc radius)
 # out to the rim. strength 0 = off.
 edgeBlurStrength = 0.35
@@ -217,6 +224,18 @@ poseExitLateral = 9.0
 # The head must be oriented at the scope: HMD-forward vs direction-to-ocular.
 poseLookConeDegrees = 35.0
 poseLookConeExitDegrees = 45.0
+# The lateral band scales with eye distance when adapt > 0 (constant angular
+# cone beyond the reference distance instead of a constant offset; never
+# tightens below the base values up close). 0 = fixed band.
+poseLateralDistanceAdapt = 1.0
+poseLateralRefDist = 13.0
+# Skip the look-cone test while the eye is within this lateral distance of the
+# tube axis - on the axis you are looking through the scope, and at close range
+# the head-forward angle is dominated by translation jitter. 0 = always test.
+poseLookWaiveLateral = 4.0
+# Minimum continuous ms the enter conditions must hold before the gate re-arms
+# (the exit edge stays immediate). Stops sub-second live/frozen cycling.
+poseReArmDwellMs = 250
 # true = the scope widget stays visible the whole time the weapon is drawn, with
 # the lens FROZEN (last live picture, dimmed once) while the pose is inactive -
 # no pop-in. false = the widget appears/disappears with the pose test.

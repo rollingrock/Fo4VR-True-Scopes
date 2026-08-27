@@ -32,6 +32,9 @@ namespace TrueScopes::PoseGate
 		// Hysteresis memory. Game thread only (the verdict site is per-frame from
 		// Main::OnIdle), so no atomicity needed for the read-modify-write.
 		bool g_liveState = false;
+		// Re-arm dwell: tick when the enter conditions first held while the gate
+		// was off. Game thread only.
+		std::uint64_t g_armPendingSince = 0;
 
 		struct Sample
 		{
@@ -180,9 +183,41 @@ namespace TrueScopes::PoseGate
 			return static_cast<float>(was ? std::max<double>(a_exit, a_enter) : a_enter);
 		};
 		const float dMax = band(*Settings::poseMaxDistance, *Settings::poseExitDistance);
-		const float latMax = band(*Settings::poseMaxLateral, *Settings::poseExitLateral);
+		float       latMax = band(*Settings::poseMaxLateral, *Settings::poseExitLateral);
 		const float lookMax = band(*Settings::poseLookConeDegrees, *Settings::poseLookConeExitDegrees);
-		const bool  live = s.dist < dMax && s.lateral < latMax && s.lookDeg < lookMax;
+		// Constant angular cone beyond the reference distance instead of a
+		// constant lateral offset (see the setting). Never tightens up close.
+		{
+			const auto adapt = static_cast<float>(*Settings::poseLateralDistanceAdapt);
+			const auto refD = static_cast<float>(*Settings::poseLateralRefDist);
+			if (adapt > 0.0f && refD > 1.0f && std::isfinite(s.dist)) {
+				latMax *= (std::max)(1.0f, 1.0f + adapt * (s.dist / refD - 1.0f));
+			}
+		}
+		// An eye on the tube axis is looking through the scope regardless of
+		// what the head-forward angle says - at close range that angle is
+		// dominated by head-translation noise.
+		const auto lookWaive = static_cast<float>(*Settings::poseLookWaiveLateral);
+		const bool lookOk = (lookWaive > 0.0f && s.lateral < lookWaive) || s.lookDeg < lookMax;
+		const bool rawLive = s.dist < dMax && s.lateral < latMax && lookOk;
+		bool       live = rawLive;
+		// Enter-edge dwell: conditions must hold continuously before re-arming.
+		// The exit edge stays immediate.
+		if (rawLive && !was) {
+			const auto dwellMs = static_cast<std::uint64_t>(
+				(std::max)(std::int64_t(0), *Settings::poseReArmDwellMs));
+			if (dwellMs > 0) {
+				const auto now = static_cast<std::uint64_t>(::GetTickCount64());
+				if (g_armPendingSince == 0) {
+					g_armPendingSince = now;
+				}
+				if (now - g_armPendingSince < dwellMs) {
+					live = false;
+				}
+			}
+		} else {
+			g_armPendingSince = 0;
+		}
 		if (live != was) {
 			logger::info(
 				FMT_STRING("pose gate live -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg)"),

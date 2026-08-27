@@ -918,7 +918,16 @@ float4 PSMain(VSOut i) : SV_Target
 			                      pllxD > 0.0f || (rimStr > 0.0f && rimPll != 0.0f);
 			const bool havePose = wantPose && EyeLateral(a_in.scopeParent, ex, ey, ly);
 			if (havePose && strength > 0.0f) {
-				const auto gain = static_cast<float>(*Settings::eyeBoxGain);
+				auto gain = static_cast<float>(*Settings::eyeBoxGain);
+				// Distance-adaptive gain (the biconic eyebox): unchanged at the
+				// relief distance, tighter closer in, progressively forgiving as
+				// the eye backs off. ly is the tube-axial eye position; the eye
+				// sits behind the ocular, so relief L = -ly.
+				const auto relief = static_cast<float>(*Settings::eyeBoxReliefUnits);
+				if (relief > 0.01f && std::isfinite(ly) && ly < -0.5f) {
+					const auto pw = static_cast<float>(*Settings::eyeBoxDistancePower);
+					gain *= std::clamp(std::pow(relief / -ly, pw), 0.35f, 3.0f);
+				}
 				p.eyebox[0] = ex * gain;
 				p.eyebox[1] = ey * gain;
 				p.eyebox[2] = strength;
