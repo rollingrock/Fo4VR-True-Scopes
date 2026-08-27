@@ -159,6 +159,8 @@ namespace TrueScopes::ScopeRender
 			std::uint8_t           ismBusySaved = 0;
 			float*                 sunRgb = nullptr;
 			float                  sunRgbSaved[3] = {};
+			std::uintptr_t         skyRoot[2] = {};       // sky roots mid-bracket in the sky accumulation
+			std::uint8_t           skyRootSaved[2] = {};  // their prior appCulled bit (flag bit 0 at +0x108)
 		};
 		ArmedRestore g_armed;
 
@@ -199,6 +201,14 @@ namespace TrueScopes::ScopeRender
 				std::memcpy(g_armed.sunRgb, g_armed.sunRgbSaved, sizeof(g_armed.sunRgbSaved));
 				g_armed.sunRgb = nullptr;
 				any = true;
+			}
+			for (std::size_t i = 0; i < 2; ++i) {
+				if (g_armed.skyRoot[i]) {
+					auto& flags = *reinterpret_cast<std::uint8_t*>(g_armed.skyRoot[i] + 0x108);
+					flags = static_cast<std::uint8_t>((flags & ~1u) | g_armed.skyRootSaved[i]);
+					g_armed.skyRoot[i] = 0;
+					any = true;
+				}
 			}
 			if (any) {
 				logger::warn("fault path restored armed engine globals"sv);
@@ -2147,7 +2157,8 @@ namespace TrueScopes::ScopeRender
 					{ 0x6885c00, 1 },  // Sky+0x8 (BSMultiBoundNode, the dome)
 					{ 0x6885c08, 2 },  // sun/cloud geometry sibling
 				};
-				for (const auto& r : kSkyRoots) {
+				for (std::size_t ri = 0; ri < std::size(kSkyRoots); ++ri) {
+					const auto& r = kSkyRoots[ri];
 					if (!(mask & r.bit)) {
 						continue;
 					}
@@ -2159,26 +2170,43 @@ namespace TrueScopes::ScopeRender
 					if (vtbl < base || vtbl >= base + 0x0a000000) {
 						continue;  // not an engine vtable -> mislabeled global, skip
 					}
-					// The sky roots are disabled outside the engine's own sky stage —
-					// vanilla brackets its sky accumulation with vfunc+0x180(root, 1)
-					// ... (root, 0) on each root (FUN_140c875f0's forward pre-pass
-					// does exactly this before AccumulateScene). Without the toggle,
-					// culling rejects the whole subtree and nothing registers.
+					// vfunc+0x180 = NiAVObject::SetAppCulled; (x, 1) hides. Sky::SetMode
+					// (0x140639c60) parks both roots CULLED on entering an interior and
+					// only the next cell transition rewrites the bit — nothing per-frame
+					// re-culls. A parked root means this cell has no sky: skip it, and
+					// put the found bit back after the bracket. Ending force-shown here
+					// is what un-hid the dome in interiors — every later main frame then
+					// drew it with no weather set up (a flat magenta sky) until the next
+					// cell transition.
 					const auto toggleFn = *reinterpret_cast<const std::uintptr_t*>(vtbl + 0x180);
 					if (toggleFn < base || toggleFn >= base + 0x0a000000) {
 						continue;
 					}
-					// Also bypass culling for the sky accumulation — the dome's huge
+					const auto savedCulled = static_cast<std::uint8_t>(
+						*reinterpret_cast<const std::uint8_t*>(root + 0x108) & 1u);
+					if (savedCulled) {
+						static std::int32_t s_loggedParked = -1;
+						if (s_loggedParked != 1) {
+							s_loggedParked = 1;
+							logger::info("SKY: roots parked culled by the cell (interior) - sky skipped"sv);
+						}
+						continue;
+					}
+					// Bypass culling for the sky accumulation — the dome's huge
 					// multibound fails the default frustum/portal culling. The
 					// engine's own forward passes bracket accumulation with
 					// cull+0x158 = 1 (accumulate-all mode, per the first-person pass
-					// FUN_14284e370); mirror that here.
+					// FUN_14284e370); mirror that here. The hide/restore bracket
+					// matches the engine's own sky accumulation (FUN_140c875f0).
 					const auto savedCullMode = *reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158);
 					*reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158) = 1;
 					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
+					g_armed.skyRoot[ri] = root;
+					g_armed.skyRootSaved[ri] = savedCulled;
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 1);
 					Fn<AccumScene_t>(kAccumulateScene)(cam, root, g_cullBuf, 0);
-					reinterpret_cast<Toggle_t>(toggleFn)(root, 0);
+					reinterpret_cast<Toggle_t>(toggleFn)(root, savedCulled);
+					g_armed.skyRoot[ri] = 0;
 					*reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158) = savedCullMode;
 					++g_diagSkyRoots;
 				}
