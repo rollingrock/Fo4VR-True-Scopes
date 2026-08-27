@@ -567,33 +567,39 @@ namespace TrueScopes::ScopeIdent
 			// --- the weapon and its zoom data ---
 			std::uintptr_t inst[2] = { 0, 0 };  // { TESObjectWEAP*, InstanceData* }
 			Fn<GetCurrentWeapon_t>(kGetCurrentWeapon)(a_player, inst, equipIndex);
-			if (inst[0]) {
-				a_out.weaponFormID = *reinterpret_cast<std::uint32_t*>(inst[0] + kFormIDInTESForm);
-				a_out.fovMult = Fn<GetIronSightFOV_t>(kGetIronSightFOV)(inst[0], inst[1]);
-				a_out.zoomFovAt90 = Fn<GetZoomFOV_t>(kGetZoomFOV)(inst[0], 90.0f, inst[1]);
-				// zoomData: instance data first (a scope OMOD's zoom overrides
-				// the base), then the weapon form; the same selection
-				// TS_ScopeMenu_ProcessMessage makes (inst+0x90 / weap+0x228).
-				// BGSZoomData::Data at +0x20: {fovMult, overlay +0x24, imod +0x28}.
-				const auto zoomData = inst[1] && *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
-				                          ? *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
-				                          : *reinterpret_cast<std::uintptr_t*>(inst[0] + 0x228);
-				if (zoomData) {
-					// overlay index: the exact read TS_ScopeMenu_ProcessMessage makes.
-					a_out.zoomOverlay = *reinterpret_cast<std::uint32_t*>(zoomData + 0x24);
-					// the resolved imod pointer is +0x38 (the +0x28 slot is the raw
-					// formID from the ESM); +0x38 is what the engine's own Trigger
-					// call site uses, null for every non-NV/non-recon zoom.
-					if (const auto imod = *reinterpret_cast<std::uintptr_t*>(zoomData + 0x38)) {
-						a_out.zoomImodID = *reinterpret_cast<std::uint32_t*>(imod + kFormIDInTESForm);
+			__try {
+				if (inst[0]) {
+					a_out.weaponFormID = *reinterpret_cast<std::uint32_t*>(inst[0] + kFormIDInTESForm);
+					a_out.fovMult = Fn<GetIronSightFOV_t>(kGetIronSightFOV)(inst[0], inst[1]);
+					a_out.zoomFovAt90 = Fn<GetZoomFOV_t>(kGetZoomFOV)(inst[0], 90.0f, inst[1]);
+					// zoomData: instance data first (a scope OMOD's zoom overrides
+					// the base), then the weapon form; the same selection
+					// TS_ScopeMenu_ProcessMessage makes (inst+0x90 / weap+0x228).
+					// BGSZoomData::Data at +0x20: {fovMult, overlay +0x24, imod +0x28}.
+					const auto zoomData = inst[1] && *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
+					                          ? *reinterpret_cast<std::uintptr_t*>(inst[1] + 0x90)
+					                          : *reinterpret_cast<std::uintptr_t*>(inst[0] + 0x228);
+					if (zoomData) {
+						// overlay index: the exact read TS_ScopeMenu_ProcessMessage makes.
+						a_out.zoomOverlay = *reinterpret_cast<std::uint32_t*>(zoomData + 0x24);
+						// the resolved imod pointer is +0x38 (the +0x28 slot is the raw
+						// formID from the ESM); +0x38 is what the engine's own Trigger
+						// call site uses, null for every non-NV/non-recon zoom.
+						if (const auto imod = *reinterpret_cast<std::uintptr_t*>(zoomData + 0x38)) {
+							a_out.zoomImodID = *reinterpret_cast<std::uint32_t*>(imod + kFormIDInTESForm);
+						}
 					}
 				}
+				// Before the release: the instance-data pointer is what identifies the
+				// equipped inventory stack, and the held reference keeps it alive for
+				// the comparison.
+				ReadAttachedMods(a_player, inst[0], inst[1], a_out);
+			} __finally {
+				// termination handler, like the decal stage's: a fault in the walk
+				// above unwinds to ProbeGuarded, and the held reference must not
+				// leak with it.
+				ReleaseInstanceData(inst[1]);
 			}
-			// Before the release: the instance-data pointer is what identifies the
-			// equipped inventory stack, and the held reference keeps it alive for
-			// the comparison.
-			ReadAttachedMods(a_player, inst[0], inst[1], a_out);
-			ReleaseInstanceData(inst[1]);
 
 			// --- the weapon's 3D ---
 			const auto process = *reinterpret_cast<std::uintptr_t*>(a_player + kProcessInActor);
@@ -1068,6 +1074,10 @@ namespace TrueScopes::ScopeIdent
 		Info info;
 		if (!ProbeGuarded(a_player, info)) {
 			const std::scoped_lock lock(g_lock);
+			// reset first: a previous weapon's probed values must not survive
+			// the latch, or its aperture/offsets/fovMult keep applying. probed
+			// goes false, so every accessor falls back to the global settings.
+			g_info = Info{};
 			g_info.faulted = true;
 			logger::error("SCOPE IDENT: the weapon 3D walk faulted — per-scope fitting disabled for this session"sv);
 			return;

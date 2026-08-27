@@ -241,7 +241,6 @@ namespace DevBench
 				// the perf stopwatch (off->on resets its window) and its two levers
 				{ "perfTimers", Kind::Bool, &perfTimers },
 				{ "perfLightsMax", Kind::Int, &perfLightsMax },
-				{ "sunEnabled", Kind::Bool, &sunEnabled },
 				{ "sunExecEnabled", Kind::Bool, &sunExecEnabled },
 				{ "sunBrightnessScale", Kind::Float, &sunBrightnessScale },
 				{ "accumClearScale", Kind::Float, &accumClearScale },
@@ -474,7 +473,7 @@ namespace DevBench
 			out += ",\"sunBindHooks\":" + b(d.sunBindHooks);
 
 			out += ",\"counters\":{";
-			out += ",\"invProjRejects\":" + std::to_string(d.invProjRejects);
+			out += "\"invProjRejects\":" + std::to_string(d.invProjRejects);
 			out += ",\"fogNulls\":" + std::to_string(d.fogNulls);
 			out += "}";
 

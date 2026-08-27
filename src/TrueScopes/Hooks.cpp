@@ -72,8 +72,12 @@ namespace TrueScopes::Hooks
 							}
 						}
 					}
-				} else if (g_gateRaw.exchange(false)) {
+				} else if (g_gateRaw.load()) {
+					// tick before flag: the fill hook reads flag-then-tick, so an
+					// observed off must already carry this edge's timestamp — the
+					// reverse order lets a poll measure the hold from a stale tick.
 					g_gateOffTick.store(static_cast<std::uint64_t>(::GetTickCount64()));
+					g_gateRaw.store(false);
 				}
 				// deliberately not writing renderer+3
 			}
@@ -463,8 +467,8 @@ namespace TrueScopes::Hooks
 				// reload plus scope re-ident silently skip. The verdict site going
 				// quiet for ~1 s is the holster/menu signal (it runs per frame
 				// while eligible), so force the off edge here.
-				if (g_installed && g_verdictHookInstalled && *Settings::poseGateEnabled &&
-					g_scopeActive.load() && PoseGate::VerdictStale(90)) {
+				if (g_installed && g_verdictHookInstalled &&
+					g_scopeActive.load() && PoseGate::SiteStale(90)) {
 					g_gateRaw.store(false);
 					g_scopeActive.store(false);
 					LensComposite::RestoreReticleQuad();

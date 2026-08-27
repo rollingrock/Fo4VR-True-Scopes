@@ -155,10 +155,6 @@ namespace Settings
 	// after the restore); `lightsClamp=` in the log marks a clamped run.
 	MAKE_SETTING(iSetting, "TrueScopesVR", perfLightsMax, std::int64_t(-1));
 
-	// Draw the engine's sun BSDFLightDir pass into our scope light accumulation
-	// before the resolve. Requires the resolve accum-bind hooks; falls back to
-	// ambient + local lights only when off or unavailable.
-	MAKE_SETTING(bSetting, "TrueScopesVR", sunEnabled, true);
 	// Scale on the sun's light color for the scope render only (1.0 = engine value).
 	// Doubles as a diagnostic: if lowering this does not dim the lens, the overbright
 	// artifact is not coming through the light color path.
@@ -409,11 +405,11 @@ namespace Settings
 	MAKE_SETTING(bSetting, "TrueScopesVR", widgetAutoPlace, true);
 	// Skip only the sun's fullscreen BSDFLightDir exec, keeping the accum
 	// clear/binds, camera state and pre-resolve G-buffer rebind that share its
-	// block. sunEnabled=false is not equivalent — it drops all of those too and
-	// faults the delivery (the ImageSpace copy needs the camera state). The
-	// exec must run after the G-buffer exists and with the accum MRT bound, or
-	// it writes NaN into the accumulation (displays black, probes lit). With
-	// that ordering it genuinely sun-lights the lens; turning it off visibly
+	// block (dropping those faults the delivery — the ImageSpace copy needs the
+	// camera state — which is why no wider off switch exists). The exec must
+	// run after the G-buffer exists and with the accum MRT bound, or it writes
+	// NaN into the accumulation (displays black, probes lit). With that
+	// ordering it genuinely sun-lights the lens; turning it off visibly
 	// darkens it. Coupled to accumClearScale — see the note there.
 	MAKE_SETTING(bSetting, "TrueScopesVR", sunExecEnabled, true);
 	// Re-arm the renderer on scope-in after a fault (the fault latch is otherwise
@@ -544,6 +540,10 @@ namespace Settings
 		return buf;
 	}
 
+	// Serializes load() itself: the game thread reloads on every scope-in and the
+	// devbench listener thread reloads on request, and the ~100 setting writes
+	// (one a std::string assignment) are not individually thread-safe.
+	inline std::mutex                                     loadLock;
 	inline std::mutex                                     scopeApertureLock;
 	// Keyed by NormalizeScopeKey(...) of whatever the TOML said, so lookups are
 	// case- and separator-insensitive for paths and, harmlessly, for node names.
@@ -569,6 +569,7 @@ namespace Settings
 
 	inline void load()
 	{
+		const std::scoped_lock lock(loadLock);
 		toml::table config;
 		try {
 			config = toml::parse_file("Data/F4SE/Plugins/TrueScopesVR.toml"sv);
@@ -628,7 +629,6 @@ namespace Settings
 		LOAD(cullToScopeFrustum);
 		LOAD(perfTimers);
 		LOAD(perfLightsMax);
-		LOAD(sunEnabled);
 		LOAD(sunBrightnessScale);
 		LOAD(accumClearScale);
 		LOAD(accumClearAlpha);
@@ -828,8 +828,8 @@ namespace Settings
 		}
 
 		logger::info(
-			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} lensMode={} scopeFovDegrees={} sunEnabled={} suppressScopeImods={} disableApproachFade={}"),
-			*fillEnabled, *fillEveryNFrames, *lensMode, *scopeFovDegrees, *sunEnabled, *suppressScopeImods, *disableApproachFade);
+			FMT_STRING("settings: fillEnabled={} fillEveryNFrames={} lensMode={} scopeFovDegrees={} suppressScopeImods={} disableApproachFade={}"),
+			*fillEnabled, *fillEveryNFrames, *lensMode, *scopeFovDegrees, *suppressScopeImods, *disableApproachFade);
 
 		if (postLoadHook) {
 			postLoadHook();

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.3.12)
+set(VERSION 0.3.13)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
@@ -254,12 +254,17 @@ if(COPY_BUILD)
 endif()
 
 if(DEFINED MO2_INSTALL_PATH AND NOT "${MO2_INSTALL_PATH}" STREQUAL "")
+	# deploy the shipped assets too, so the rig never drifts from the repo
+	# (MO2_INSTALL_PATH points at the mod's F4SE/Plugins dir)
 	add_custom_command(
 		TARGET ${PROJECT_NAME}
 		POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${MO2_INSTALL_PATH}"
 		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${MO2_INSTALL_PATH}"
 		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${MO2_INSTALL_PATH}"
+		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/F4SE/Plugins/TrueScopesVR.toml" "${MO2_INSTALL_PATH}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${MO2_INSTALL_PATH}/../../Interface"
+		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/world_ScopeMenu.swf" "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/ScopeMenu.swf" "${MO2_INSTALL_PATH}/../../Interface/"
 	)
 endif()
 

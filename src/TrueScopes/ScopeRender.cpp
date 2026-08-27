@@ -141,8 +141,8 @@ namespace TrueScopes::ScopeRender
 		// Engine-global brackets armed while RenderImpl holds an engine global in a
 		// modified state. Inline restores disarm; on the SEH fault path Render()
 		// calls RestoreArmedEngineState() so a fault cannot leave previs disabled
-		// engine-wide, the fov mode forced, the light counts clamped, or the ISM
-		// selector held.
+		// engine-wide, the fov mode forced, the light counts clamped, the ISM
+		// selector held, or the sun NiLight's color scaled.
 		struct ArmedRestore
 		{
 			std::uint8_t*          fov738 = nullptr;
@@ -157,6 +157,8 @@ namespace TrueScopes::ScopeRender
 			std::int16_t           lightsBSaved = 0;
 			std::uint8_t*          ismBusy = nullptr;
 			std::uint8_t           ismBusySaved = 0;
+			float*                 sunRgb = nullptr;
+			float                  sunRgbSaved[3] = {};
 		};
 		ArmedRestore g_armed;
 
@@ -193,10 +195,22 @@ namespace TrueScopes::ScopeRender
 				g_armed.ismBusy = nullptr;
 				any = true;
 			}
+			if (g_armed.sunRgb) {
+				std::memcpy(g_armed.sunRgb, g_armed.sunRgbSaved, sizeof(g_armed.sunRgbSaved));
+				g_armed.sunRgb = nullptr;
+				any = true;
+			}
 			if (any) {
 				logger::warn("fault path restored armed engine globals"sv);
 			}
 		}
+
+		// Cull-process buffer, hoisted out of RenderImpl's frame so the fault
+		// path can run the engine dtor after the SEH unwind (frees the lazily
+		// allocated room-visibility table). Renders are serialized on the render
+		// thread, same assumption g_renderTid encodes.
+		alignas(16) std::uint8_t g_cullBuf[0x1a0];
+		bool g_cullLive = false;
 		std::uintptr_t g_ctxPtrA = 0;     // &deferred-context ptr (DAT_146235ac8); anchor in FUN_141db9f80
 		std::uintptr_t g_ctxPtrB = 0;     // &immediate-context ptr (DAT_146235ac0); anchor in FUN_141db9f80
 		std::uintptr_t g_sunConfig = 0;   // persistent sun BSDFLightDir pass config (Ghidra DAT_146886758); anchor: lea in job FUN_142849990
@@ -1470,8 +1484,12 @@ namespace TrueScopes::ScopeRender
 			return outcome;
 		}
 
-		// The whole render, POD-only so the SEH wrapper below is legal.
-		void RenderImpl(float a_fovDeg)
+		// The whole render, POD-only so the SEH wrapper below is legal. Returns
+		// whether the lens was actually delivered — false is a clean decline
+		// (nothing written to RT 0x62), which the caller must not confuse with
+		// a fault: the fill hook needs it to run the copy fallback and keep the
+		// lens prime armed.
+		bool RenderImpl(float a_fovDeg)
 		{
 			const auto base = REL::Module::get().base();
 			const auto rtm = base + kRTManagerRVA;
@@ -1479,11 +1497,11 @@ namespace TrueScopes::ScopeRender
 
 			const auto player = *reinterpret_cast<std::uintptr_t*>(base + kPlayerGlobal);
 			if (!player) {
-				return;
+				return false;
 			}
 			const auto cam = *reinterpret_cast<std::uintptr_t*>(player + kCamOffsetInPlayer);
 			if (!cam) {
-				return;
+				return false;
 			}
 
 			// Publish the per-render engine pointers for DevBench, so an ad-hoc
@@ -1518,7 +1536,7 @@ namespace TrueScopes::ScopeRender
 				a_fovDeg = derived;
 			}
 			if (a_fovDeg <= 0.0f) {
-				return;  // asked to derive, could not; a zero FOV renders nothing useful
+				return false;  // asked to derive, could not; a zero FOV renders nothing useful
 			}
 			g_lastFovDeg = a_fovDeg;
 
@@ -1636,7 +1654,7 @@ namespace TrueScopes::ScopeRender
 			const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
 			const auto ssn0 = *reinterpret_cast<std::uintptr_t*>(g_ssnArray);
 			if (!ssn0) {
-				return;
+				return false;
 			}
 			*reinterpret_cast<std::uint32_t*>(accum + 0xf688) = 0x19;
 			*reinterpret_cast<std::uint8_t*>(accum + 0xf669) = 1;  // FUN_140b03d60: set when deferred
@@ -1650,9 +1668,9 @@ namespace TrueScopes::ScopeRender
 			// +0x18 — UpdateLightList dereferences it (the engine's own world path
 			// sets cull+0x18 = camera, FUN_14284e370).
 			RENDER_STEP(3);
-			alignas(16) std::uint8_t cullBuf[0x1a0];
-			Fn<CullCtor_t>(kCullCtor)(cullBuf, 0);
-			*reinterpret_cast<std::uintptr_t*>(cullBuf + 0x18) = cam;
+			Fn<CullCtor_t>(kCullCtor)(g_cullBuf, 0);
+			g_cullLive = true;
+			*reinterpret_cast<std::uintptr_t*>(g_cullBuf + 0x18) = cam;
 			// Also give the culling process its own frustum, exactly as the engine's
 			// cull helper FUN_141d4dc50 does (set +0x18, then SetFrustum). The ctor
 			// zeroes the NiFrustum at +0x20 and the six planes at +0x3c, so without
@@ -1663,11 +1681,11 @@ namespace TrueScopes::ScopeRender
 			// so an A/B stays single-flag.
 			if (*Settings::cullToScopeFrustum) {
 				if (const auto* const eye0 = *reinterpret_cast<const float**>(cam + 0x1a0)) {
-					Fn<CullSetFrustum_t>(kCullSetFrustum)(cullBuf, eye0);
+					Fn<CullSetFrustum_t>(kCullSetFrustum)(g_cullBuf, eye0);
 				}
 			}
 			RENDER_STEP(4);
-			Fn<CullSetAccum_t>(kCullSetAccumulator)(cullBuf, g_accum);
+			Fn<CullSetAccum_t>(kCullSetAccumulator)(g_cullBuf, g_accum);
 
 			RENDER_STEP(5);
 			Fn<ClearPrevCam_t>(kClearPrevCamCache)(renderer);
@@ -1707,7 +1725,7 @@ namespace TrueScopes::ScopeRender
 			TimerMark(1);  // end "setup" (camera, binds, clears)
 			RENDER_STEP(7);
 			using ProcessLights_t = void (*)(std::uintptr_t, void*);
-			Fn<ProcessLights_t>(kProcessQueuedLights)(ssn0, cullBuf);
+			Fn<ProcessLights_t>(kProcessQueuedLights)(ssn0, g_cullBuf);
 			TimerMark(2);  // end "lights" (ProcessQueuedLights)
 
 			// Previs bypass. Inside AccumulateScene the per-object frustum test is
@@ -1743,7 +1761,7 @@ namespace TrueScopes::ScopeRender
 			}
 
 			RENDER_STEP(8);
-			Fn<AccumScene_t>(kAccumulateScene)(cam, ssn0, cullBuf, 1);
+			Fn<AccumScene_t>(kAccumulateScene)(cam, ssn0, g_cullBuf, 1);
 
 			// Restore immediately: this is a process-global the main view reads too.
 			// Worst case a concurrent engine cull sees it disabled for a few hundred
@@ -1823,7 +1841,7 @@ namespace TrueScopes::ScopeRender
 			// the hooks are available; only the sun exec is skipped on dirty-config
 			// frames (one frame of ambient-only lighting).
 			bool accumSetup = false;
-			if (g_sunBindHooksInstalled && g_gfxState && *Settings::sunEnabled) {
+			if (g_sunBindHooksInstalled && g_gfxState) {
 					// Clear the accum RTs deterministically (bind as slot 0 + commit +
 					// immediate ClearColor) — but to the fog/ambient color, not black.
 					// Vanilla's mode-0 clear-on-apply executes lazily at the first
@@ -1898,13 +1916,12 @@ namespace TrueScopes::ScopeRender
 							g_diagSunIsSSNSun = cfgSun == *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248) ? 1 : 0;
 						}
 					}
-					// sunExecEnabled isolates the sun draw alone. sunEnabled is not a
-					// valid isolation for it — that flag gates this whole block, which
-					// also owns the accum clear, the accum/DS binds, the camera state
-					// and the pre-resolve G-buffer rebind, and turning it off faults
-					// the delivery outright (the ImageSpace copy then runs with no
-					// camera state). Everything above stays; only the fullscreen
-					// additive BSDFLightDir exec below is skipped.
+					// sunExecEnabled isolates the sun draw alone. The rest of the
+					// block — accum clear, accum/DS binds, camera state, the
+					// pre-resolve G-buffer rebind — must run regardless, or the
+					// delivery faults outright (the ImageSpace copy then runs with
+					// no camera state). Only the fullscreen additive BSDFLightDir
+					// exec below is skipped.
 					if (cfgClean && cfgBuilt && *Settings::sunExecEnabled) {
 
 					// When this runs matters: a deferred directional light shades by
@@ -1940,14 +1957,17 @@ namespace TrueScopes::ScopeRender
 						// RGB (NiLight+0x16c..0x174 — the floats FUN_14286d890 reads)
 						// around the exec, restore after. If a small scale does not dim
 						// the lens, the overbright isn't coming through the light color.
+						// The saved color lives in g_armed so a fault inside the exec
+						// restores it too — this is a global the main view reads, and
+						// nothing else rewrites it reliably.
 						const auto sunLight = *reinterpret_cast<const std::uintptr_t*>(ssn0 + 0x248);
 						const auto niLight = sunLight ? *reinterpret_cast<std::uintptr_t*>(sunLight + 0xb8) : 0;
-						float savedRGB[3] = {};
 						const auto scale = static_cast<float>(*Settings::sunBrightnessScale);
 						const bool scaling = niLight && scale != 1.0f;
 						if (scaling) {
 							auto* rgb = reinterpret_cast<float*>(niLight + 0x16c);
-							std::memcpy(savedRGB, rgb, sizeof(savedRGB));
+							std::memcpy(g_armed.sunRgbSaved, rgb, sizeof(g_armed.sunRgbSaved));
+							g_armed.sunRgb = rgb;
 							rgb[0] *= scale;
 							rgb[1] *= scale;
 							rgb[2] *= scale;
@@ -2008,7 +2028,8 @@ namespace TrueScopes::ScopeRender
 
 
 						if (scaling) {
-							std::memcpy(reinterpret_cast<float*>(niLight + 0x16c), savedRGB, sizeof(savedRGB));
+							std::memcpy(reinterpret_cast<float*>(niLight + 0x16c), g_armed.sunRgbSaved, sizeof(g_armed.sunRgbSaved));
+							g_armed.sunRgb = nullptr;
 						}
 
 						set(0xb0, 0, 4);  // job's own restore
@@ -2089,7 +2110,7 @@ namespace TrueScopes::ScopeRender
 			g_decalStageCam = cam;
 			g_pendingDecalStage.store(accumSetup && *Settings::decalStageEnabled);
 			g_inOwnResolve.store(accumSetup);
-			Fn<DeferredResolve_t>(kDeferredResolve)(cam, g_accum, cullBuf, ssn0, 0x61, 0xc, 0, 1);
+			Fn<DeferredResolve_t>(kDeferredResolve)(cam, g_accum, g_cullBuf, ssn0, 0x61, 0xc, 0, 1);
 			g_inOwnResolve.store(false);
 			g_pendingSunExec = nullptr;  // never let a stale closure outlive this frame
 			g_pendingDecalStage.store(false);
@@ -2152,13 +2173,13 @@ namespace TrueScopes::ScopeRender
 					// engine's own forward passes bracket accumulation with
 					// cull+0x158 = 1 (accumulate-all mode, per the first-person pass
 					// FUN_14284e370); mirror that here.
-					const auto savedCullMode = *reinterpret_cast<std::uint8_t*>(cullBuf + 0x158);
-					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = 1;
+					const auto savedCullMode = *reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158);
+					*reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158) = 1;
 					using Toggle_t = void (*)(std::uintptr_t, std::uint32_t);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 1);
-					Fn<AccumScene_t>(kAccumulateScene)(cam, root, cullBuf, 0);
+					Fn<AccumScene_t>(kAccumulateScene)(cam, root, g_cullBuf, 0);
 					reinterpret_cast<Toggle_t>(toggleFn)(root, 0);
-					*reinterpret_cast<std::uint8_t*>(cullBuf + 0x158) = savedCullMode;
+					*reinterpret_cast<std::uint8_t*>(g_cullBuf + 0x158) = savedCullMode;
 					++g_diagSkyRoots;
 				}
 				CapturePassCountsInto(accum, g_skyAfterCounts, g_skyAfterTotal);
@@ -2370,8 +2391,10 @@ namespace TrueScopes::ScopeRender
 
 
 			RENDER_STEP(18);
-			Fn<CullDtor_t>(kCullDtor)(cullBuf);
+			Fn<CullDtor_t>(kCullDtor)(g_cullBuf);
+			g_cullLive = false;
 			RENDER_STEP(19);
+			return true;
 		}
 
 		// SEH wrapper — POD frame only. Captures code, faulting address, register
@@ -2413,12 +2436,24 @@ namespace TrueScopes::ScopeRender
 			return EXCEPTION_EXECUTE_HANDLER;
 		}
 
-		bool RenderGuarded(float a_fovDeg) noexcept
+		// 1 = delivered, 0 = clean decline (no fault, nothing written), -1 = fault.
+		int RenderGuarded(float a_fovDeg) noexcept
 		{
 			__try {
-				RenderImpl(a_fovDeg);
-				return true;
+				return RenderImpl(a_fovDeg) ? 1 : 0;
 			} __except (RenderFilter(GetExceptionInformation())) {
+				return -1;
+			}
+		}
+
+		// Fault-path accumulator drop. Render()'s fault block builds std::string,
+		// so the __try must live here (C2712).
+		bool FinishAccumGuarded() noexcept
+		{
+			__try {
+				Fn<FinishAccum_t>(kFinishAccum)(g_accum);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				return false;
 			}
 		}
@@ -2497,7 +2532,7 @@ namespace TrueScopes::ScopeRender
 		*scopePassFlag = 1;
 		*stereoMaster = 0;
 		Fn<RendererFn_t>(kRebindConstantBuffers)(renderer);  // rebind CBs (stereo b8 included)
-		const bool ok = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
+		const int r = RenderGuarded(static_cast<float>(*Settings::scopeFovDegrees));
 		g_inOwnResolve.store(false);  // fault path may have skipped the in-function reset
 		g_pendingSunExec = nullptr;
 		*scopePassFlag = savedFlag;
@@ -2506,8 +2541,28 @@ namespace TrueScopes::ScopeRender
 		Fn<RendererFn_t>(kRebindConstantBuffers)(renderer);  // rebind for the rest of the frame
 		Fn<RendererFn_t>(kClearPrevCamCache)(renderer);  // clear prev-cam cache (vanilla does)
 
-		if (!ok) {
+		if (r < 0) {
 			RestoreArmedEngineState();  // undo any bracket the fault skipped
+			// Drop the faulted frame's pass lists now, while the passes are still
+			// live — a retryAfterFault re-arm must start from an empty accumulator
+			// or the next resolve walks freed passes. If FinishAccum itself faults,
+			// detach the lists directly (touches only the accumulator, not the
+			// passes).
+			if (!FinishAccumGuarded()) {
+				logger::warn("FinishAccum faulted on the fault path — detaching pass lists directly"sv);
+				using ClearGroup_t = void (*)(std::uintptr_t);
+				const auto accum = reinterpret_cast<std::uintptr_t>(g_accum);
+				for (std::uint32_t g = 0; g < kPassGroupCount; ++g) {
+					Fn<ClearGroup_t>(kClearPassGroup)(accum + kAccumGroupBase + static_cast<std::uintptr_t>(g) * kAccumGroupStride);
+				}
+			}
+			// The cull process the unwind skipped: run the engine dtor while the
+			// object is still constructed (faults before the ctor leave it dead —
+			// g_cullLive gates that).
+			if (g_cullLive) {
+				Fn<CullDtor_t>(kCullDtor)(g_cullBuf);
+				g_cullLive = false;
+			}
 			g_available = false;
 			g_faulted = true;
 			static constexpr std::string_view kSteps[] = {
@@ -2600,7 +2655,9 @@ namespace TrueScopes::ScopeRender
 					t.gpuTotalMs, gpu, t.cpuTotalMs, cpu);
 			}
 		}
-		return true;
+		// r == 0 is a clean decline: no fault latch, and the caller's copy
+		// fallback / lens-prime retry keys off false.
+		return r > 0;
 	}
 
 	bool Available()

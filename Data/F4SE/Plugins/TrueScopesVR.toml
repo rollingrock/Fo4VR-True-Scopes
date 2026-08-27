@@ -4,19 +4,14 @@
 # Master switch for the lens fill.
 fillEnabled = true
 
-# Lens refresh cadence: 1 = every frame, 2 = every other frame, ...
-# The lens render target persists between fills, so higher values just lower the
-# refresh rate of the scope picture. 2 is the recommended default: at 1 the scope
-# render can produce intermittent black lens frames in busy scenes (per-frame
-# engine resource contention — under investigation).
+# Lens refresh cadence: 1 = every frame (the shipped default), 2 = every other
+# frame, ... The lens render target persists between fills, so higher values just
+# trade refresh rate of the scope picture for perf.
 fillEveryNFrames = 1
 
-# What fills the lens: 1 = copy of the main frame (phase-1 placeholder),
-# 2 = real magnified world render from the scope camera (falls back to 1 on failure).
-# Diagnostics (raw, untonemapped): 3 = diffuse G-buffer, 4 = light accum diffuse,
-# 5 = light accum specular, 6 = G-buffer normals. 4 vs 2 bisects the sun overbright:
-# if 4 is also blown flat, the sun pass writes garbage; if 4 looks sane, the
-# composite consumption is at fault.
+# What fills the lens: 0 = off, 1 = copy of the main frame, 2 = real magnified
+# world render from the scope camera (falls back to 1 on failure). Values above 2
+# were removed diagnostics and are clamped to 2.
 lensMode = 2
 
 # Scope render field of view in degrees (lower = more zoom). Fixed for now; will be
@@ -43,10 +38,6 @@ scopeFarClip = 250000.0
 scopeCamOffsetX = 0.0
 scopeCamOffsetY = 55.0
 scopeCamOffsetZ = 0.0
-
-# Draw the sun (directional light) into the scope render (v0.2.26). Off = the
-# v0.2.25 look: ambient + local lights only.
-sunEnabled = true
 
 # Scale on the sun's color in the scope render only (1.0 = engine value). Lower it
 # live if the lens looks blown out.
@@ -166,11 +157,10 @@ eyeBoxResidualAdapt = 20.0
 # accumulator group 5) AFTER the opaque walls in our resolve, instead of the
 # engine's order which paints walls over them in a resolve-only render.
 decalGroup5Reorder = true
-# Bullet holes in the lens (v0.2.133) - KNOWN-FAULTING, leave OFF. The first
-# field run faulted mid-stage and (pre-.134) orphaned the engine's decal lock,
-# freezing the game on the next shot. v0.2.134 makes a fault harmless (the
-# lock always releases; the stage self-disables with a step-numbered warn) but
-# the root cause is not yet fixed. Enable only for a controlled diagnosis run.
+# Bullet holes in the lens. Ships ON: the early field fault was hardened (the
+# decal lock always releases; the stage self-disables on fault with a
+# step-numbered warn) and the feature passed field close-out. Set false only if
+# bullet holes in the lens misbehave.
 decalStageEnabled = true
 # Hardening: drop group 0x17 (sun glare) from our render - same stale-pass
 # class as the v0.2.11 fault.
@@ -274,7 +264,7 @@ cullToScopeFrustum = true
 # timestamp queries, CPU via QPC) and reports the means on /state (stageTimes)
 # and in the heartbeat. Flip it false then true to reset the averaging window --
 # that is how you take a clean measurement without restarting anything.
-perfTimers = true
+perfTimers = false
 # LEVER 2 -- light count. Caps the two light loops the deferred resolve iterates
 # (385 shadowed + 15 queued at Diamond City) for the duration of the resolve
 # only. 0 = no light volumes drawn at all, -1 = untouched. Through a 2.4 deg
@@ -293,7 +283,7 @@ perfLightsMax = -1
 #            G-buffer MRT, corrupting albedo/normals -> NaN in every downstream
 #            buffer (black lens). Bind + COMMIT the accum MRT first.
 #
-# sunExecInResolve = false reverts to the old placement (no sun, no NaN).
+# sunExecEnabled = false reverts to the old placement (no sun, no NaN).
 sunExecEnabled = true
 
 # ---------------------------------------------------------------------------
