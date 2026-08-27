@@ -53,6 +53,11 @@ namespace TrueScopes::PoseGate
 	// the hide signal for plugin-owned widget presence.
 	bool SiteStale(std::uint64_t a_maxFrames);
 
+	// Has the verdict site run at all this session. SiteStale answers false
+	// before the first run (there is nothing to be stale against); the fallback
+	// probe site needs the distinction.
+	bool SiteEverRan();
+
 	// Diagnostics for DevBench /state.
 	struct Diag
 	{

@@ -149,11 +149,11 @@ namespace TrueScopes::ScopeIdent
 
 		// Walk bounds. Generous relative to a weapon (the hunting rifle is 50 nodes,
 		// 6 deep) but still bounded, so a corrupt child count or a cyclic graph costs
-		// a fixed number of reads instead of hanging the render thread.
+		// a fixed number of reads instead of hanging the probing thread.
 		constexpr int          kMaxDepth = 16;
 		constexpr std::uint32_t kMaxNodes = 2048;
 
-		std::atomic_bool g_request{ true };  // probe once as soon as a render happens
+		std::atomic_bool g_request{ true };  // probe once at the first eligible frame
 		std::mutex       g_lock;
 		Info             g_info;
 
@@ -1042,6 +1042,7 @@ namespace TrueScopes::ScopeIdent
 
 	bool CensusFaceExpected()
 	{
+		const std::scoped_lock lock(g_lock);
 		// A face is "expected" when the table row that matched this scope names a
 		// face shape. faceShape is copied whether or not the shape resolved (the
 		// no-usable-face warning depends on that), so this is exactly "the census
@@ -1052,6 +1053,7 @@ namespace TrueScopes::ScopeIdent
 
 	bool CensusFaceResolved()
 	{
+		const std::scoped_lock lock(g_lock);
 		return g_info.probed && g_info.haveFace;
 	}
 
@@ -1060,6 +1062,20 @@ namespace TrueScopes::ScopeIdent
 		if (!a_player || !g_request.exchange(false)) {
 			return;
 		}
+		// One probe body at a time. Two call sites exist (the verdict thunk on
+		// the game thread and the fill-hook fallback on the render thread), and
+		// two requests can be in flight; the loser re-arms the request and lets
+		// the next eligible frame serve it.
+		static std::atomic_bool s_busy{ false };
+		if (s_busy.exchange(true)) {
+			g_request.store(true);
+			return;
+		}
+		struct BusyClear
+		{
+			std::atomic_bool& b;
+			~BusyClear() { b.store(false); }
+		} clear{ s_busy };
 		// Once per session, at the first probe rather than at static-init time so
 		// the logger exists to receive the verdict.
 		static std::once_flag verified;

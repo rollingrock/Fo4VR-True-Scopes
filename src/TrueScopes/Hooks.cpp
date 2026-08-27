@@ -296,6 +296,12 @@ namespace TrueScopes::Hooks
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 		}
+		// Fail-open bookkeeping: how many consecutive eligible frames the widget
+		// has been withheld (fit not applied for the current baseline). Game
+		// thread only.
+		std::uint32_t g_notPresentableRun = 0;
+		bool          g_failOpenLogged = false;
+
 		// The unequip signal. Registered once at kGameDataReady via
 		// TESObjectREFR_Events::RegisterForEquip; fires on the game thread from
 		// the equip manager before the 3D comes down. Filtered to the player
@@ -312,8 +318,12 @@ namespace TrueScopes::Hooks
 					a_event.equipped) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
+				// A swap can unequip before the new weapon's probe completed - the
+				// recorded formID is stale then, so a pending probe also stands
+				// everything down (cheap: the next eligible verdict frame re-arms).
 				const auto weap = ScopeIdent::CurrentWeaponFormID();
-				if (!weap || a_event.baseObject != weap) {
+				const bool ours = weap != 0 && a_event.baseObject == weap;
+				if (!ours && !ScopeIdent::ProbePending()) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
 				// Game thread; teardown starts after this returns. Stand everything
@@ -325,17 +335,14 @@ namespace TrueScopes::Hooks
 				}
 				ScopeIdent::InvalidateNodes();
 				SetWidgetNodesHidden(player, true);
+				// per-equip fail-open state starts over with the next weapon
+				g_notPresentableRun = 0;
+				g_failOpenLogged = false;
 				logger::info("weapon unequipped - teardown latch armed"sv);
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
 		EquipEventSink g_equipSink;
-
-		// Fail-open bookkeeping: how many consecutive eligible frames the widget
-		// has been withheld (fit not applied for the current baseline). Game
-		// thread only.
-		std::uint32_t g_notPresentableRun = 0;
-		bool          g_failOpenLogged = false;
 
 		// Un-cull the widget's active housing slot (model+0x50). The fail-open
 		// path needs it shown without an arm edge - vanilla's own un-hide only
@@ -405,7 +412,10 @@ namespace TrueScopes::Hooks
 							logger::info(FMT_STRING("widget housing zero-scaled (hunting {:.3f} recon {:.3f} saved for restore)"),
 								g_housingSavedHunting, g_housingSavedRecon);
 						}
-					} else if (g_notPresentableRun == 180) {
+					} else if (g_notPresentableRun >= 180) {
+						// per-frame past the edge: both restores are idempotent, and
+						// a re-equip that misses the counter reset cannot starve the
+						// fail-open this way
 						// Fail open: the replacement never presented for this equip.
 						// Give the vanilla housing back rather than nothing; if the
 						// fit lands later, the presentable path re-hides it.
@@ -598,14 +608,25 @@ namespace TrueScopes::Hooks
 				}
 				// Fallback probe site for the no-weapon-drawn case (DevBench asks
 				// with the weapon holstered; the verdict site is dead then and
-				// would never serve it). Gated on the site being long dead - a
-				// site that stopped seconds ago is a holstered weapon, not one
-				// mid-teardown - and on the latch.
-				if (g_installed && !g_teardownLatch.load(std::memory_order_relaxed) &&
-					PoseGate::SiteStale(300)) {
-					if (const auto player = *reinterpret_cast<std::uintptr_t*>(
-							REL::Module::get().base() + Addr::kPlayerGlobal)) {
-						ScopeIdent::RunIfRequested(player);
+				// would never serve it). Serves when the site is long dead OR has
+				// never run (a fresh session; SiteStale has nothing to be stale
+				// against then) OR when the verdict hook did not install - without
+				// that last, one byte mismatch at the verdict site would silently
+				// kill the whole ident chain. A site quiet this long also means
+				// any weapon teardown finished long ago, so an armed latch is
+				// stale - clear it here, or an unequip-to-fists would wedge it
+				// (nothing re-runs the verdict site with no scoped gun drawn).
+				const bool siteLongDead = PoseGate::SiteStale(300) || !PoseGate::SiteEverRan();
+				if (g_installed && (siteLongDead || !g_verdictHookInstalled)) {
+					if (PoseGate::SiteStale(300) &&
+						g_teardownLatch.exchange(false)) {
+						logger::info("teardown latch cleared (verdict site long quiet)"sv);
+					}
+					if (!g_teardownLatch.load(std::memory_order_relaxed)) {
+						if (const auto player = *reinterpret_cast<std::uintptr_t*>(
+								REL::Module::get().base() + Addr::kPlayerGlobal)) {
+							ScopeIdent::RunIfRequested(player);
+						}
 					}
 				}
 
@@ -675,7 +696,7 @@ namespace TrueScopes::Hooks
 						// frozen lens every N seconds — costs one render-length
 						// frame hitch per refresh, so it is opt-in. Render() is
 						// scope-state independent; SiteStale keeps this out of
-						// menus/holster beyond the ~1 s grace.
+						// menus/holster beyond ~150 ms of quiet.
 						if (!g_scopeActive.load() && *Settings::lensMode >= 2 &&
 							!g_teardownLatch.load(std::memory_order_relaxed) &&
 							!PoseGate::SiteStale(15) && ScopeRender::WidgetPresentable() &&
@@ -713,10 +734,10 @@ namespace TrueScopes::Hooks
 						}
 						// The fade itself: multiplicative steps every 200 ms until the
 						// picture reaches ~3% of the dimmed level, spread over
-						// scopeFrozenFadeSeconds. Each step is one small quad draw on
+						// poseFrozenFadeSeconds. Each step is one small quad draw on
 						// the lens RT.
 						if (s_fadeArmed) {
-							const auto fadeS = static_cast<float>(*Settings::scopeFrozenFadeSeconds);
+							const auto fadeS = static_cast<float>(*Settings::poseFrozenFadeSeconds);
 							if (fadeS > 0.05f) {
 								constexpr std::uint64_t kStepMs = 200;
 								const auto steps = static_cast<std::uint32_t>(
@@ -837,7 +858,8 @@ namespace TrueScopes::Hooks
 				g_verdictHookInstalled = true;
 				logger::info("pose-gate verdict hook installed"sv);
 			} else {
-				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) — poseGateEnabled will be inert"sv);
+				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) — poseGateEnabled will be inert; "
+				             "scope identification falls back to the per-frame fill-hook path"sv);
 			}
 		}
 

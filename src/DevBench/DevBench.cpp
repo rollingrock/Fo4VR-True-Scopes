@@ -322,7 +322,7 @@ namespace DevBench
 				{ "poseReArmDwellMs", Kind::Int, &poseReArmDwellMs },
 				{ "poseWidgetAlways", Kind::Bool, &poseWidgetAlways },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
-				{ "scopeFrozenFadeSeconds", Kind::Float, &scopeFrozenFadeSeconds },
+				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "hideWidgetHousing", Kind::Bool, &hideWidgetHousing },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
@@ -942,9 +942,10 @@ namespace DevBench
 		std::string HandleScope(const Request& a_req)
 		{
 			if (a_req.GetOr("probe", "0") != "0") {
-				// A probe runs on the render thread, so it needs a render to happen.
-				// Wait briefly rather than returning last cycle's answer to a caller
-				// who explicitly asked for a fresh one.
+				// A probe is served on the game thread at the verdict site while a
+				// scoped weapon is drawn, or by the fill-hook fallback once the site
+				// has been quiet a few seconds. Wait briefly rather than returning
+				// last cycle's answer to a caller who asked for a fresh one.
 				const auto before = TrueScopes::ScopeIdent::Get();
 				// The placement is derived from what the probe measures, so a fresh
 				// probe must produce a fresh candidate rather than reporting the one

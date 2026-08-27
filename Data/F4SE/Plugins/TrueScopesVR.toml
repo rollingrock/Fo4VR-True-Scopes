@@ -266,7 +266,7 @@ poseFrozenDim = 0.55
 # After the dim, the frozen picture keeps fading to near-black over this many
 # seconds, so a stale picture never reads as live even with the eyebox off.
 # 0 = no fade. Lens primes and idle refreshes stay at the plain dim.
-scopeFrozenFadeSeconds = 1.5
+poseFrozenFadeSeconds = 1.5
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 # TRUE with the pose gate (2026-08-24): the vanilla fade ramps at the OLD

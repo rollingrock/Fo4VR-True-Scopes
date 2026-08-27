@@ -280,9 +280,8 @@ namespace DevBenchClient
 	{
 		// Module probe before the dispatch: dispatching to an absent plugin makes
 		// CommonLib log "failed to dispatch to devbench" at warn, which reads like
-		// an error in a public build (the first field tester pasted it back as
-		// one). devbench is a development dependency, never a load-order
-		// requirement.
+		// an error in a public build. devbench is a development dependency, never
+		// a load-order requirement.
 		if (!::GetModuleHandleW(L"devbench.dll")) {
 			logger::info("devbench not present; scope tool not registered (dev tooling - the mod is unaffected)"sv);
 			return;

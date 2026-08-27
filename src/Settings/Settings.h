@@ -262,9 +262,8 @@ namespace Settings
 	// (checked against a real scope). The effective gain is
 	//     eyeBoxGain * clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.35, 3)
 	// - unchanged at the relief distance, tighter closer, looser farther. A
-	// fixed gain punished normal eye relief as if the eye were jammed on the
-	// ocular, which the first field test called near-unusable. relief 0 = the
-	// old fixed gain.
+	// fixed gain punishes normal eye relief as if the eye were jammed on the
+	// ocular. relief 0 = the old fixed gain.
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxReliefUnits, 12.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxDistancePower, 1.6);
 	// Edge blur: field-curvature softness from edgeBlurStart (disc radius 0..1)
@@ -363,16 +362,14 @@ namespace Settings
 	// The lateral band scales with eye distance when adapt > 0: enter/exit are
 	// multiplied by max(1, 1 + adapt * (dist / poseLateralRefDist - 1)), i.e. a
 	// constant angular cone beyond the reference distance instead of a constant
-	// offset. The fixed band read at rifle range was the field tester's mid-aim
-	// dropout at 20+ units. Never tightens below the base values. 0 = fixed.
+	// offset - a fixed band tuned at rifle range reads far too tight at longer
+	// eye distances. Never tightens below the base values. 0 = fixed.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseLateralDistanceAdapt, 1.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseLateralRefDist, 13.0);
 	// Skip the look-cone test while the eye is on the tube (lateral below this,
 	// game units) - being on the axis is looking through the scope. At 5-12
 	// units from the ocular the 35-45 deg band is one or two centimetres of
-	// head translation, below VR jitter; it was the dominant flapping source in
-	// the field log (six sub-second cycles pinned at the exit angle). 0 = always
-	// test.
+	// head translation, below VR jitter, and flaps the gate. 0 = always test.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookWaiveLateral, 4.0);
 	// Minimum continuous time the enter conditions must hold before the gate
 	// re-arms, in ms. Stops sub-second live/frozen cycling on the enter edge;
@@ -396,7 +393,7 @@ namespace Settings
 	// at 0 a frozen lens stayed bright and read as live. 0 = no fade. Lens
 	// primes and idle refreshes stay at the plain dim (they are meant to be
 	// seen); only a live→frozen edge arms the fade.
-	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFrozenFadeSeconds, 1.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenFadeSeconds, 1.5);
 	// Hide the widget model's own housing meshes (scope_Hunting:0 /
 	// scope_recon:0 in world_scope.nif - the pale speckled ring Bethesda drew
 	// around the picture). The real weapon's scope provides the housing; the
@@ -759,7 +756,7 @@ namespace Settings
 		LOAD(poseReArmDwellMs);
 		LOAD(poseWidgetAlways);
 		LOAD(poseFrozenDim);
-		LOAD(scopeFrozenFadeSeconds);
+		LOAD(poseFrozenFadeSeconds);
 		LOAD(hideWidgetHousing);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);

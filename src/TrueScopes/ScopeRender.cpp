@@ -802,11 +802,11 @@ namespace TrueScopes::ScopeRender
 
 		[[nodiscard]] bool ReadParentTrueRot(std::uintptr_t a_sp, float (&a_out)[9])
 		{
-			const auto parent = *reinterpret_cast<std::uintptr_t*>(a_sp + 0x28);
+			const auto parent = *reinterpret_cast<std::uintptr_t*>(a_sp + 0x28);  // NiAVObject parent
 			if (!parent) {
 				return false;
 			}
-			const auto* pm = reinterpret_cast<const float*>(parent + 0x70);
+			const auto* pm = reinterpret_cast<const float*>(parent + 0x70);  // world transform
 			for (std::size_t r = 0; r < 3; ++r) {
 				for (std::size_t c = 0; c < 3; ++c) {
 					const float v = pm[c * kMatrixRowStride + r];
@@ -853,6 +853,16 @@ namespace TrueScopes::ScopeRender
 				return false;
 			}
 			if (!g_widget.rotCaptured) {
+				// K persists until the next rebaseline, so a torn cross-thread read
+				// here would stick: require near-unit rows on the weapon rotation
+				// before trusting the capture (a declined frame just retries).
+				for (const int base : { 0, 3, 6 }) {
+					const float l2 = Rw[base] * Rw[base] + Rw[base + 1] * Rw[base + 1] +
+					                 Rw[base + 2] * Rw[base + 2];
+					if (!std::isfinite(l2) || std::fabs(l2 - 1.0f) > 0.02f) {
+						return false;
+					}
+				}
 				const auto* raw = reinterpret_cast<const float*>(a_sp + 0x30);
 				float       L0[9];
 				for (std::size_t r = 0; r < 3; ++r) {
@@ -1535,6 +1545,13 @@ namespace TrueScopes::ScopeRender
 			if (const auto gen = ScopeIdent::ProbeCount(); gen != s_probeGen) {
 				s_probeGen = gen;
 				g_placeDirty.store(true);
+				// new ident data can name a different face shape - put the
+				// engine-authored rotation back and re-capture against it
+				if (g_widget.rotCaptured) {
+					std::memcpy(reinterpret_cast<void*>(sp + 0x30),
+						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
+					g_widget.rotCaptured = false;
+				}
 			}
 			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
 			if (relatch || g_place.eyeIndependent) {
@@ -1547,14 +1564,13 @@ namespace TrueScopes::ScopeRender
 				const bool           logRelatch = relatch && relatchNow - s_relatchLogTick >= 500;
 				if (logRelatch) {
 					s_relatchLogTick = relatchNow;
+					logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} via {} offset=({:.2f},{:.2f},{:.2f}) "
+					                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
+						g_place.valid ? "candidate" : "declined", g_place.method,
+						g_place.offset[0], g_place.offset[1], g_place.offset[2], g_place.miss,
+						g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
+						g_place.boundRadius, g_place.reason);
 				}
-				if (logRelatch)
-				logger::info(FMT_STRING("WIDGET AUTO-PLACE: {} via {} offset=({:.2f},{:.2f},{:.2f}) "
-				                        "miss={:.2f} bound=({:.2f},{:.2f},{:.2f}) r={:.2f} [{}]"),
-					g_place.valid ? "candidate" : "declined", g_place.method,
-					g_place.offset[0], g_place.offset[1], g_place.offset[2], g_place.miss,
-					g_place.boundCenter[0], g_place.boundCenter[1], g_place.boundCenter[2],
-					g_place.boundRadius, g_place.reason);
 				// Single-frame test of the assumed parent transform. Anything much
 				// above zero means ScopeParent.world is not parent.world composed
 				// with its local translate — i.e. the layout is not what this code
@@ -1626,8 +1642,7 @@ namespace TrueScopes::ScopeRender
 			// The census path recomputes per frame, so the write stays per-frame
 			// (that is the live tracking) but the log only speaks on a rebaseline,
 			// a scale change, or - for ordinary offset motion - at most once a
-			// second. The quarter-unit threshold alone put 1,264 of the first
-			// field log's 1,632 lines here: a moving gun crosses it every frame.
+			// second (a moving gun crosses the quarter-unit threshold every frame).
 			static float         s_logScale = -1.0f, s_logOx = 0.0f, s_logOy = 0.0f, s_logOz = 0.0f;
 			static std::uint64_t s_logTick = 0;
 			const bool moved = std::fabs(ox - s_logOx) > 0.25f ||
@@ -2338,14 +2353,15 @@ namespace TrueScopes::ScopeRender
 					}
 					const auto savedCulled = static_cast<std::uint8_t>(
 						*reinterpret_cast<const std::uint8_t*>(root + 0x108) & 1u);
+					static bool s_loggedParked = false;
 					if (savedCulled) {
-						static std::int32_t s_loggedParked = -1;
-						if (s_loggedParked != 1) {
-							s_loggedParked = 1;
+						if (!s_loggedParked) {
+							s_loggedParked = true;
 							logger::info("SKY: roots parked culled by the cell (interior) - sky skipped"sv);
 						}
 						continue;
 					}
+					s_loggedParked = false;  // re-arm per interior episode
 					// Bypass culling for the sky accumulation — the dome's huge
 					// multibound fails the default frustum/portal culling. The
 					// engine's own forward passes bracket accumulation with

@@ -378,7 +378,9 @@ float4 PSMain(VSOut i) : SV_Target
 		bool                      g_initTried = false;
 		bool                      g_ready = false;
 		Diag                      g_diag{};
-		std::uintptr_t            g_hiddenQuad = 0;  // render_UI:0 we set hidden
+		// render_UI:0 we set hidden. Atomic: hidden on the render thread (Run),
+		// restored from the render thread or the game-thread equip sink.
+		std::atomic<std::uintptr_t> g_hiddenQuad{ 0 };
 
 		template <class T>
 		void SafeRelease(T*& a_p) noexcept
@@ -651,17 +653,18 @@ float4 PSMain(VSOut i) : SV_Target
 
 	void RestoreReticleQuad() noexcept
 	{
-		if (g_hiddenQuad) {
+		// exchange: the render thread (fill path) and the game-thread equip sink
+		// can both restore - exactly one of them gets the pointer.
+		if (const auto q = g_hiddenQuad.exchange(0)) {
 			// The engine may have destroyed the rig since; only touch it if it still
 			// looks like our quad (name check) — the rig is recreated on every equip.
 			__try {
-				const auto entry = *reinterpret_cast<const std::uintptr_t*>(g_hiddenQuad + kObjName);
+				const auto entry = *reinterpret_cast<const std::uintptr_t*>(q + kObjName);
 				if (entry && std::strcmp(reinterpret_cast<const char*>(entry + kPoolEntryChars), "render_UI:0") == 0) {
-					*reinterpret_cast<std::uint8_t*>(g_hiddenQuad + kObjFlags) &= static_cast<std::uint8_t>(~1u);
+					*reinterpret_cast<std::uint8_t*>(q + kObjFlags) &= static_cast<std::uint8_t>(~1u);
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
-			g_hiddenQuad = 0;
 		}
 		g_diag.quadHidden = false;
 	}
@@ -928,9 +931,12 @@ float4 PSMain(VSOut i) : SV_Target
 				// the eye backs off. ly is the tube-axial eye position; the eye
 				// sits behind the ocular, so relief L = -ly.
 				const auto relief = static_cast<float>(*Settings::eyeBoxReliefUnits);
-				if (relief > 0.01f && std::isfinite(ly) && ly < -0.5f) {
-					const auto pw = static_cast<float>(*Settings::eyeBoxDistancePower);
-					gain *= std::clamp(std::pow(relief / -ly, pw), 0.35f, 3.0f);
+				if (relief > 0.01f && std::isfinite(ly) && ly < 0.0f) {
+					// floor the relief distance so the multiplier is continuous as
+					// the eye approaches the ocular (the clamp caps it anyway)
+					const float L = (std::max)(0.5f, -ly);
+					const auto  pw = static_cast<float>(*Settings::eyeBoxDistancePower);
+					gain *= std::clamp(std::pow(relief / L, pw), 0.35f, 3.0f);
 				}
 				p.eyebox[0] = ex * gain;
 				p.eyebox[1] = ey * gain;

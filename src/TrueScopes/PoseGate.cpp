@@ -196,13 +196,30 @@ namespace TrueScopes::PoseGate
 		}
 		// An eye on the tube axis is looking through the scope regardless of
 		// what the head-forward angle says - at close range that angle is
-		// dominated by head-translation noise.
-		const auto lookWaive = static_cast<float>(*Settings::poseLookWaiveLateral);
-		const bool lookOk = (lookWaive > 0.0f && s.lateral < lookWaive) || s.lookDeg < lookMax;
-		const bool rawLive = s.dist < dMax && s.lateral < latMax && lookOk;
-		bool       live = rawLive;
+		// dominated by head-translation noise. The waiver keeps a wider bound
+		// while live (its own hysteresis, like every other axis).
+		const auto  lookWaive = static_cast<float>(*Settings::poseLookWaiveLateral);
+		const float waiveEff = was ? lookWaive * 1.25f : lookWaive;
+		const bool  lookOk = (lookWaive > 0.0f && s.lateral < waiveEff) || s.lookDeg < lookMax;
+		bool rawLive = s.dist < dMax && s.lateral < latMax && lookOk;
+		// Exit debounce: the tests read a ScopeParent transform the render
+		// thread rewrites every tracked frame, so a single out-of-band sample
+		// can be a torn read - and the enter dwell below turns any spurious
+		// exit into a quarter-second frozen lens. Two consecutive misses
+		// (~22 ms) drop the gate; one does not.
+		{
+			static std::uint32_t s_exitStreak = 0;
+			if (was && !rawLive) {
+				if (++s_exitStreak < 2) {
+					rawLive = true;
+				}
+			} else {
+				s_exitStreak = 0;
+			}
+		}
+		bool live = rawLive;
 		// Enter-edge dwell: conditions must hold continuously before re-arming.
-		// The exit edge stays immediate.
+		// The exit edge stays two-sample (above).
 		if (rawLive && !was) {
 			const auto dwellMs = static_cast<std::uint64_t>(
 				(std::max)(std::int64_t(0), *Settings::poseReArmDwellMs));
@@ -226,8 +243,8 @@ namespace TrueScopes::PoseGate
 		g_liveState = live;
 
 		// One line when the gate keeps refusing on a drawn weapon (~5 s of evals
-		// without ever going live this draw). The first external .44 report fell
-		// into exactly this gap: nothing in the log said why no scope appeared.
+		// without ever going live this draw) - without it, nothing in the log
+		// says why no scope appears.
 		{
 			static std::uint32_t s_sinceLive = 0;
 			static bool          s_warned = false;
@@ -286,6 +303,11 @@ namespace TrueScopes::PoseGate
 		const auto last = g_siteFrame.load(std::memory_order_relaxed);
 		const auto now = Hooks::FrameCount();
 		return last != 0 && now > last && now - last > a_maxFrames;
+	}
+
+	bool SiteEverRan()
+	{
+		return g_siteFrame.load(std::memory_order_relaxed) != 0;
 	}
 
 	bool FillLive()
