@@ -259,6 +259,12 @@ namespace TrueScopes::ScopeIdent
 	// fall back to a heuristic rather than aim at nothing.
 	[[nodiscard]] bool OcularFaceWorld(float (&a_world)[3]);
 
+	// Live world rotation of the census face shape (row-major, de-strided true
+	// rotation - the weapon's current orientation). Same SEH-guarded name
+	// re-check as OcularFaceWorld; false when there is no resolved face or the
+	// node is gone. Feeds the widget's rotation tracking.
+	[[nodiscard]] bool OcularShapeRotation(float (&a_rot)[9]);
+
 	// Pure table lookup for one model path, exactly the compiled data and
 	// normalizer the live probe uses (path pass + [Scopes] override), with no
 	// game state touched. Lets a headless sweep validate the whole coverage

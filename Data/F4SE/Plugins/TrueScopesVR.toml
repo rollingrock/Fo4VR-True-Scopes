@@ -337,6 +337,11 @@ sunExecEnabled = true
 # it does not recognise. Set perScopeAperture = false for the old behaviour of
 # one radius for every optic.
 widgetFitEnabled = true
+# Track the weapon's rotation with the widget disc (census scopes). The disc
+# hangs off the wand/UI chain; a two-hand grip re-aims the weapon from the
+# off-hand, and with position-only tracking the disc's facing stayed with the
+# wand - it visibly rotated in place. false = the old position-only tracking.
+widgetTrackRotation = true
 perScopeAperture = true
 widgetApertureRadius = 1.267
 # Fallback widget position for scopes with no per-scope entry below. The old

@@ -331,6 +331,7 @@ namespace DevBench
 				{ "widgetOffsetY", Kind::Float, &widgetOffsetY },
 				{ "widgetOffsetZ", Kind::Float, &widgetOffsetZ },
 				{ "widgetAutoPlace", Kind::Bool, &widgetAutoPlace },
+				{ "widgetTrackRotation", Kind::Bool, &widgetTrackRotation },
 				{ "retryAfterFault", Kind::Bool, &retryAfterFault },
 				{ "suppressScopeImods", Kind::Bool, &suppressScopeImods },
 				{ "disableApproachFade", Kind::Bool, &disableApproachFade },

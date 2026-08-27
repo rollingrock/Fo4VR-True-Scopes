@@ -440,6 +440,15 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetX, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetY, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", widgetOffsetZ, 0.0);
+	// Track the weapon's rotation with the widget disc. The disc hangs off
+	// PrimaryUIAttachNode (the wand/UI chain), which follows the right
+	// controller - one-handed the weapon is rigid to it, but a two-hand grip
+	// re-aims the weapon from the off-hand and the disc's facing stayed with
+	// the wand while its position tracked the ocular: it visibly rotated in
+	// place. On: the local rotation is recomputed each frame from the live
+	// weapon-shape orientation (census scopes only - the same live node the
+	// placement uses). Off: position-only tracking, the old behavior.
+	MAKE_SETTING(bSetting, "TrueScopesVR", widgetTrackRotation, true);
 	// Put the disc on the optic's ocular face automatically instead of relying on
 	// a hand-tuned offset per scope. Aims at the census-measured face where the
 	// scope has a row, and falls back to the rear of the optic's world bounding
@@ -760,6 +769,7 @@ namespace Settings
 		LOAD(widgetOffsetY);
 		LOAD(widgetOffsetZ);
 		LOAD(widgetAutoPlace);
+		LOAD(widgetTrackRotation);
 		LOAD(widgetPlaceMaxEyeDist);
 		LOAD(retryAfterFault);
 		LOAD(sunExecEnabled);

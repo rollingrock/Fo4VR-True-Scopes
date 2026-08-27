@@ -732,6 +732,7 @@ namespace TrueScopes::ScopeRender
 		//    bits ourselves.
 		constexpr std::uintptr_t kScopeParentInPlayer = 0x7d0;
 		constexpr float          kVanillaRenderCircleRadius = 7.852f;
+		constexpr std::size_t    kMatrixRowStride = 4;  // NiMatrix3 is 3 rows of 4
 
 		struct WidgetState
 		{
@@ -740,14 +741,54 @@ namespace TrueScopes::ScopeRender
 			float lastScale = 0.0f, lastOx = 0.0f, lastOy = 0.0f, lastOz = 0.0f;
 			bool  captured = false;
 			bool  applied = false;
+			// rotation tracking (widgetTrackRotation)
+			bool  rotCaptured = false;
+			float baseRotRaw[12] = {};  // engine-authored local rotate block, verbatim
+			float rotK[9] = {};         // Rw0^T * Rp0 * L0 (see ComputeTrackedRotation)
+			float lastRot[9] = {};      // last written true local rotation
 		};
 		WidgetState g_widget;
 		// Cross-thread mirror of g_widget.applied (read by the game-thread
 		// presence gate; written on the render thread wherever `applied` changes).
 		std::atomic_bool g_fitAppliedAtomic{ false };
 
-		void WriteScopeParent(std::uintptr_t a_sp, float a_tx, float a_ty, float a_tz, float a_scale)
+		// 3x3 helpers, row-major true rotations.
+		void Mul3(const float (&a_a)[9], const float (&a_b)[9], float (&a_out)[9])
 		{
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					a_out[r * 3 + c] = a_a[r * 3 + 0] * a_b[0 * 3 + c] +
+					                   a_a[r * 3 + 1] * a_b[1 * 3 + c] +
+					                   a_a[r * 3 + 2] * a_b[2 * 3 + c];
+				}
+			}
+		}
+		void MulT3(const float (&a_a)[9], const float (&a_b)[9], float (&a_out)[9])
+		{
+			// a_a^T * a_b
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					a_out[r * 3 + c] = a_a[0 * 3 + r] * a_b[0 * 3 + c] +
+					                   a_a[1 * 3 + r] * a_b[1 * 3 + c] +
+					                   a_a[2 * 3 + r] * a_b[2 * 3 + c];
+				}
+			}
+		}
+
+		// a_localRot: true row-major local rotation to write, or null to leave
+		// the node's rotation alone. Stored transposed with stride-4 rows (the
+		// engine's column convention); the NiPoint4 pads are untouched.
+		void WriteScopeParent(std::uintptr_t a_sp, float a_tx, float a_ty, float a_tz, float a_scale,
+			const float* a_localRot = nullptr)
+		{
+			if (a_localRot) {
+				auto* m = reinterpret_cast<float*>(a_sp + 0x30);  // NiAVObject local rotate
+				for (std::size_t r = 0; r < 3; ++r) {
+					for (std::size_t c = 0; c < 3; ++c) {
+						m[c * kMatrixRowStride + r] = a_localRot[r * 3 + c];
+					}
+				}
+			}
 			auto* t = reinterpret_cast<float*>(a_sp + 0x60);  // NiAVObject local translate
 			t[0] = a_tx;
 			t[1] = a_ty;
@@ -757,6 +798,87 @@ namespace TrueScopes::ScopeRender
 			// this shape before calling. Oversized on purpose; zeros are safe.
 			alignas(16) std::uint8_t upd[0x30]{};
 			Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
+		}
+
+		[[nodiscard]] bool ReadParentTrueRot(std::uintptr_t a_sp, float (&a_out)[9])
+		{
+			const auto parent = *reinterpret_cast<std::uintptr_t*>(a_sp + 0x28);
+			if (!parent) {
+				return false;
+			}
+			const auto* pm = reinterpret_cast<const float*>(parent + 0x70);
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					const float v = pm[c * kMatrixRowStride + r];
+					if (!std::isfinite(v)) {
+						return false;
+					}
+					a_out[r * 3 + c] = v;
+				}
+			}
+			return true;
+		}
+
+		// The disc's facing, slaved to the weapon. ScopeParent hangs off
+		// PrimaryUIAttachNode (the wand chain); one-handed the weapon is rigid
+		// to it, but a two-hand grip re-aims the weapon from the off-hand and a
+		// position-only write left the disc's facing with the wand - it rotated
+		// in place on the ocular. Desired local rotation, all read this frame:
+		//     L(t) = Rp(t)^T * Rw(t) * K,   K = Rw0^T * Rp0 * L0
+		// with Rw the live census-shape world rotation, Rp the parent world
+		// rotation, and L0 the engine-authored local rotation - so at capture
+		// L(t0) == L0 exactly and the NIF-authored alignment is preserved.
+		// False = leave the rotation alone (tracking off, no census face, or a
+		// transform read declined); the caller then behaves as before.
+		[[nodiscard]] bool ComputeTrackedRotation(std::uintptr_t a_sp, float (&a_out)[9])
+		{
+			if (!*Settings::widgetTrackRotation) {
+				// Live toggle off: put the engine-authored rotation back once, or a
+				// later re-enable would capture our own last write as the baseline.
+				if (g_widget.rotCaptured) {
+					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
+						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
+					alignas(16) std::uint8_t upd[0x30]{};
+					Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
+					g_widget.rotCaptured = false;
+				}
+				return false;
+			}
+			float Rw[9];
+			if (!ScopeIdent::OcularShapeRotation(Rw)) {
+				return false;
+			}
+			float Rp[9];
+			if (!ReadParentTrueRot(a_sp, Rp)) {
+				return false;
+			}
+			if (!g_widget.rotCaptured) {
+				const auto* raw = reinterpret_cast<const float*>(a_sp + 0x30);
+				float       L0[9];
+				for (std::size_t r = 0; r < 3; ++r) {
+					for (std::size_t c = 0; c < 3; ++c) {
+						const float v = raw[c * kMatrixRowStride + r];
+						if (!std::isfinite(v)) {
+							return false;
+						}
+						L0[r * 3 + c] = v;
+					}
+				}
+				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
+				float tmp[9];
+				Mul3(Rp, L0, tmp);
+				MulT3(Rw, tmp, g_widget.rotK);
+				g_widget.rotCaptured = true;
+			}
+			float tmp[9];
+			Mul3(Rw, g_widget.rotK, tmp);
+			MulT3(Rp, tmp, a_out);
+			for (const float v : a_out) {
+				if (!std::isfinite(v)) {
+					return false;
+				}
+			}
+			return true;
 		}
 
 		// --- derived scope FOV ---------------------------------------------------
@@ -880,7 +1002,6 @@ namespace TrueScopes::ScopeRender
 		// tremor as much as geometry.
 		constexpr std::uintptr_t kParentInNiAVObject = 0x28;
 		constexpr std::uintptr_t kWorldTransform = 0x70;
-		constexpr std::size_t    kMatrixRowStride = 4;  // NiMatrix3 is 3 rows of 4
 
 		struct PlacementInfo
 		{
@@ -1326,6 +1447,7 @@ namespace TrueScopes::ScopeRender
 				g_widget.baseScale = *s;
 				g_widget.captured = true;
 				g_widget.applied = false;
+				g_widget.rotCaptured = false;  // engine rewrite = pristine rotation too
 				g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
 				// An engine rewrite of ScopeParent is the equip signal — re-identify
 				// the scope so a weapon swap can never keep the old weapon's
@@ -1351,6 +1473,11 @@ namespace TrueScopes::ScopeRender
 				// Turned off after being applied: restore the engine's own values once, so
 				// toggling it live is a clean A/B rather than a one-way door.
 				if (stillOurs && g_widget.captured) {
+					if (g_widget.rotCaptured) {
+						std::memcpy(reinterpret_cast<void*>(sp + 0x30),
+							g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
+						g_widget.rotCaptured = false;
+					}
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 					g_widget.applied = false;
 					g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
@@ -1451,17 +1578,27 @@ namespace TrueScopes::ScopeRender
 				ObserveAutoPlacement(sp);  // measures only; never feeds back
 			}
 
+			// The disc's facing, slaved to the weapon (no-op for heuristic-only
+			// scopes or with tracking off - see ComputeTrackedRotation).
+			float      trackRot[9];
+			const bool haveRot = ComputeTrackedRotation(sp, trackRot);
+			const bool rotChanged = haveRot &&
+			                        std::memcmp(trackRot, g_widget.lastRot, sizeof(trackRot)) != 0;
+
 			// Only touch the node when something actually changed — NiAVObject::Update walks
 			// the subtree, and the engine itself only does this at equip.
 			if (g_widget.applied && g_widget.lastScale == scale && g_widget.lastOx == ox &&
-				g_widget.lastOy == oy && g_widget.lastOz == oz) {
+				g_widget.lastOy == oy && g_widget.lastOz == oz && !rotChanged) {
 				return outcome;
 			}
 
 			const float nx = g_widget.baseTx + ox;
 			const float ny = g_widget.baseTy + oy;
 			const float nz = g_widget.baseTz + oz;
-			WriteScopeParent(sp, nx, ny, nz, scale);
+			WriteScopeParent(sp, nx, ny, nz, scale, haveRot ? trackRot : nullptr);
+			if (haveRot) {
+				std::memcpy(g_widget.lastRot, trackRot, sizeof(g_widget.lastRot));
+			}
 			g_widget.wroteTx = nx;
 			g_widget.wroteTy = ny;
 			g_widget.wroteTz = nz;

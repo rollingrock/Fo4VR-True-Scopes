@@ -1250,6 +1250,35 @@ namespace TrueScopes::ScopeIdent
 		return false;
 	}
 
+	bool OcularShapeRotation(float (&a_rot)[9])
+	{
+		const std::scoped_lock lock(g_lock);
+		if (!g_info.probed || !g_info.haveFace) {
+			return false;
+		}
+		for (std::uint32_t s = 0; s < g_info.shapeCount; ++s) {
+			const auto& g = g_info.shapes[s];
+			if (std::strcmp(g.name, g_info.faceShape) != 0) {
+				continue;
+			}
+			if (!g.node) {
+				return false;
+			}
+			float world[3];
+			float scale = 0.0f;
+			if (!ReadFaceLive(g.node, g.name, world, a_rot, scale)) {
+				return false;
+			}
+			for (const float v : a_rot) {
+				if (!std::isfinite(v)) {
+					return false;
+				}
+			}
+			return true;
+		}
+		return false;
+	}
+
 	bool ScopeBound(float (&a_center)[3], float& a_radius)
 	{
 		const std::scoped_lock lock(g_lock);
