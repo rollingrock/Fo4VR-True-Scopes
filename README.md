@@ -106,3 +106,48 @@ cmake --build buildvr --config Release
 The full reverse-engineering record — every address, mechanism, and dead end — lives
 in a companion research repo (`fallout4-scope-in-scope-investigation`, currently
 private). Ask if you want a look.
+
+## Tooling
+
+This mod was reverse engineered and field-tested with a toolchain worth knowing
+about if you do this kind of work:
+
+- [devbench](https://github.com/alandtse/devbench) (alandtse) — a live in-game
+  debugging host. My fork ([rollingrock/devbench](https://github.com/rollingrock/devbench))
+  runs it as a multigame core; this plugin registers a `scope` tool on it when
+  devbench is installed — live config, render diagnostics, scope identification,
+  and the controller-chord verdict system that let every test session run with
+  the headset on. Purely optional at runtime; without devbench the plugin just
+  skips registering.
+- [Ghidra](https://ghidra-sre.org/) with
+  [bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) for the
+  static reverse engineering.
+- [x64dbg](https://x64dbg.com/) with
+  [x64dbg-mcp-server](https://www.npmjs.com/package/x64dbg-mcp-server) for live
+  memory work against the running game.
+- [JPEXS Free Flash Decompiler](https://github.com/jindrapetrik/jpexs-decompiler)
+  for the ScopeMenu SWF edit.
+
+## Credits
+
+Skyrim/Fallout modding is built on the community. I could not have done any of
+my mods alone and the work continues to be built off of people such as those
+listed below.
+
+- [F4SE Team](https://f4se.silverlock.org/)
+- Contributors to
+  [CommonLib (check the fork network and all the credits)](https://github.com/alandtse/CommonLibVR/tree/vr),
+  including the original author [Ryan](https://github.com/Ryan-rsm-McKenzie) and
+  [alandtse](https://github.com/alandtse) for the VR lineage this project's fork
+  descends from
+- alandtse — beyond CommonLib: [devbench](https://github.com/alandtse/devbench)
+  and [vr_address_tools](https://github.com/alandtse/vr_address_tools) (the
+  FO4VR address library leaned on throughout the research), and commonlib
+  direction in general
+- [ss7332337](https://github.com/ss7332337/Fake-Through-Scope) — Fake Through
+  Scope for flat Fallout 4, the prior art that proved through-scope rendering
+  was worth chasing
+- shad0wshayd3 — for easy to follow commonlib examples to learn off of
+- Libraries: [spdlog](https://github.com/gabime/spdlog),
+  [toml++](https://github.com/marzer/tomlplusplus),
+  [xbyak](https://github.com/herumi/xbyak) (via CommonLibF4)
