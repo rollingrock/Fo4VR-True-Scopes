@@ -190,6 +190,32 @@ namespace TrueScopes::PoseGate
 		}
 		g_liveState = live;
 
+		// One line when the gate keeps refusing on a drawn weapon (~5 s of evals
+		// without ever going live this draw). The first external .44 report fell
+		// into exactly this gap: nothing in the log said why no scope appeared.
+		{
+			static std::uint32_t s_sinceLive = 0;
+			static bool          s_warned = false;
+			static std::uint64_t s_lastEval = 0;
+			const auto nowF = Hooks::FrameCount();
+			if (s_lastEval && nowF > s_lastEval && nowF - s_lastEval > 90) {
+				s_sinceLive = 0;  // the site was quiet - a new draw episode
+				s_warned = false;
+			}
+			s_lastEval = nowF;
+			if (live) {
+				s_sinceLive = 0;
+				s_warned = false;
+			} else if (!s_warned && ++s_sinceLive >= 450) {
+				s_warned = true;
+				logger::info(
+					FMT_STRING("pose gate: {} evals this draw without going live (last dist={:.1f} "
+					           "lat={:.2f} look={:.1f}deg vs enter {:.0f}/{:.1f}/{:.0f}) - tune "
+					           "poseMax*/poseLookCone* if this weapon should activate"),
+					s_sinceLive, s.dist, s.lateral, s.lookDeg, dMax, latMax, lookMax);
+			}
+		}
+
 		g_dist.store(s.dist, std::memory_order_relaxed);
 		g_lateral.store(s.lateral, std::memory_order_relaxed);
 		g_lookDeg.store(s.lookDeg, std::memory_order_relaxed);

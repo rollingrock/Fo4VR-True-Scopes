@@ -331,6 +331,29 @@ namespace TrueScopes::Hooks
 		};
 		EquipEventSink g_equipSink;
 
+		// Fail-open bookkeeping: how many consecutive eligible frames the widget
+		// has been withheld (fit not applied for the current baseline). Game
+		// thread only.
+		std::uint32_t g_notPresentableRun = 0;
+		bool          g_failOpenLogged = false;
+
+		// Un-cull the widget's active housing slot (model+0x50). The fail-open
+		// path needs it shown without an arm edge - vanilla's own un-hide only
+		// fires on gate transitions.
+		void ShowActiveHousing()
+		{
+			__try {
+				const auto model = *reinterpret_cast<std::uintptr_t*>(
+					REL::Module::get().base() + Addr::kWidgetModelSingleton);
+				if (model) {
+					if (const auto h = *reinterpret_cast<std::uintptr_t*>(model + 0x50)) {
+						*reinterpret_cast<std::uint8_t*>(h + 0x108) &= static_cast<std::uint8_t>(~1u);
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+		}
+
 		// Pose-based activation. Replaces the per-frame verdict call
 		// "call FUN_140efaa60(player, verdict)" inside the vanilla eye-gate
 		// (kScopeGateVerdictCallSite; mechanism in PoseGate.h). The verdict flows
@@ -362,12 +385,39 @@ namespace TrueScopes::Hooks
 				// runs while the weapon is drawn, a gun, has-scope, and no
 				// blocking menu is open, so presence dies with eligibility (the
 				// stale poll hides the nodes ~1 s later).
+				// Withhold accounting: the housing hide and the widget are both
+				// conditional on the plugin actually presenting a lens; the vanilla
+				// visuals were removed unconditionally, which turned any per-rig
+				// failure in the fit chain into "no scope at all". Track the
+				// withheld state per eligible frame and fail open after ~2 s.
+				const bool presentable = ScopeRender::WidgetPresentable();
+				if (presentable) {
+					g_notPresentableRun = 0;
+					g_failOpenLogged = false;
+				} else if (g_notPresentableRun < 0xffffffffu) {
+					++g_notPresentableRun;
+				}
 				if (*Settings::hideWidgetHousing) {
-					HideWidgetHousing(player);
-					if (!g_housingZeroLogged && g_housingZeroed.load(std::memory_order_relaxed)) {
-						g_housingZeroLogged = true;
-						logger::info(FMT_STRING("widget housing zero-scaled (hunting {:.3f} recon {:.3f} saved for restore)"),
-							g_housingSavedHunting, g_housingSavedRecon);
+					if (presentable) {
+						HideWidgetHousing(player);
+						if (!g_housingZeroLogged && g_housingZeroed.load(std::memory_order_relaxed)) {
+							g_housingZeroLogged = true;
+							logger::info(FMT_STRING("widget housing zero-scaled (hunting {:.3f} recon {:.3f} saved for restore)"),
+								g_housingSavedHunting, g_housingSavedRecon);
+						}
+					} else if (g_notPresentableRun == 180) {
+						// Fail open: the replacement never presented for this equip.
+						// Give the vanilla housing back rather than nothing; if the
+						// fit lands later, the presentable path re-hides it.
+						RestoreWidgetHousing();
+						g_housingRestored.store(false, std::memory_order_relaxed);
+						ShowActiveHousing();
+						g_housingZeroLogged = false;
+						if (!g_failOpenLogged) {
+							g_failOpenLogged = true;
+							logger::warn("widget withheld ~2 s (fit not applied for this equip) - "
+							             "vanilla scope housing restored (fail-open)"sv);
+						}
 					}
 				} else {
 					// put the NIF scales back when the user turns the housing back
@@ -409,7 +459,10 @@ namespace TrueScopes::Hooks
 			static void thunk(void* a_model, char a_active)
 			{
 				func(a_model, a_active);
-				if (a_model && *Settings::hideWidgetHousing) {
+				// presentable gate: while the fit has not landed (fail-open
+				// window) the vanilla housing is the only scope the player has -
+				// leave the engine's un-hide alone.
+				if (a_model && *Settings::hideWidgetHousing && ScopeRender::WidgetPresentable()) {
 					Recull(reinterpret_cast<std::uintptr_t>(a_model));
 				}
 			}
@@ -584,10 +637,17 @@ namespace TrueScopes::Hooks
 					// same frozen picture by poseFrozenDim on every widget off/on
 					// cycle (menu open/close x4 ~= black lens).
 					static bool s_dimPending = false;
+					// Frozen fade: armed on the live->frozen edge only. Primes and
+					// idle refreshes are meant to be seen, so they disarm it.
+					static bool          s_fadeArmed = false;
+					static std::uint32_t s_fadeSteps = 0;
+					static std::uint64_t s_fadeLastTick = 0;
 					const bool  poseLive = PoseGate::FillLive();
 					if (g_scopeActive.load() && poseLive &&
 						!g_teardownLatch.load(std::memory_order_relaxed)) {
 						s_dimPending = true;
+						s_fadeArmed = false;
+						s_fadeSteps = 0;
 						static std::uint32_t frame = 0;
 						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
 							const bool rendered =
@@ -630,6 +690,7 @@ namespace TrueScopes::Hooks
 							if ((primeWanted || idleWanted) && ScopeRender::Render()) {
 								ScopeRender::LensPrimeDone();
 								s_lastLensFillTick = ::GetTickCount64();
+								s_fadeArmed = false;
 								const auto dim = std::clamp(
 									static_cast<float>(*Settings::poseFrozenDim), 0.0f, 1.0f);
 								if (dim < 0.999f) {
@@ -645,6 +706,28 @@ namespace TrueScopes::Hooks
 							const auto dim = static_cast<float>(*Settings::poseFrozenDim);
 							if (dim < 0.999f) {
 								ScopeRender::DimFrozenLens(std::clamp(dim, 0.0f, 1.0f));
+							}
+							s_fadeArmed = true;
+							s_fadeSteps = 0;
+							s_fadeLastTick = ::GetTickCount64();
+						}
+						// The fade itself: multiplicative steps every 200 ms until the
+						// picture reaches ~3% of the dimmed level, spread over
+						// scopeFrozenFadeSeconds. Each step is one small quad draw on
+						// the lens RT.
+						if (s_fadeArmed) {
+							const auto fadeS = static_cast<float>(*Settings::scopeFrozenFadeSeconds);
+							if (fadeS > 0.05f) {
+								constexpr std::uint64_t kStepMs = 200;
+								const auto steps = static_cast<std::uint32_t>(
+									(std::max)(1.0f, fadeS * 1000.0f / static_cast<float>(kStepMs)));
+								const auto now = ::GetTickCount64();
+								if (s_fadeSteps < steps && now - s_fadeLastTick >= kStepMs) {
+									s_fadeLastTick = now;
+									++s_fadeSteps;
+									ScopeRender::DimFrozenLens(
+										std::pow(0.03f, 1.0f / static_cast<float>(steps)));
+								}
 							}
 						}
 					} else {

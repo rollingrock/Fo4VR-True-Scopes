@@ -350,6 +350,13 @@ namespace Settings
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.55);
+	// After the dim, the frozen picture keeps fading to near-black over this
+	// many seconds. The eyebox used to be the only thing taking the lens dark on
+	// eye-exit, and it is baked into the last live frames — with eyeBoxStrength
+	// at 0 a frozen lens stayed bright and read as live. 0 = no fade. Lens
+	// primes and idle refreshes stay at the plain dim (they are meant to be
+	// seen); only a live→frozen edge arms the fade.
+	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFrozenFadeSeconds, 1.5);
 	// Hide the widget model's own housing meshes (scope_Hunting:0 /
 	// scope_recon:0 in world_scope.nif - the pale speckled ring Bethesda drew
 	// around the picture). The real weapon's scope provides the housing; the
@@ -695,6 +702,7 @@ namespace Settings
 		LOAD(poseLookConeExitDegrees);
 		LOAD(poseWidgetAlways);
 		LOAD(poseFrozenDim);
+		LOAD(scopeFrozenFadeSeconds);
 		LOAD(hideWidgetHousing);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);
