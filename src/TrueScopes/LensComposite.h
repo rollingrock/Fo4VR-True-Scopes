@@ -54,6 +54,12 @@ namespace TrueScopes::LensComposite
 		std::uint32_t dims;          // freeze-dim passes applied
 		bool         quadHidden;
 		char         rendererName[32];
+		// eyebox forensics from the last live fill: measured eye relief (game
+		// units), the distance-adapted gain factor, the axial (ring) pupil
+		// shrink. Live evidence of what the biconic model is doing.
+		float eyeRelief;
+		float eyeGainFactor;
+		float eyeAxialShrink;
 	};
 	Diag GetDiag() noexcept;
 }

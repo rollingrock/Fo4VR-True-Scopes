@@ -62,7 +62,7 @@ cbuffer Params : register(b0)
     float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
     float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
     float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
-    float4 glass2;    // x residual brightness-adapt scale, yzw reserved
+    float4 glass2;    // x residual brightness-adapt scale, y axial pupil shrink, zw reserved
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -177,7 +177,10 @@ float4 PSMain(VSOut i) : SV_Target
     if (eyebox.z > 0.0 && flags.y == 0.0) {
         float2 p   = cuv * 2.0;
         float  m   = length(eyebox.xy);
-        float  rad = 1.15 - 0.9 * saturate(m);
+        // glass2.y: axial pupil shrink - the on-axis exit pupil closes as the
+        // eye leaves the relief distance in either direction (the scope-shadow
+        // ring). 0 = pupil size depends on lateral offset only.
+        float  rad = 1.15 - glass2.y - 0.9 * saturate(m);
         float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
         ebMul = lerp(1.0, vis, saturate(eyebox.z));
     }
@@ -930,19 +933,32 @@ float4 PSMain(VSOut i) : SV_Target
 				// relief distance, tighter closer in, progressively forgiving as
 				// the eye backs off. ly is the tube-axial eye position; the eye
 				// sits behind the ocular, so relief L = -ly.
-				const auto relief = static_cast<float>(*Settings::eyeBoxReliefUnits);
+				const auto  relief = static_cast<float>(*Settings::eyeBoxReliefUnits);
+				float       gainFactor = 1.0f;
+				const float L = (std::max)(0.5f, std::isfinite(ly) ? -ly : 0.0f);
 				if (relief > 0.01f && std::isfinite(ly) && ly < 0.0f) {
-					// floor the relief distance so the multiplier is continuous as
-					// the eye approaches the ocular (the clamp caps it anyway)
-					const float L = (std::max)(0.5f, -ly);
-					const auto  pw = static_cast<float>(*Settings::eyeBoxDistancePower);
-					gain *= std::clamp(std::pow(relief / L, pw), 0.35f, 3.0f);
+					const auto pw = static_cast<float>(*Settings::eyeBoxDistancePower);
+					gainFactor = std::clamp(std::pow(relief / L, pw), 0.35f, 3.0f);
+					gain *= gainFactor;
+					// Axial (ring) term: the on-axis pupil closes as the eye leaves
+					// the relief distance in EITHER direction - the scope-shadow
+					// ring, and the visible in-and-out response. Ratio-based, so
+					// the close side collapses faster, like the real tube. The
+					// lateral gain alone changes nothing for an on-axis eye.
+					const auto axial = static_cast<float>(*Settings::eyeBoxAxialStrength);
+					if (axial > 0.0f) {
+						const float miss = (std::max)(relief / L, L / relief) - 1.0f;
+						p.glass2[1] = std::clamp(axial * miss, 0.0f, 0.85f);
+					}
 				}
 				p.eyebox[0] = ex * gain;
 				p.eyebox[1] = ey * gain;
 				p.eyebox[2] = strength;
 				p.eyebox[3] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidual));
 				p.glass2[0] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidualAdapt));
+				g_diag.eyeRelief = L;
+				g_diag.eyeGainFactor = gainFactor;
+				g_diag.eyeAxialShrink = p.glass2[1];
 			}
 			if (havePose) {
 				p.pose[0] = ex;

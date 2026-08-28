@@ -272,6 +272,7 @@ namespace DevBench
 				{ "eyeBoxGain", Kind::Float, &eyeBoxGain },
 				{ "eyeBoxIpdUnits", Kind::Float, &eyeBoxIpdUnits },
 				{ "eyeBoxReliefUnits", Kind::Float, &eyeBoxReliefUnits },
+				{ "eyeBoxAxialStrength", Kind::Float, &eyeBoxAxialStrength },
 				{ "eyeBoxDistancePower", Kind::Float, &eyeBoxDistancePower },
 				{ "edgeBlurStrength", Kind::Float, &edgeBlurStrength },
 				{ "edgeBlurStart", Kind::Float, &edgeBlurStart },
@@ -511,6 +512,9 @@ namespace DevBench
 				out += ",\"skips\":" + std::to_string(lc.skips);
 				out += ",\"dims\":" + std::to_string(lc.dims);
 				out += ",\"quadHidden\":" + std::string(lc.quadHidden ? "true" : "false");
+				out += ",\"eyeRelief\":" + std::to_string(lc.eyeRelief);
+				out += ",\"eyeGainFactor\":" + std::to_string(lc.eyeGainFactor);
+				out += ",\"eyeAxialShrink\":" + std::to_string(lc.eyeAxialShrink);
 				out += ",\"renderer\":" + Quote(lc.rendererName) + "}";
 			}
 			// Pose-based activation: the live pose numbers + verdicts. `evals`

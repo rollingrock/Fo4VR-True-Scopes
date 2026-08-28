@@ -266,6 +266,13 @@ namespace Settings
 	// ocular. relief 0 = the old fixed gain.
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxReliefUnits, 12.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxDistancePower, 1.6);
+	// Axial (ring) response: the on-axis exit pupil closes as the eye leaves the
+	// relief distance in either direction - the classic scope-shadow ring, and
+	// the visible cue that moving in and out does something. Pupil shrink =
+	// strength * (max(relief/L, L/relief) - 1), clamped; ratio-based, so the
+	// close side collapses faster. 0 = off (pupil size from lateral offset only,
+	// which is invisible to an on-axis eye).
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxAxialStrength, 0.5);
 	// Edge blur: field-curvature softness from edgeBlurStart (disc radius 0..1)
 	// out to the rim. 0 disables.
 	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStrength, 0.35);
@@ -716,6 +723,7 @@ namespace Settings
 		LOAD(eyeBoxIpdUnits);
 		LOAD(eyeBoxReliefUnits);
 		LOAD(eyeBoxDistancePower);
+		LOAD(eyeBoxAxialStrength);
 		LOAD(edgeBlurStrength);
 		LOAD(edgeBlurStart);
 		LOAD(caStrength);

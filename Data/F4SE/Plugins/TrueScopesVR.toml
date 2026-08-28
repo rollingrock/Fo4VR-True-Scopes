@@ -112,6 +112,11 @@ eyeBoxIpdUnits = 4.5
 # reliefUnits 0 = the old fixed gain. 1 unit ~ 1.43 cm.
 eyeBoxReliefUnits = 12.0
 eyeBoxDistancePower = 1.6
+# Axial (ring) response: the on-axis pupil closes as the eye leaves the relief
+# distance in either direction - the scope-shadow ring. This is what makes
+# moving in and out visibly change the view; the gain adaptation above only
+# changes lateral forgiveness. 0 = off.
+eyeBoxAxialStrength = 0.5
 # Edge blur: field-curvature softness from edgeBlurStart (0..1 of the disc radius)
 # out to the rim. strength 0 = off.
 edgeBlurStrength = 0.35
