@@ -523,6 +523,11 @@ namespace Settings
 		double offsetX = std::numeric_limits<double>::quiet_NaN();
 		double offsetY = std::numeric_limits<double>::quiet_NaN();
 		double offsetZ = std::numeric_limits<double>::quiet_NaN();
+		// Eye relief in game units (0 = not specified, use eyeBoxReliefUnits).
+		// A property of the optic: a pistol scope is built for arm's length
+		// (~30), a rifle scope for the cheek weld (~12); one global centre makes
+		// the pistol picture collapse at its own natural hold.
+		double eyeRelief = 0.0;
 		// Height/width of a rectangular screen optic, 0 = not specified
 		// (circular optics and square screens are 1.0 in the built-in table).
 		// When < 1, the aperture is the screen's half-width and the composite
@@ -854,6 +859,9 @@ namespace Settings
 						if (const auto* n = sub->get("aspect")) {
 							readNumber(*n, e.aspect);
 						}
+						if (const auto* n = sub->get("eyeRelief")) {
+							readNumber(*n, e.eyeRelief);
+						}
 					} else {
 						readNumber(value, e.aperture);
 					}
@@ -873,11 +881,15 @@ namespace Settings
 					// An entry with offsets and no aperture is legitimate: it means
 					// "the built-in radius is fine, the position is not".
 					const bool haveOffset = !std::isnan(e.offsetX) || !std::isnan(e.offsetY) || !std::isnan(e.offsetZ);
+					if (e.eyeRelief != 0.0 && !(e.eyeRelief > 1.0 && e.eyeRelief < 100.0)) {
+						logger::warn(FMT_STRING("[Scopes] {}: eyeRelief {} ignored (expected 1 to 100 game units)"), name, e.eyeRelief);
+						e.eyeRelief = 0.0;
+					}
 					if (e.aperture != 0.0 && !(e.aperture > 0.01 && e.aperture < 64.0)) {
 						logger::warn(FMT_STRING("[Scopes] {}: aperture {} ignored (expected 0.01 to 64)"), name, e.aperture);
 						e.aperture = 0.0;
 					}
-					if (e.aperture > 0.0 || haveOffset || e.aspect > 0.0) {
+					if (e.aperture > 0.0 || haveOffset || e.aspect > 0.0 || e.eyeRelief > 0.0) {
 						// Stored normalized so a lookup can normalize too and the
 						// two always meet, whatever the user typed.
 						const auto norm = NormalizeScopeKey(name);

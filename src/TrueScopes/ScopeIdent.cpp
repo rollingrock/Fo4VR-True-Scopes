@@ -147,6 +147,22 @@ namespace TrueScopes::ScopeIdent
 		{ "weapons/plasma/scope.nif", "PlasmaScope", 3.030f, 1.000f, "PlasmaScope:1", { 0.000f, -2.012f, -0.079f }, 6.729f },  // Scope_1.nif via rim-ring
 		};
 
+		// Long-eye-relief optics: pistol scopes are built to be viewed at arm's
+		// length, and the eyebox's relief centre must sit there or the ring
+		// collapses the picture at the weapon's own natural hold. Keyed like the
+		// census table (path primary, node fallback); [Scopes] eyeRelief
+		// overrides. ~30 units = 43 cm, a scout-scope relief.
+		struct ReliefEntry
+		{
+			const char* path;
+			const char* node;
+			float       relief;
+		};
+		constexpr ReliefEntry kLongRelief[] = {
+			{ "weapons/44/44scope.nif", "44MagScope", 30.0f },
+			{ "dlc04/weapons/44western/44magscopewestern.nif", "44MagScopeWestern", 30.0f },
+		};
+
 		// Walk bounds. Generous relative to a weapon (the hunting rifle is 50 nodes,
 		// 6 deep) but still bounded, so a corrupt child count or a cyclic graph costs
 		// a fixed number of reads instead of hanging the probing thread.
@@ -742,11 +758,23 @@ namespace TrueScopes::ScopeIdent
 			// heuristic. Model paths are tried before node names for the same
 			// reason the table tries them first: an entry keyed on a node name
 			// retunes every mesh that copied that root name.
+			// Built-in long-relief pass, before the TOML so an override wins.
+			for (const auto& r : kLongRelief) {
+				if ((a_out.matched[0] && (std::strcmp(r.path, a_out.matched) == 0 ||
+										     std::strcmp(r.node, a_out.matched) == 0))) {
+					a_out.eyeRelief = r.relief;
+					break;
+				}
+			}
+
 			const auto applyOverride = [&a_out](const char* a_key) {
 				const auto e = Settings::ScopeEntryFor(a_key);
 				const bool haveOffset = !std::isnan(e.offsetX) || !std::isnan(e.offsetY) || !std::isnan(e.offsetZ);
+				if (e.eyeRelief > 0.0) {
+					a_out.eyeRelief = static_cast<float>(e.eyeRelief);
+				}
 				if (e.aperture <= 0.0 && !haveOffset) {
-					return false;
+					return e.eyeRelief > 0.0;
 				}
 				CopyName(a_out.overrideKey, a_key);
 				a_out.offsetX = static_cast<float>(e.offsetX);
@@ -1165,6 +1193,12 @@ namespace TrueScopes::ScopeIdent
 	{
 		const std::scoped_lock lock(g_lock);
 		return (g_info.probed && g_info.fovMult > 0.0f) ? g_info.fovMult : 1.0f;
+	}
+
+	float EyeReliefUnits()
+	{
+		const std::scoped_lock lock(g_lock);
+		return g_info.probed ? g_info.eyeRelief : 0.0f;
 	}
 
 	// OcularFaceWorld's live node re-read runs per placement on the game thread,

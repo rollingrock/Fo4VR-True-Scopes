@@ -117,6 +117,9 @@ eyeBoxDistancePower = 1.6
 # moving in and out visibly change the view; the gain adaptation above only
 # changes lateral forgiveness. 0 = off.
 eyeBoxAxialStrength = 0.5
+# Eye relief is per-optic where known: the .44 pistol scopes carry a built-in
+# ~30 (a scout scope is built for arm's length), and a [Scopes] entry can set
+# eyeRelief per scope; eyeBoxReliefUnits above is the fallback for the rest.
 # Edge blur: field-curvature softness from edgeBlurStart (0..1 of the disc radius)
 # out to the rim. strength 0 = off.
 edgeBlurStrength = 0.35
@@ -406,10 +409,14 @@ widgetPlaceMaxEyeDist = 100.0
 # Short form  -- aperture only (quote a path; a bare node name needs no quotes):
 #     "weapons/thermalscope/scopetherm1.nif" = 0.9
 #     HuntingScope = 1.267
-# Long form   -- aperture and/or position and/or screen aspect:
+# Long form   -- aperture and/or position and/or screen aspect and/or relief:
 #     [Scopes."weapons/huntingrifle/huntingriflescope.nif"]
 #     aperture = 1.267
 #     offsetY  = -1.8
+#     eyeRelief = 30
+# eyeRelief (1 to 100, game units) is the distance the optic is built to be
+# viewed from - it centres the eyebox sweet spot for that scope. The .44
+# pistol scopes carry a built-in ~30; everything else uses eyeBoxReliefUnits.
 # An entry may set position ONLY; the built-in radius still applies. That is the
 # common case for a scope whose size is fine but which sits off the lens.
 #

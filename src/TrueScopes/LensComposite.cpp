@@ -933,7 +933,12 @@ float4 PSMain(VSOut i) : SV_Target
 				// relief distance, tighter closer in, progressively forgiving as
 				// the eye backs off. ly is the tube-axial eye position; the eye
 				// sits behind the ocular, so relief L = -ly.
-				const auto  relief = static_cast<float>(*Settings::eyeBoxReliefUnits);
+				// per-optic relief when the ident resolved one (a pistol scope is
+				// built for arm's length); the global is the fallback
+				const auto scopeRelief = ScopeIdent::EyeReliefUnits();
+				const auto relief = scopeRelief > 0.01f
+				                        ? scopeRelief
+				                        : static_cast<float>(*Settings::eyeBoxReliefUnits);
 				float       gainFactor = 1.0f;
 				const float L = (std::max)(0.5f, std::isfinite(ly) ? -ly : 0.0f);
 				if (relief > 0.01f && std::isfinite(ly) && ly < 0.0f) {

@@ -114,6 +114,10 @@ namespace TrueScopes::ScopeIdent
 		// vertical overshoot, so a wide display shows a wide picture.
 		float         screenAspect = 1.0f;
 		bool          fromTable = false;  // false = fell back to widgetApertureRadius
+		// Eye relief the optic was built for, game units (0 = not specified,
+		// use eyeBoxReliefUnits). Long-eye-relief pistol scopes carry a
+		// built-in value; [Scopes] eyeRelief overrides.
+		float         eyeRelief = 0.0f;
 		// Per-scope widget position. NaN = this scope does not specify the axis,
 		// so the global widgetOffset* setting applies; 0.0 is a real, deliberate
 		// zero.
@@ -220,6 +224,11 @@ namespace TrueScopes::ScopeIdent
 
 	// Magnification of the equipped scope (zoomData fovMult). 1.0 when unknown.
 	float FovMult();
+
+	// Eye relief of the equipped optic in game units, 0 when it does not
+	// specify one (the caller falls back to eyeBoxReliefUnits). Long-eye-relief
+	// pistol scopes carry a built-in value; [Scopes] eyeRelief overrides.
+	float EyeReliefUnits();
 
 	// Where the equipped optic is, as a world-space sphere. False when the walk
 	// found no P-Scope subtree or no shape carried a usable bound — in which case
