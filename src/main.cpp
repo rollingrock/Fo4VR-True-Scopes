@@ -38,9 +38,12 @@ namespace
 		if (!a_msg) {
 			return;
 		}
-		if (a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
-			// Unequip event sink for the teardown latch. Idempotent - GameDataReady
-			// can fire more than once across save loads.
+		// Unequip event sink for the teardown latch. kGameLoaded, not
+		// kGameDataReady: F4SEVR never dispatches the latter (field-observed
+		// message sequence is 0, 1, 9). Idempotent - the message can repeat
+		// across save loads.
+		if (a_msg->type == F4SE::MessagingInterface::kGameLoaded ||
+			a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
 			TrueScopes::Hooks::RegisterEquipSink();
 		}
 		// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.

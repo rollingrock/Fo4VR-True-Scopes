@@ -550,6 +550,8 @@ namespace TrueScopes::ScopeRender
 
 		std::int32_t g_diagSkyEmptyPre = -1;   // FUN_14281f2c0(group 0xC) after world accum: 1 = no sky passes
 		std::int32_t g_diagSkyEmptyPost = -1;  // ... after the fallback sky-root accumulation
+		bool g_skyParkedLogged = false;        // one parked-roots line per interior episode
+		bool g_skyParkedThisRender = false;
 		std::int32_t g_diagSkyRoots = 0;       // how many sky root globals validated + accumulated
 		std::int32_t g_diagSkyDrawn = 0;       // 1 = group 0xC drawn into 0x61 this render
 		float g_diagPort[4] = {};      // VR camera port @ +0x214 (SetCameraFOV forces {0,1,1,0})
@@ -2320,6 +2322,7 @@ namespace TrueScopes::ScopeRender
 			g_diagSkyEmptyPost = g_diagSkyEmptyPre;
 			if (*Settings::skyEnabled && g_diagSkyEmptyPre != 0) {
 				CapturePassCountsInto(accum, g_skyBaseCounts, g_skyBaseTotal);
+				g_skyParkedThisRender = false;
 				const auto base = REL::Module::get().base();
 				const auto mask = static_cast<std::uint32_t>(*Settings::skyRootMask);
 				constexpr struct { std::uintptr_t rva; std::uint32_t bit; } kSkyRoots[] = {
@@ -2353,15 +2356,17 @@ namespace TrueScopes::ScopeRender
 					}
 					const auto savedCulled = static_cast<std::uint8_t>(
 						*reinterpret_cast<const std::uint8_t*>(root + 0x108) & 1u);
-					static bool s_loggedParked = false;
 					if (savedCulled) {
-						if (!s_loggedParked) {
-							s_loggedParked = true;
+						// s_parkedSeen re-arms in the outer block below, not here - a
+						// mixed cell (dome parked, sun/cloud not) would otherwise
+						// reset the latch every render and log per frame.
+						g_skyParkedThisRender = true;
+						if (!g_skyParkedLogged) {
+							g_skyParkedLogged = true;
 							logger::info("SKY: roots parked culled by the cell (interior) - sky skipped"sv);
 						}
 						continue;
 					}
-					s_loggedParked = false;  // re-arm per interior episode
 					// Bypass culling for the sky accumulation — the dome's huge
 					// multibound fails the default frustum/portal culling. The
 					// engine's own forward passes bracket accumulation with
@@ -2382,6 +2387,9 @@ namespace TrueScopes::ScopeRender
 				}
 				CapturePassCountsInto(accum, g_skyAfterCounts, g_skyAfterTotal);
 				g_diagSkyEmptyPost = static_cast<std::int32_t>(Fn<GroupEmpty_t>(kGroupEmpty)(skyGroup));
+				if (!g_skyParkedThisRender) {
+					g_skyParkedLogged = false;  // re-arm once no root is parked
+				}
 			}
 			if (*Settings::skyEnabled && g_diagSkyEmptyPost == 0) {
 				// Vanilla sky-stage binds (FUN_14284d680, scoped values): slot 0 stays
