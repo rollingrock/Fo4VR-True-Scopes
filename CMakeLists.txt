@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.3.25)
+set(VERSION 0.3.26)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
@@ -75,6 +75,16 @@ if(TRUESCOPES_BUILD_TESTS)
 		target_compile_options(widget_lifecycle_tests PRIVATE /W4 /WX /permissive- /utf-8)
 	endif()
 	add_test(NAME widget_lifecycle COMMAND widget_lifecycle_tests)
+	add_executable(
+		widget_rotation_tests
+		tests/WidgetRotationTests.cpp
+	)
+	target_compile_features(widget_rotation_tests PRIVATE cxx_std_23)
+	target_include_directories(widget_rotation_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+	if(MSVC)
+		target_compile_options(widget_rotation_tests PRIVATE /W4 /WX /permissive- /utf-8)
+	endif()
+	add_test(NAME widget_rotation COMMAND widget_rotation_tests)
 endif()
 
 configure_file(

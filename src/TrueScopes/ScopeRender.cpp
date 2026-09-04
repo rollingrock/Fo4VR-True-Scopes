@@ -10,6 +10,7 @@
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/OneEuro.h"
 #include "TrueScopes/WidgetLifecycle.h"
+#include "TrueScopes/WidgetRotation.h"
 
 // Mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62,
 // mirroring the engine's own deferred scene renderers (FUN_140c87320 /
@@ -746,10 +747,11 @@ namespace TrueScopes::ScopeRender
 			bool  captured = false;
 			bool  applied = false;
 			// rotation tracking (widgetTrackRotation)
-			bool  rotCaptured = false;
 			float baseRotRaw[12] = {};  // engine-authored local rotate block, verbatim
-			float rotK[9] = {};         // Rw0^T * Rp0 * L0 (see ComputeTrackedRotation)
 			float lastRot[9] = {};      // last written true local rotation
+			float wroteRotRaw[12] = {}; // exact local rotate block after our last write
+			bool  wroteRotation = false;
+			WidgetRotation::Calibration rotation;
 		};
 		WidgetState g_widget;
 		WidgetLifecycle::EpochGate g_widgetLifecycle;
@@ -769,29 +771,6 @@ namespace TrueScopes::ScopeRender
 		// Per-equip/load lens prime. Invalidated from the game thread and consumed
 		// by the render thread, so it cannot be a function-local latch.
 		std::atomic_bool g_lensPrimeNeeded{ true };
-
-		// 3x3 helpers, row-major true rotations.
-		void Mul3(const float (&a_a)[9], const float (&a_b)[9], float (&a_out)[9])
-		{
-			for (std::size_t r = 0; r < 3; ++r) {
-				for (std::size_t c = 0; c < 3; ++c) {
-					a_out[r * 3 + c] = a_a[r * 3 + 0] * a_b[0 * 3 + c] +
-					                   a_a[r * 3 + 1] * a_b[1 * 3 + c] +
-					                   a_a[r * 3 + 2] * a_b[2 * 3 + c];
-				}
-			}
-		}
-		void MulT3(const float (&a_a)[9], const float (&a_b)[9], float (&a_out)[9])
-		{
-			// a_a^T * a_b
-			for (std::size_t r = 0; r < 3; ++r) {
-				for (std::size_t c = 0; c < 3; ++c) {
-					a_out[r * 3 + c] = a_a[0 * 3 + r] * a_b[0 * 3 + c] +
-					                   a_a[1 * 3 + r] * a_b[1 * 3 + c] +
-					                   a_a[2 * 3 + r] * a_b[2 * 3 + c];
-				}
-			}
-		}
 
 		// a_localRot: true row-major local rotation to write, or null to leave
 		// the node's rotation alone. Stored transposed with stride-4 rows (the
@@ -853,12 +832,13 @@ namespace TrueScopes::ScopeRender
 			if (!*Settings::widgetTrackRotation) {
 				// Live toggle off: put the engine-authored rotation back once, or a
 				// later re-enable would capture our own last write as the baseline.
-				if (g_widget.rotCaptured) {
+				if (g_widget.rotation.Captured()) {
 					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
 						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 					alignas(16) std::uint8_t upd[0x30]{};
 					Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
-					g_widget.rotCaptured = false;
+					g_widget.rotation.Reset();
+					g_widget.wroteRotation = false;
 				}
 				return false;
 			}
@@ -870,7 +850,7 @@ namespace TrueScopes::ScopeRender
 			if (!ReadParentTrueRot(a_sp, Rp)) {
 				return false;
 			}
-			if (!g_widget.rotCaptured) {
+			if (!g_widget.rotation.Captured()) {
 				// K persists until the next rebaseline, so a torn cross-thread read
 				// here would stick: require near-unit rows on the weapon rotation
 				// before trusting the capture (a declined frame just retries).
@@ -893,14 +873,11 @@ namespace TrueScopes::ScopeRender
 					}
 				}
 				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
-				float tmp[9];
-				Mul3(Rp, L0, tmp);
-				MulT3(Rw, tmp, g_widget.rotK);
-				g_widget.rotCaptured = true;
+				g_widget.rotation.Capture(Rw, Rp, L0);
 			}
-			float tmp[9];
-			Mul3(Rw, g_widget.rotK, tmp);
-			MulT3(Rp, tmp, a_out);
+			if (!g_widget.rotation.Compute(Rw, Rp, a_out)) {
+				return false;
+			}
 			for (const float v : a_out) {
 				if (!std::isfinite(v)) {
 					return false;
@@ -1466,6 +1443,17 @@ namespace TrueScopes::ScopeRender
 				t[2] != g_widget.wroteTz || s != g_widget.wroteScale) {
 				return false;
 			}
+			if (g_widget.wroteRotation) {
+				const auto* raw = reinterpret_cast<const float*>(a_sp + 0x30);
+				for (std::size_t r = 0; r < 3; ++r) {
+					for (std::size_t c = 0; c < 3; ++c) {
+						const auto i = c * kMatrixRowStride + r;
+						if (raw[i] != g_widget.wroteRotRaw[i]) {
+							return false;
+						}
+					}
+				}
+			}
 			return true;
 		}
 
@@ -1483,7 +1471,7 @@ namespace TrueScopes::ScopeRender
 
 			bool restored = false;
 			if (WidgetNodeContainsLastWrite(a_sp) && g_widget.captured) {
-				if (g_widget.rotCaptured) {
+				if (g_widget.rotation.Captured()) {
 					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
 						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 				}
@@ -1544,7 +1532,8 @@ namespace TrueScopes::ScopeRender
 				g_widget.node = sp;
 				g_widget.captured = true;
 				g_widget.applied = false;
-				g_widget.rotCaptured = false;  // engine rewrite = pristine rotation too
+				g_widget.rotation.Reset();  // engine rewrite = pristine rotation too
+				g_widget.wroteRotation = false;
 				g_widgetLifecycle.Withhold();
 				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
 					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
@@ -1566,10 +1555,11 @@ namespace TrueScopes::ScopeRender
 				// Turned off after being applied: restore the engine's own values once, so
 				// toggling it live is a clean A/B rather than a one-way door.
 				if (stillOurs && g_widget.captured) {
-					if (g_widget.rotCaptured) {
+					if (g_widget.rotation.Captured()) {
 						std::memcpy(reinterpret_cast<void*>(sp + 0x30),
 							g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
-						g_widget.rotCaptured = false;
+						g_widget.rotation.Reset();
+						g_widget.wroteRotation = false;
 					}
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 					g_widget.applied = false;
@@ -1623,13 +1613,11 @@ namespace TrueScopes::ScopeRender
 			if (const auto gen = ScopeIdent::ProbeCount(); gen != s_probeGen) {
 				s_probeGen = gen;
 				g_placeDirty.store(true);
-				// new ident data can name a different face shape - put the
-				// engine-authored rotation back and re-capture against it
-				if (g_widget.rotCaptured) {
-					std::memcpy(reinterpret_cast<void*>(sp + 0x30),
-						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
-					g_widget.rotCaptured = false;
-				}
+				// A scope-in probe refreshes identity data but is not a widget
+				// lifecycle boundary. Preserve the weapon-relative calibration:
+				// resetting it while already two-handed makes the current output L0
+				// and snaps the disc back to the one-hand engine orientation.
+				g_widget.rotation.PreserveAcrossIdentityProbe();
 			}
 			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
 			if (relatch || g_place.eyeIndependent) {
@@ -1707,6 +1695,9 @@ namespace TrueScopes::ScopeRender
 			WriteScopeParent(sp, nx, ny, nz, scale, haveRot ? trackRot : nullptr);
 			if (haveRot) {
 				std::memcpy(g_widget.lastRot, trackRot, sizeof(g_widget.lastRot));
+				std::memcpy(g_widget.wroteRotRaw,
+					reinterpret_cast<const void*>(sp + 0x30), sizeof(g_widget.wroteRotRaw));
+				g_widget.wroteRotation = true;
 			}
 			g_widget.wroteTx = nx;
 			g_widget.wroteTy = ny;
