@@ -14,6 +14,9 @@ namespace TrueScopes::Hooks
 	{
 		bool g_installed = false;
 		bool g_verdictHookInstalled = false;  // pose gate owns the verdict feed
+		// The arm-write hook as we left it. f4se_common's Write5Call writes blind, so a
+		// plugin loading after us can overwrite our thunk with no error anywhere.
+		std::uint8_t g_armWriteHookBytes[5]{};
 
 		// Plugin-owned replacement for the "scope render armed" state that vanilla keeps
 		// in BSGraphics::Renderer+3. The real +3 stays 0 forever, so Main::Swap's frame
@@ -891,6 +894,7 @@ namespace TrueScopes::Hooks
 		// written (redirect can't engage), and the show/hide block stays edge-triggered.
 		pstl::write_thunk_call<ScopeStateReadHook>(stateReadSite.address());
 		pstl::write_thunk_call<ScopeArmWriteHook>(armWriteSite.address());
+		std::copy_n(reinterpret_cast<const std::uint8_t*>(armWriteSite.address()), 5, g_armWriteHookBytes);
 		logger::info("enable-switch state hooks installed"sv);
 
 		// Fill hook, every frame in the normal draw path.
@@ -1064,6 +1068,26 @@ namespace TrueScopes::Hooks
 	bool WidgetPresenceShown()
 	{
 		return g_presenceShown.load(std::memory_order_relaxed);
+	}
+
+	bool VerifyArmWriteHookIntact()
+	{
+		if (!g_installed) {
+			return true;
+		}
+		REL::Relocation<std::uintptr_t> armWriteSite{ REL::Offset(Addr::kScopeArmWriteCallSite) };
+		const auto* p = reinterpret_cast<const std::uint8_t*>(armWriteSite.address());
+		if (std::equal(std::begin(g_armWriteHookBytes), std::end(g_armWriteHookBytes), p)) {
+			return true;
+		}
+		logger::critical(
+			FMT_STRING("scope-arm hook overwritten after install at {:016X} (now {:02X} {:02X} {:02X} {:02X} {:02X}, "
+			           "was {:02X} {:02X} {:02X} {:02X} {:02X}) - another plugin patched the same call site without a "
+			           "byte check. Scope-active edges are dead and the vanilla scoped redirect can re-arm."),
+			armWriteSite.address(), p[0], p[1], p[2], p[3], p[4],
+			g_armWriteHookBytes[0], g_armWriteHookBytes[1], g_armWriteHookBytes[2],
+			g_armWriteHookBytes[3], g_armWriteHookBytes[4]);
+		return false;
 	}
 
 }

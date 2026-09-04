@@ -437,6 +437,35 @@ namespace TrueScopes::ScopeIdent
 			}
 		}
 
+		// Is anything equipped right now -- the same first step ProbeImpl takes,
+		// without the mod chain or the 3D walk. The fallback caller asks every frame,
+		// so it needs a cheap way to find there is nothing to identify before paying
+		// for the tree walk. A fault is reported as such: it is not an answer.
+		enum class PeekResult
+		{
+			kNoWeapon,
+			kWeapon,
+			kFaulted  // read faulted; says nothing either way
+		};
+		PeekResult PeekEquippedWeapon(std::uintptr_t a_player) noexcept
+		{
+			std::uintptr_t inst[2] = { 0, 0 };
+			bool           have = false;
+			__try {
+				__try {
+					const auto base = REL::Module::get().base();
+					Fn<GetCurrentWeapon_t>(kGetCurrentWeapon)(a_player, inst,
+						*reinterpret_cast<std::uint32_t*>(base + kEquipIndexGlobal));
+					have = inst[0] != 0;
+				} __finally {
+					ReleaseInstanceData(inst[1]);
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return PeekResult::kFaulted;
+			}
+			return have ? PeekResult::kWeapon : PeekResult::kNoWeapon;
+		}
+
 		// attached object mods
 
 		// Every attached OMOD on the equipped weapon, with its model path. The
@@ -1113,6 +1142,37 @@ namespace TrueScopes::ScopeIdent
 			if (g_info.faulted) {
 				return;
 			}
+		}
+
+		// With the verdict hook absent the fill hook asks every frame, and a request
+		// outlives an unequip. Settle the one thing the caller cannot know -- whether
+		// there is a weapon at all -- before paying for the walk. Inside s_busy, so
+		// only one thread is ever in the engine call and the refcounted release.
+		bool clearedForNoWeapon = false;
+		switch (PeekEquippedWeapon(a_player)) {
+		case PeekResult::kFaulted:
+			// Says nothing. Put the request back rather than lose it.
+			g_request.store(true);
+			return;
+		case PeekResult::kNoWeapon:
+			{
+				const std::scoped_lock lock(g_lock);
+				if (g_info.probed) {
+					// There was a real answer a moment ago and it is stale now. Same
+					// reset InvalidateForLifecycle does, without re-arming -- there is
+					// nothing left to probe for.
+					const bool faulted = g_info.faulted;
+					g_info = Info{};
+					g_info.faulted = faulted;
+					clearedForNoWeapon = true;
+				}
+			}
+			if (clearedForNoWeapon) {
+				logger::info("SCOPE IDENT: no weapon equipped"sv);
+			}
+			return;
+		case PeekResult::kWeapon:
+			break;
 		}
 
 		Info info;

@@ -33,4 +33,10 @@ namespace TrueScopes::Hooks
 
 	// Is the plugin-owned widget presence currently showing the nodes.
 	bool WidgetPresenceShown();
+
+	// Re-reads the arm-write call site and compares it to what Install() left there.
+	// Call once every plugin has loaded: one that patches the same site with the old
+	// f4se_common Write5Call overwrites us blind, and nothing else would ever say so.
+	// Logs the mismatch. True if intact, or if Install() never ran.
+	bool VerifyArmWriteHookIntact();
 }

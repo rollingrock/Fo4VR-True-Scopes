@@ -33,6 +33,47 @@ namespace
 		spdlog::set_pattern("[%Y-%m-%d %T.%e][%-16s:%-4#][%L]: %v"s);
 	}
 
+	// Set when Hooks::Install() succeeded. The conflict scan below still runs when it
+	// did not - a failed install is exactly when the user most needs a mod named.
+	bool g_hooksInstalled = false;
+
+	// Other scope mods, by module name. Runs once every plugin has loaded, so a mod
+	// that patched a site out from under us is already present to be found.
+	void ReportConflictingMods()
+	{
+		// True Scopes replaces Better Scopes - both patch the same scope pipeline
+		// and cannot coexist. The shipped file is FO4VR_better_scopes.dll; the name
+		// checked here until now was BetterScopesVR.dll, which never matched anything.
+		if (::GetModuleHandleW(L"FO4VR_better_scopes.dll")) {
+			logger::critical(
+				"FO4VR_better_scopes.dll is loaded - True Scopes REPLACES Better Scopes and they "
+				"cannot coexist. Disable one of them. Expect scope hooks to have declined."sv);
+		}
+		// Nexus 102526, the companion to PureDark's upscaler. It patches the same
+		// arm-site call we do, with the old f4se_common Write5Call, and loads after
+		// us - so its write lands on top of ours and chains to the original setter.
+		const bool upscalerScopeFix = ::GetModuleHandleW(L"UpscalerScopeFix.dll") != nullptr;
+		if (upscalerScopeFix) {
+			logger::critical(
+				"UpscalerScopeFix.dll is loaded - it patches the same scope-arm call site as True "
+				"Scopes and does not check what it overwrites. If the line below says the hook was "
+				"overwritten, this is why. Remove it; True Scopes never arms the vanilla redirect "
+				"it exists to guard against."sv);
+		}
+		// The January scope prototype, superseded by this plugin. Never released, so
+		// this only ever fires on a dev rig - but it hooks scopes and is cheap to name.
+		if (::GetModuleHandleW(L"ScopeFix.dll")) {
+			logger::critical(
+				"ScopeFix.dll is loaded - the January scope prototype, superseded by this plugin. "
+				"Disable it."sv);
+		}
+		if (!TrueScopes::Hooks::VerifyArmWriteHookIntact() && !upscalerScopeFix) {
+			logger::critical(
+				"the scope-arm hook was overwritten by a plugin I cannot name - check "
+				"Data/F4SE/Plugins for anything else that touches scopes or upscaling."sv);
+		}
+	}
+
 	void MessageHandler(F4SE::MessagingInterface::Message* a_msg)
 	{
 		if (!a_msg) {
@@ -42,8 +83,9 @@ namespace
 		// kGameDataReady: F4SEVR never dispatches the latter (field-observed
 		// message sequence is 0, 1, 9). Idempotent - the message can repeat
 		// across save loads.
-		if (a_msg->type == F4SE::MessagingInterface::kGameLoaded ||
-			a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
+		if (g_hooksInstalled &&
+			(a_msg->type == F4SE::MessagingInterface::kGameLoaded ||
+				a_msg->type == F4SE::MessagingInterface::kGameDataReady)) {
 			TrueScopes::Hooks::RegisterEquipSink();
 			TrueScopes::Hooks::OnGameLoaded();
 		}
@@ -55,13 +97,9 @@ namespace
 		// after kPostLoad for exactly this second-phase handshake and does not depend on
 		// load order. A no-op if devbench is absent.
 		if (a_msg->type == F4SE::MessagingInterface::kPostPostLoad) {
-			// True Scopes replaces Better Scopes - both patch the same scope pipeline
-			// and cannot coexist. The byte-verify hooks already fail soft on the
-			// conflict; this names the cause.
-			if (::GetModuleHandleW(L"BetterScopesVR.dll")) {
-				logger::critical(
-					"BetterScopesVR.dll is loaded - True Scopes REPLACES Better Scopes and they "
-					"cannot coexist. Disable one of them. Expect scope hooks to have declined."sv);
+			ReportConflictingMods();
+			if (!g_hooksInstalled) {
+				return;
 			}
 			DevBenchClient::Register();
 		}
@@ -119,12 +157,14 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	// write_thunk_call note in PCH.h.
 	F4SE::AllocTrampoline(256);
 
-	if (!TrueScopes::Hooks::Install()) {
+	g_hooksInstalled = TrueScopes::Hooks::Install();
+	// Listen either way. With the hooks in we do the work; without them the only
+	// thing left worth doing is naming whichever mod took the call site.
+	F4SE::GetMessagingInterface()->RegisterListener(MessageHandler);
+	if (!g_hooksInstalled) {
 		logger::critical("hook install failed — plugin inactive"sv);
 		return true;  // stay loaded so the log tells the story, but do nothing
 	}
-
-	F4SE::GetMessagingInterface()->RegisterListener(MessageHandler);
 
 	if (!TrueScopes::ScopeRender::Init()) {
 		logger::error("ScopeRender init failed — lens will use the copy fill"sv);

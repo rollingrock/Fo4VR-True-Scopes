@@ -15,8 +15,16 @@ scopes finally work at arm's length), and bullet-hole decals render in the lens.
 - **Fallout 4 VR** (1.2.72 — the only VR binary; the plugin refuses anything else)
 - **F4SEVR**
 - ⚠️ **True Scopes REPLACES Better Scopes VR — they CANNOT coexist.** Both rework the
-  same scope pipeline. If `BetterScopesVR.dll` is present the log names the conflict
-  and True Scopes' hooks decline. Disable one.
+  same scope pipeline. If `FO4VR_better_scopes.dll` is present the log names the
+  conflict. Disable one.
+- ⚠️ **Remove `UpscalerScopeFix.dll`** (Nexus 102526, the companion to PureDark's
+  upscaler) if you run it. It patches the same scope-arm call site this plugin does,
+  with a writer that checks nothing first, and it loads after us — so it silently
+  replaces our hook with one that chains to the original setter, and the vanilla
+  scoped redirect it exists to guard against can arm again. True Scopes never arms
+  that redirect, so the crash it protects you from should not be reachable without
+  it. The log names this at startup, and separately says so if it finds the hook
+  overwritten by something it cannot name.
 
 ## Install (MO2)
 
