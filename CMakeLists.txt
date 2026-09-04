@@ -255,17 +255,21 @@ endif()
 
 if(DEFINED MO2_INSTALL_PATH AND NOT "${MO2_INSTALL_PATH}" STREQUAL "")
 	# deploy the shipped assets too, so the rig never drifts from the repo
-	# (MO2_INSTALL_PATH points at the mod's F4SE/Plugins dir)
-	add_custom_command(
-		TARGET ${PROJECT_NAME}
-		POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${MO2_INSTALL_PATH}"
-		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${MO2_INSTALL_PATH}"
-		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${MO2_INSTALL_PATH}"
-		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/F4SE/Plugins/TrueScopesVR.toml" "${MO2_INSTALL_PATH}"
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${MO2_INSTALL_PATH}/../../Interface"
-		COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/world_ScopeMenu.swf" "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/ScopeMenu.swf" "${MO2_INSTALL_PATH}/../../Interface/"
-	)
+	# (each entry points at a mod's F4SE/Plugins dir). It is a LIST: I run more than
+	# one MO2 instance, and a build that reaches only one of them looks like a
+	# successful deploy while the instance I actually launch stays a version behind.
+	foreach(_mo2_path IN LISTS MO2_INSTALL_PATH)
+		add_custom_command(
+			TARGET ${PROJECT_NAME}
+			POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${_mo2_path}"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${_mo2_path}"
+			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${_mo2_path}"
+			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/F4SE/Plugins/TrueScopesVR.toml" "${_mo2_path}"
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${_mo2_path}/../../Interface"
+			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/world_ScopeMenu.swf" "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/ScopeMenu.swf" "${_mo2_path}/../../Interface/"
+		)
+	endforeach()
 endif()
 
 # ---- Create Package ----
