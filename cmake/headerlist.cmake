@@ -12,4 +12,5 @@ set(headers ${headers}
 	src/TrueScopes/LensComposite.h
 	src/TrueScopes/ScopeIdent.h
 	src/TrueScopes/OneEuro.h
+	src/TrueScopes/WidgetLifecycle.h
 )

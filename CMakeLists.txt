@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.3.24)
+set(VERSION 0.3.25)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
+option(TRUESCOPES_BUILD_TESTS "Build offline True Scopes regression tests." FALSE)
 
 # ---- Cache build vars ----
 macro(set_from_environment VARIABLE)
@@ -61,6 +62,20 @@ project(
 	VERSION ${VERSION}
 	LANGUAGES CXX
 )
+
+if(TRUESCOPES_BUILD_TESTS)
+	enable_testing()
+	add_executable(
+		widget_lifecycle_tests
+		tests/WidgetLifecycleTests.cpp
+	)
+	target_compile_features(widget_lifecycle_tests PRIVATE cxx_std_23)
+	target_include_directories(widget_lifecycle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+	if(MSVC)
+		target_compile_options(widget_lifecycle_tests PRIVATE /W4 /WX /permissive- /utf-8)
+	endif()
+	add_test(NAME widget_lifecycle COMMAND widget_lifecycle_tests)
+endif()
 
 configure_file(
 	${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.h.in

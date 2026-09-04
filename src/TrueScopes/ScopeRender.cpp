@@ -9,6 +9,7 @@
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/OneEuro.h"
+#include "TrueScopes/WidgetLifecycle.h"
 
 // Mono world render from PrimaryWeaponScopeCamera into RT 0x61 -> 0x62,
 // mirroring the engine's own deferred scene renderers (FUN_140c87320 /
@@ -738,6 +739,7 @@ namespace TrueScopes::ScopeRender
 
 		struct WidgetState
 		{
+			std::uintptr_t node = 0;  // exact ScopeParent that received wrote*
 			float baseTx = 0.0f, baseTy = 0.0f, baseTz = 0.0f, baseScale = 1.0f;
 			float wroteTx = 0.0f, wroteTy = 0.0f, wroteTz = 0.0f, wroteScale = 0.0f;
 			float lastScale = 0.0f, lastOx = 0.0f, lastOy = 0.0f, lastOz = 0.0f;
@@ -750,9 +752,23 @@ namespace TrueScopes::ScopeRender
 			float lastRot[9] = {};      // last written true local rotation
 		};
 		WidgetState g_widget;
-		// Cross-thread mirror of g_widget.applied (read by the game-thread
-		// presence gate; written on the render thread wherever `applied` changes).
-		std::atomic_bool g_fitAppliedAtomic{ false };
+		WidgetLifecycle::EpochGate g_widgetLifecycle;
+		// Render-thread-only generation adopted into g_widget. The cross-thread
+		// presentability decision lives in g_widgetLifecycle.
+		WidgetLifecycle::EpochGate::Epoch g_widgetConsumedEpoch = 0;
+
+		struct PresenceFitState
+		{
+			bool          done = false;
+			bool          track = false;
+			std::uint32_t tries = 0;
+			std::uint32_t cooldown = 0;
+		};
+		PresenceFitState g_presenceFit;
+
+		// Per-equip/load lens prime. Invalidated from the game thread and consumed
+		// by the render thread, so it cannot be a function-local latch.
+		std::atomic_bool g_lensPrimeNeeded{ true };
 
 		// 3x3 helpers, row-major true rotations.
 		void Mul3(const float (&a_a)[9], const float (&a_b)[9], float (&a_out)[9])
@@ -1439,18 +1455,81 @@ namespace TrueScopes::ScopeRender
 			kFallbackOffsets   // TOML/global offsets only — auto-place declined or off
 		};
 
+		[[nodiscard]] bool WidgetNodeContainsLastWrite(std::uintptr_t a_sp)
+		{
+			if (!a_sp || !g_widget.applied || g_widget.node != a_sp) {
+				return false;
+			}
+			const auto* t = reinterpret_cast<const float*>(a_sp + 0x60);
+			const auto  s = *reinterpret_cast<const float*>(a_sp + 0x6c);
+			if (t[0] != g_widget.wroteTx || t[1] != g_widget.wroteTy ||
+				t[2] != g_widget.wroteTz || s != g_widget.wroteScale) {
+				return false;
+			}
+			return true;
+		}
+
+		// Adopt a game-thread lifecycle invalidation on the render thread. If the
+		// exact old node still contains our write (ordinary weapon swap), put its
+		// engine baseline back before clearing state. If the node changed or the
+		// engine already rewrote it (save-load / 3D rebuild), its current transform
+		// is the new pristine baseline and must not be overwritten with stale data.
+		[[nodiscard]] bool ConsumeWidgetLifecycle(std::uintptr_t a_sp)
+		{
+			const auto epoch = g_widgetLifecycle.Current();
+			if (epoch == g_widgetConsumedEpoch) {
+				return false;
+			}
+
+			bool restored = false;
+			if (WidgetNodeContainsLastWrite(a_sp) && g_widget.captured) {
+				if (g_widget.rotCaptured) {
+					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
+						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
+				}
+				WriteScopeParent(a_sp, g_widget.baseTx, g_widget.baseTy,
+					g_widget.baseTz, g_widget.baseScale);
+				restored = true;
+			}
+
+			g_widget = WidgetState{};
+			g_presenceFit = PresenceFitState{};
+			g_widgetConsumedEpoch = epoch;
+			g_widgetLifecycle.Withhold();
+			g_placeDirty.store(true, std::memory_order_relaxed);
+			// The lifecycle caller normally requested this already. Re-request here
+			// as a fail-safe for an inferred reset and to order the probe after any
+			// baseline restoration done above.
+			ScopeIdent::Request();
+			logger::info(FMT_STRING("WIDGET LIFECYCLE: adopted generation {} (node=0x{:X}, old baseline {})"),
+				epoch, a_sp, restored ? "restored"sv : "engine/rebuilt"sv);
+			return true;
+		}
+
 		FitOutcome ApplyWidgetFit(std::uintptr_t a_player, bool a_censusPlacementOnly = false)
 		{
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
 			if (!sp) {
 				return FitOutcome::kNotWritten;
 			}
+			ConsumeWidgetLifecycle(sp);
+			if (ScopeIdent::ProbePending()) {
+				return FitOutcome::kNotWritten;
+			}
+			const auto fitEpoch = g_widgetLifecycle.Current();
 
 			auto*      t = reinterpret_cast<float*>(sp + 0x60);
 			auto*      s = reinterpret_cast<float*>(sp + 0x6c);
-			const bool stillOurs = g_widget.applied &&
-			                       t[0] == g_widget.wroteTx && t[1] == g_widget.wroteTy &&
-			                       t[2] == g_widget.wroteTz && *s == g_widget.wroteScale;
+			const bool stillOurs = WidgetNodeContainsLastWrite(sp);
+			if (g_widget.applied && !stillOurs) {
+				// Fallback for a 3D rebuild/equip path that emitted no lifecycle event.
+				// Invalidate first and let the next frame adopt the engine-owned node;
+				// fitting it now would use the previous optic's identity.
+				ScopeIdent::InvalidateForLifecycle();
+				const auto epoch = InvalidateWidgetLifecycle();
+				logger::info(FMT_STRING("WIDGET LIFECYCLE: external ScopeParent rewrite -> generation {}"), epoch);
+				return FitOutcome::kNotWritten;
+			}
 
 			// Re-baseline whenever the node holds something we did not write — that is the
 			// engine having rewritten it at equip, and only then is the value pristine.
@@ -1462,14 +1541,11 @@ namespace TrueScopes::ScopeRender
 				g_widget.baseTy = t[1];
 				g_widget.baseTz = t[2];
 				g_widget.baseScale = *s;
+				g_widget.node = sp;
 				g_widget.captured = true;
 				g_widget.applied = false;
 				g_widget.rotCaptured = false;  // engine rewrite = pristine rotation too
-				g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
-				// An engine rewrite of ScopeParent is the equip signal — re-identify
-				// the scope so a weapon swap can never keep the old weapon's
-				// aperture/placement.
-				ScopeIdent::Request();
+				g_widgetLifecycle.Withhold();
 				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
 					g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 				// Sanity tripwire: the engine parks ScopeParent within a few units of the
@@ -1497,7 +1573,7 @@ namespace TrueScopes::ScopeRender
 					}
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
 					g_widget.applied = false;
-					g_fitAppliedAtomic.store(false, std::memory_order_relaxed);
+					g_widgetLifecycle.Withhold();
 					logger::info("WIDGET FIT off — restored engine transform"sv);
 				}
 				return FitOutcome::kNotWritten;
@@ -1621,6 +1697,7 @@ namespace TrueScopes::ScopeRender
 			// the subtree, and the engine itself only does this at equip.
 			if (g_widget.applied && g_widget.lastScale == scale && g_widget.lastOx == ox &&
 				g_widget.lastOy == oy && g_widget.lastOz == oz && !rotChanged) {
+				g_widgetLifecycle.MarkFitted(fitEpoch);
 				return outcome;
 			}
 
@@ -1635,12 +1712,13 @@ namespace TrueScopes::ScopeRender
 			g_widget.wroteTy = ny;
 			g_widget.wroteTz = nz;
 			g_widget.wroteScale = scale;
+			g_widget.node = sp;
 			g_widget.lastScale = scale;
 			g_widget.lastOx = ox;
 			g_widget.lastOy = oy;
 			g_widget.lastOz = oz;
 			g_widget.applied = true;
-			g_fitAppliedAtomic.store(true, std::memory_order_relaxed);
+			g_widgetLifecycle.MarkFitted(fitEpoch);
 			// The census path recomputes per frame, so the write stays per-frame
 			// (that is the live tracking) but the log only speaks on a rebaseline,
 			// a scale change, or - for ordinary offset motion - at most once a
@@ -2882,13 +2960,20 @@ namespace TrueScopes::ScopeRender
 		g_camSmoothResetReq.store(true);
 	}
 
+	std::uint64_t InvalidateWidgetLifecycle() noexcept
+	{
+		const auto epoch = g_widgetLifecycle.Invalidate();
+		g_lensPrimeNeeded.store(true, std::memory_order_relaxed);
+		g_placeDirty.store(true, std::memory_order_relaxed);
+		g_camSmoothResetReq.store(true, std::memory_order_relaxed);
+		return epoch;
+	}
+
 	// Lens priming. The placement chain converges shortly after load with no
 	// aim, but the lens picture only exists after the first pose-gate
 	// activation, so the correctly-placed disc would sit black until then.
 	// This flag asks the fill hook for one presence-time fill; set on every
 	// equip rebaseline so a weapon swap re-primes with the new scope's view.
-	std::atomic_bool g_lensPrimeNeeded{ true };
-
 	bool LensPrimeNeeded() noexcept
 	{
 		return g_lensPrimeNeeded.load(std::memory_order_relaxed);
@@ -2906,7 +2991,7 @@ namespace TrueScopes::ScopeRender
 		// runs with widgetFitEnabled=false and wants the vanilla look). Gating
 		// presence on this keeps the raw oversized vanilla band from ever being
 		// visible on a first-drawn weapon.
-		return !*Settings::widgetFitEnabled || g_fitAppliedAtomic.load(std::memory_order_relaxed);
+		return !*Settings::widgetFitEnabled || g_widgetLifecycle.Presentable();
 	}
 
 	void PresenceFit()
@@ -2934,38 +3019,28 @@ namespace TrueScopes::ScopeRender
 		}
 		constexpr std::uint32_t kRetryFrames = 30;  // ~1/3 s at 90 fps
 		constexpr std::uint32_t kMaxTries = 8;      // ~2.7 s worst case, then latch
-		static bool          s_done = false;
-		static bool          s_track = false;  // census landed -> track per frame
-		static std::uint32_t s_tries = 0;
-		static std::uint32_t s_cooldown = 0;
+		auto&                state = g_presenceFit;
 		bool                 warnExhausted = false;
 		bool                 logRetry = false;
 		int                  outcomeForLog = 0;
 		__try {
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(player + kScopeParentInPlayer);
 			if (!sp) {
-				s_done = false;
-				s_tries = 0;
-				s_cooldown = 0;
+				state = PresenceFitState{};
 				return;
 			}
-			const auto* t = reinterpret_cast<const float*>(sp + 0x60);
-			const float sc = *reinterpret_cast<const float*>(sp + 0x6c);
-			const bool  stillOurs = g_widget.applied &&
-			                       t[0] == g_widget.wroteTx && t[1] == g_widget.wroteTy &&
-			                       t[2] == g_widget.wroteTz && sc == g_widget.wroteScale;
-			if (!stillOurs) {
-				// the engine rewrote ScopeParent = an equip happened
-				s_done = false;
-				s_track = false;
-				s_tries = 0;
-				s_cooldown = 0;
-				g_lensPrimeNeeded.store(true, std::memory_order_relaxed);
-				ScopeIdent::Request();
+			ConsumeWidgetLifecycle(sp);
+			if (g_widget.applied && !WidgetNodeContainsLastWrite(sp)) {
+				// Same fallback as the live-fit path. The explicit unequip/load reset
+				// should normally win; this covers an engine-only rebuild.
+				ScopeIdent::InvalidateForLifecycle();
+				const auto epoch = InvalidateWidgetLifecycle();
+				logger::info(FMT_STRING("WIDGET LIFECYCLE: PresenceFit saw external rewrite -> generation {}"), epoch);
+				return;
 			}
 			// The probe itself runs on the game thread (verdict site); this just
 			// waits for it through ProbePending below.
-			if (s_done || ScopeIdent::ProbePending()) {
+			if (state.done || ScopeIdent::ProbePending()) {
 				// The disc hangs off PrimaryUIAttachNode, not the weapon, so its
 				// correct local offset changes every frame the gun moves — a
 				// placement applied once would leave the frozen disc trailing
@@ -2973,13 +3048,13 @@ namespace TrueScopes::ScopeRender
 				// tracking it per frame: the census target is pure weapon
 				// geometry (eye-independent), so it is hip-safe by construction,
 				// and the write early-out keeps unchanged frames free.
-				if (s_done && s_track) {
+				if (state.done && state.track) {
 					ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
 				}
 				return;
 			}
-			if (s_cooldown > 0) {
-				--s_cooldown;
+			if (state.cooldown > 0) {
+				--state.cooldown;
 				return;
 			}
 			const auto outcome = ApplyWidgetFit(player, /*a_censusPlacementOnly=*/true);
@@ -2991,16 +3066,16 @@ namespace TrueScopes::ScopeRender
 			                        *Settings::widgetFitEnabled &&
 			                        *Settings::widgetAutoPlace;
 			if (outcome == FitOutcome::kPlacedCensus || !wantCensus) {
-				s_done = true;
-				s_track = (outcome == FitOutcome::kPlacedCensus);
-				s_tries = 0;
+				state.done = true;
+				state.track = (outcome == FitOutcome::kPlacedCensus);
+				state.tries = 0;
 				return;
 			}
-			if (++s_tries >= kMaxTries) {
+			if (++state.tries >= kMaxTries) {
 				warnExhausted = true;
-				s_done = true;
-				s_track = false;
-				s_tries = 0;
+				state.done = true;
+				state.track = false;
+				state.tries = 0;
 				return;
 			}
 			// The face resolved but placement declined (stale transforms): the
@@ -3009,7 +3084,7 @@ namespace TrueScopes::ScopeRender
 			if (!ScopeIdent::CensusFaceResolved()) {
 				ScopeIdent::Request();
 			}
-			s_cooldown = kRetryFrames;
+			state.cooldown = kRetryFrames;
 			logRetry = true;
 			outcomeForLog = static_cast<int>(outcome);
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3018,7 +3093,7 @@ namespace TrueScopes::ScopeRender
 		if (logRetry) {
 			logger::info(FMT_STRING("PresenceFit: census placement not landed yet "
 			                        "(outcome={}), retry {}/{} in {} frames"),
-				outcomeForLog, s_tries, kMaxTries, kRetryFrames);
+				outcomeForLog, state.tries, kMaxTries, kRetryFrames);
 		}
 		if (warnExhausted) {
 			logger::warn(FMT_STRING("PresenceFit: census placement never landed after {} tries - "

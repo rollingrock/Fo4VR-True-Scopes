@@ -41,8 +41,15 @@ namespace TrueScopes::ScopeRender
 	void DimFrozenLens(float a_factor);
 
 	// Plugin-owned widget presence support: may presence show the widget
-	// (fit applied, or fit disabled by choice)?
+	// (fit applied for the current weapon/load generation, or fit disabled by
+	// choice)?
 	bool WidgetPresentable();
+
+	// Invalidate every fit/presence result derived from the current weapon 3D.
+	// Safe from the game thread: the render thread consumes the new generation,
+	// restoring our old baseline only when the exact same node still contains our
+	// last write. Returns the new lifecycle generation for diagnostics.
+	std::uint64_t InvalidateWidgetLifecycle() noexcept;
 
 	// Run ident probe + widget fit outside a live fill (render thread; SEH'd).
 	void PresenceFit();
@@ -53,11 +60,10 @@ namespace TrueScopes::ScopeRender
 	bool LensPrimeNeeded() noexcept;
 	void LensPrimeDone() noexcept;
 
-	// (There is deliberately no reset-fit call on scope-in: the engine rewrites
-	// ScopeParent at equip, not scope-in, so an edge-triggered reset re-captures our
-	// own output as the new baseline and compounds the offset every scope cycle. The
-	// fit instead detects an engine rewrite by comparing the node against the values
-	// it last wrote, which needs no external event and cannot be hooked to the wrong one.)
+	// Scope-in itself is deliberately not a lifecycle reset: repeated aim edges use
+	// the same weapon 3D. Weapon unequip and save-load are explicit resets; an exact
+	// node/last-write comparison remains as a fallback for engine rebuilds that emit
+	// neither signal.
 
 
 	// Thread id that currently holds the renderer+4 scoped bracket (0 = none).

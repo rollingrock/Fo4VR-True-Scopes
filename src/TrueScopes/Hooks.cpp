@@ -106,7 +106,12 @@ namespace TrueScopes::Hooks
 
 		void SetWidgetNodesHidden(std::uintptr_t a_player, bool a_hidden)
 		{
-			const bool keepHousingHidden = !a_hidden && *Settings::hideWidgetHousing;
+			// Internal fail-safe: no caller may expose ScopeParent or the active
+			// screenFade while the current lifecycle generation is unfitted. This
+			// also closes the arm-edge path, which can run between invalidation and
+			// the next render-thread PresenceFit.
+			const bool hidden = a_hidden || !ScopeRender::WidgetPresentable();
+			const bool keepHousingHidden = !hidden && *Settings::hideWidgetHousing;
 			__try {
 				const auto setBit = [](std::uintptr_t a_node, bool a_hide) {
 					if (a_node) {
@@ -119,7 +124,7 @@ namespace TrueScopes::Hooks
 					}
 				};
 				if (a_player) {
-					setBit(*reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0), a_hidden);
+					setBit(*reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0), hidden);
 				}
 				const auto model = *reinterpret_cast<std::uintptr_t*>(
 					REL::Module::get().base() + Addr::kWidgetModelSingleton);
@@ -129,13 +134,45 @@ namespace TrueScopes::Hooks
 					// earlier in the same thunk and the show would run last. The
 					// fade (+0x68) keeps its flow either way.
 					if (!keepHousingHidden) {
-						setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), a_hidden);
+						setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), hidden);
 					}
-					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x68), a_hidden);
+					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x68), hidden);
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
-			g_presenceShown.store(!a_hidden, std::memory_order_relaxed);
+			g_presenceShown.store(!hidden, std::memory_order_relaxed);
+		}
+
+		// Bounded-fit failure fallback: expose the vanilla render + housing while
+		// keeping the large screenFade culled. This is deliberately separate from
+		// SetWidgetNodesHidden(false), whose lifecycle guard must never be bypassed
+		// for the plugin-owned replacement.
+		void ShowWidgetFailOpen(std::uintptr_t a_player)
+		{
+			__try {
+				const auto setBit = [](std::uintptr_t a_node, bool a_hide) {
+					if (a_node) {
+						auto& flags = *reinterpret_cast<std::uint8_t*>(a_node + 0x108);
+						if (a_hide) {
+							flags |= 1;
+						} else {
+							flags &= static_cast<std::uint8_t>(~1u);
+						}
+					}
+				};
+				if (a_player) {
+					setBit(*reinterpret_cast<std::uintptr_t*>(a_player + 0x7d0), false);
+				}
+				const auto model = *reinterpret_cast<std::uintptr_t*>(
+					REL::Module::get().base() + Addr::kWidgetModelSingleton);
+				if (model) {
+					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x50), false);
+					setBit(*reinterpret_cast<std::uintptr_t*>(model + 0x68), true);
+				}
+				g_presenceShown.store(true, std::memory_order_relaxed);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				g_presenceShown.store(false, std::memory_order_relaxed);
+			}
 		}
 
 		// housing suppression state, shared by the hide, the restore, and the
@@ -333,12 +370,14 @@ namespace TrueScopes::Hooks
 				if (g_scopeActive.exchange(false)) {
 					LensComposite::RestoreReticleQuad();
 				}
-				ScopeIdent::InvalidateNodes();
+				ScopeIdent::InvalidateForLifecycle();
+				const auto lifecycle = ScopeRender::InvalidateWidgetLifecycle();
 				SetWidgetNodesHidden(player, true);
 				// per-equip fail-open state starts over with the next weapon
 				g_notPresentableRun = 0;
 				g_failOpenLogged = false;
-				logger::info("weapon unequipped - teardown latch armed"sv);
+				logger::info(FMT_STRING("weapon unequipped - teardown latch armed; widget lifecycle generation {}"),
+					lifecycle);
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
@@ -437,17 +476,21 @@ namespace TrueScopes::Hooks
 						logger::info("widget housing scale restored (hideWidgetHousing off)"sv);
 					}
 				}
-				if (*Settings::poseWidgetAlways) {
-					// only once the widget is presentable — the fit has been
-					// applied for the current baseline (or the user disabled the
-					// fit on purpose). Without this gate a first-drawn weapon
-					// shows the giant un-fit band until the first aim;
-					// PresenceFit() in the fill hook makes the fit land within a
-					// few frames of the draw.
-					if (ScopeRender::WidgetPresentable()) {
-						SetWidgetNodesHidden(player, false);
+				// Never expose a raw generation, including the arm edge when
+				// poseWidgetAlways is off. Once the fit lands, explicitly show while
+				// armed because the vanilla edge may already have passed while we
+				// were withholding it.
+				if (!presentable) {
+					const bool failOpen = v &&
+						(!*Settings::hideWidgetHousing || g_notPresentableRun >= 180);
+					if (failOpen) {
+						ShowWidgetFailOpen(player);
+					} else {
+						SetWidgetNodesHidden(player, true);
 					}
-				} else if (g_presenceShown.load(std::memory_order_relaxed) && !v) {
+				} else if (*Settings::poseWidgetAlways || v) {
+					SetWidgetNodesHidden(player, false);
+				} else if (g_presenceShown.load(std::memory_order_relaxed)) {
 					// live-toggled off while pose-inactive: put vanilla's
 					// hidden state back once instead of leaving orphan nodes.
 					SetWidgetNodesHidden(player, true);
@@ -469,18 +512,25 @@ namespace TrueScopes::Hooks
 			static void thunk(void* a_model, char a_active)
 			{
 				func(a_model, a_active);
+				const bool presentable = ScopeRender::WidgetPresentable();
+				if (a_model && a_active && !presentable) {
+					// The engine show helper exposes +0x68 on the arm edge. That
+					// large screenFade is the likely black-disc surface, so keep it
+					// culled until this generation's fit is complete.
+					RecullSlot(reinterpret_cast<std::uintptr_t>(a_model), 0x68);
+				}
 				// presentable gate: while the fit has not landed (fail-open
 				// window) the vanilla housing is the only scope the player has -
 				// leave the engine's un-hide alone.
-				if (a_model && *Settings::hideWidgetHousing && ScopeRender::WidgetPresentable()) {
-					Recull(reinterpret_cast<std::uintptr_t>(a_model));
+				if (a_model && *Settings::hideWidgetHousing && presentable) {
+					RecullSlot(reinterpret_cast<std::uintptr_t>(a_model), 0x50);
 				}
 			}
-			static void Recull(std::uintptr_t a_model)
+			static void RecullSlot(std::uintptr_t a_model, std::uintptr_t a_slot)
 			{
 				__try {
-					if (const auto h = *reinterpret_cast<std::uintptr_t*>(a_model + 0x50)) {
-						*reinterpret_cast<std::uint8_t*>(h + 0x108) |= 1;
+					if (const auto node = *reinterpret_cast<std::uintptr_t*>(a_model + a_slot)) {
+						*reinterpret_cast<std::uint8_t*>(node + 0x108) |= 1;
 					}
 				} __except (EXCEPTION_EXECUTE_HANDLER) {
 				}
@@ -978,6 +1028,27 @@ namespace TrueScopes::Hooks
 		reinterpret_cast<Register_t>(
 			REL::Module::get().base() + Addr::kRegisterForEquipSink)(&g_equipSink);
 		logger::info("unequip event sink registered (teardown latch)"sv);
+	}
+
+	void OnGameLoaded()
+	{
+		// kGameLoaded repeats for save loads. Treat every occurrence as a hard
+		// player-3D boundary even when the singleton pointers happen to be reused.
+		// The next live verdict proves the replacement weapon 3D is complete and
+		// clears the teardown latch.
+		g_teardownLatch.store(true, std::memory_order_release);
+		g_gateRaw.store(false, std::memory_order_relaxed);
+		if (g_scopeActive.exchange(false)) {
+			LensComposite::RestoreReticleQuad();
+		}
+		ScopeIdent::InvalidateForLifecycle();
+		const auto lifecycle = ScopeRender::InvalidateWidgetLifecycle();
+		const auto player = *reinterpret_cast<std::uintptr_t*>(
+			REL::Module::get().base() + Addr::kPlayerGlobal);
+		SetWidgetNodesHidden(player, true);
+		g_notPresentableRun = 0;
+		g_failOpenLogged = false;
+		logger::info(FMT_STRING("game loaded - scope stood down; widget lifecycle generation {}"), lifecycle);
 	}
 
 	std::uint64_t FrameCount()

@@ -214,6 +214,11 @@ namespace TrueScopes::ScopeIdent
 	// re-checks. The next probe repopulates everything.
 	void InvalidateNodes();
 
+	// Clear the entire resolved answer and request a fresh probe. Weapon changes
+	// and save-load rebuilds must not retain the previous optic's aperture,
+	// placement, FOV or scene pointers while the replacement 3D is settling.
+	void InvalidateForLifecycle();
+
 	// The aperture to fit the widget with, in mesh units. Falls back to the
 	// widgetApertureRadius setting when the equipped scope is not in the table.
 	float ApertureRadius();

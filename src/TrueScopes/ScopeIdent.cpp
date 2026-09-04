@@ -1156,6 +1156,22 @@ namespace TrueScopes::ScopeIdent
 		}
 	}
 
+	void InvalidateForLifecycle()
+	{
+		{
+			const std::scoped_lock lock(g_lock);
+			// A guarded weapon-3D walk fault is intentionally session-latched;
+			// lifecycle churn must not repeatedly retry the same unsafe walk.
+			const bool faulted = g_info.faulted;
+			g_info = Info{};
+			g_info.faulted = faulted;
+		}
+		// Publish the empty answer before requesting its replacement. Accessors
+		// fall back to global settings until the game-thread verdict site serves
+		// this request; the widget lifecycle gate keeps that interim state hidden.
+		g_request.store(true, std::memory_order_release);
+	}
+
 	float ApertureRadius()
 	{
 		const std::scoped_lock lock(g_lock);

@@ -16,6 +16,10 @@ namespace TrueScopes::Hooks
 	// at kGameDataReady - the event source singleton exists by then.
 	void RegisterEquipSink();
 
+	// Save-load/new-game lifecycle boundary. Stands down the active scope and
+	// invalidates every widget/ident result before rebuilt player 3D can draw.
+	void OnGameLoaded();
+
 
 	// Count of per-frame fill-hook invocations, i.e. the game's frame count.
 	// Advances whether or not the scope is up: ScopeRender's own `renders` counter
