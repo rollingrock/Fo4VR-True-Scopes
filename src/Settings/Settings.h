@@ -121,6 +121,20 @@ namespace Settings
 	// you can see. Any positive value overrides the derivation; the derived
 	// figure is logged every heartbeat either way.
 	MAKE_SETTING(fSetting, "TrueScopesVR", scopeFovDegrees, 0.0);
+	// Taming the derived magnification. scale multiplies every scope's fovMult
+	// (0.5 = a 10x presents as 5x); max caps it (4 = nothing stronger than 4x,
+	// weaker scopes untouched). 1.0 / 0 = the weapon's own figure. Neither
+	// changes the porthole (the disc's apparent size), only what is inside it;
+	// widgetApertureScale is the lever for the porthole.
+	MAKE_SETTING(fSetting, "TrueScopesVR", magnificationScale, 1.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", magnificationMax, 0.0);
+	// After SetCameraFOV, rewrite the scope camera's four lateral frustum floats
+	// to exactly +-(R/d)/M. The engine builds the horizontal tangent with the
+	// frame buffer's aspect, which on the square lens target draws a world circle
+	// about 6 percent wider than tall and takes the horizontal magnification off
+	// the weapon's figure. false = keep the engine's frustum (vertical still
+	// exact via the 10/9 pre-division in the derived FOV). Derived path only.
+	MAKE_SETTING(bSetting, "TrueScopesVR", scopeFrustumExact, true);
 	// Frustum near/far planes for the scope camera. SetCameraFOV takes them as
 	// (far, near) and the code passes them in that order; swapping them reverses
 	// the projection (farthest-wins depth), and near==far produces a NaN
@@ -700,6 +714,9 @@ namespace Settings
 			*lensMode = 2;
 		}
 		LOAD(scopeFovDegrees);
+		LOAD(magnificationScale);
+		LOAD(magnificationMax);
+		LOAD(scopeFrustumExact);
 		LOAD(scopeNearClip);
 		LOAD(scopeFarClip);
 		// near==far builds a NaN projection = eternally black lens (documented

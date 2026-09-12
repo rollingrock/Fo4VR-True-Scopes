@@ -299,6 +299,7 @@ namespace TrueScopes::ScopeRender
 		float g_diagFrustumCombPre[7] = {};
 		std::int32_t g_diagFrustumAliased = -1;  // 1 = [cam+0x200] == [cam+0x1a0] (mirror is a no-op), 0 = distinct, -1 = unknown
 		std::int32_t g_diagCullFix = -1;         // -1 not attempted, 0 skipped (setting off / null ptr), 1 applied
+		std::int32_t g_diagFrustumExact = -1;    // 1 = lateral frustum rewritten to +-t, 0 = engine values kept
 		float g_fogRGB[3] = { 0.05f, 0.05f, 0.05f };  // last-good fog color (ambient base); dim gray until first read
 		std::uint64_t g_diagFogNulls = 0;             // frames where the fog singleton was null (stutter forensics)
 
@@ -921,6 +922,8 @@ namespace TrueScopes::ScopeRender
 		float g_lastFovDeg = 0.0f;     // the FOV actually handed to SetCameraFOV
 		float g_derivedEyeDist = 0.0f;
 		float g_derivedDiscR = 0.0f;
+		float g_derivedTan = 0.0f;     // (R/d)/M: the half-frustum tangent the disc should carry
+		float g_derivedMag = 0.0f;     // M after magnificationScale/Max
 
 		// Returns 0 when the geometry is not available or not sane, so the caller
 		// keeps the configured value rather than pointing the camera at a guess.
@@ -964,8 +967,24 @@ namespace TrueScopes::ScopeRender
 			if (!(m > 0.01f)) {
 				return 0.0f;
 			}
+			// The presented magnification: the weapon's own, scaled and capped by
+			// the two taming knobs (both no-ops at their defaults).
+			float mEff = m * (std::max)(0.05f, static_cast<float>(*Settings::magnificationScale));
+			const auto cap = static_cast<float>(*Settings::magnificationMax);
+			if (cap > 0.01f && mEff > cap) {
+				mEff = cap;
+			}
 
-			const float fovDeg = 2.0f * std::atan((R / d) / m) * (180.0f / 3.14159265358979f);
+			// SetCameraFOV (0x142804a90) does not use the angle as a field of view:
+			// its symmetric branch builds the frustum as tan(fov/2) * 10/9 vertically
+			// and tan(fov/2) * 10/9 * (W0/H0) horizontally, W0/H0 the frame buffer's
+			// aspect - fine for the double-wide frame it was written for, 10 percent
+			// wide for a square lens target. Pre-divide the tangent so the vertical
+			// half-angle lands on t exactly; the horizontal is squared up after the
+			// call (scopeFrustumExact) because no single angle can undo an aspect
+			// applied to a square.
+			const float t = (R / d) / mEff;
+			const float fovDeg = 2.0f * std::atan(0.9f * t) * (180.0f / 3.14159265358979f);
 			if (!std::isfinite(fovDeg) || fovDeg < 0.05f || fovDeg > 170.0f) {
 				return 0.0f;
 			}
@@ -973,6 +992,8 @@ namespace TrueScopes::ScopeRender
 			g_derivedFovDeg = fovDeg;
 			g_derivedEyeDist = d;
 			g_derivedDiscR = R;
+			g_derivedTan = t;
+			g_derivedMag = mEff;
 			return fovDeg;
 		}
 
@@ -1575,7 +1596,7 @@ namespace TrueScopes::ScopeRender
 			// Under-aperture sizing: shrink the disc slightly inside the housing
 			// hole so the seam is never a bright picture pixel. Applies after the
 			// per-scope table, so every entry keeps its relative fit.
-			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 1.1f);
+			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 2.0f);
 			const float scale = (aperture * apScale) / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
 			// cannot tell that apart from a broken render — refuse instead of guessing.
@@ -1782,8 +1803,10 @@ namespace TrueScopes::ScopeRender
 			// hand-tuned value in the log, but only used when scopeFovDegrees is 0 —
 			// a derivation that quietly replaces a confirmed calibration is how a
 			// known-good state gets lost.
+			bool derivedUsed = false;
 			if (const float derived = DeriveScopeFovDegrees(player); derived > 0.0f && a_fovDeg <= 0.0f) {
 				a_fovDeg = derived;
+				derivedUsed = true;
 			}
 			if (a_fovDeg <= 0.0f) {
 				return false;  // asked to derive, could not; a zero FOV renders nothing useful
@@ -1870,6 +1893,26 @@ namespace TrueScopes::ScopeRender
 				}
 				g_diagFrustumAliased = (eye0 && comb) ? (eye0 == comb ? 1 : 0) : -1;
 
+				// Square the frustum up: SetCameraFOV left the horizontal tangent
+				// scaled by the frame buffer aspect (see DeriveScopeFovDegrees), which
+				// on a square lens target draws a world circle 6 percent wider than
+				// tall and takes the horizontal magnification off the weapon's figure.
+				// The four lateral floats become +-t. Only the derived path knows t;
+				// a hand-set scopeFovDegrees keeps whatever the engine built. Safe to
+				// write: the frustum writer copies with a near clamp and caches
+				// nothing, and the projection is rebuilt from these floats each
+				// render. The mirror below then carries the same values to culling.
+				if (*Settings::scopeFrustumExact && derivedUsed && eye0 && g_derivedTan > 0.0f) {
+					const float t = g_derivedTan;
+					eye0[0] = -t;
+					eye0[1] = t;
+					eye0[2] = t;
+					eye0[3] = -t;
+					g_diagFrustumExact = 1;
+				} else {
+					g_diagFrustumExact = 0;
+				}
+
 				if (*Settings::cullToScopeFrustum && eye0 && comb && eye0 != comb) {
 					// NiFrustum = { left, right, top, bottom, near, far, bool ortho }
 					// = 6 floats + a bool = 0x1c bytes (the per-eye array stride).
@@ -1886,14 +1929,18 @@ namespace TrueScopes::ScopeRender
 					logger::info(
 						FMT_STRING("CULL FRUSTUM: eyes={} eye0={} comb={} aliased={} applied={} "
 						           "eye0(l,r,t,b,n,f)=({:.4f},{:.4f},{:.4f},{:.4f},{:.1f},{:.1f}) "
-						           "combPre(l,r,t,b,n,f)=({:.4f},{:.4f},{:.4f},{:.4f},{:.1f},{:.1f})"),
+						           "combPre(l,r,t,b,n,f)=({:.4f},{:.4f},{:.4f},{:.4f},{:.1f},{:.1f}) "
+						           "exact={} t={:.5f} mag={:.2f} (engine top/t = {:.4f}, right/t = {:.4f})"),
 						*reinterpret_cast<const std::int32_t*>(cam + 0x208),
 						static_cast<const void*>(eye0), static_cast<const void*>(comb),
 						g_diagFrustumAliased, g_diagCullFix,
 						g_diagFrustumEye0[0], g_diagFrustumEye0[1], g_diagFrustumEye0[2],
 						g_diagFrustumEye0[3], g_diagFrustumEye0[4], g_diagFrustumEye0[5],
 						g_diagFrustumCombPre[0], g_diagFrustumCombPre[1], g_diagFrustumCombPre[2],
-						g_diagFrustumCombPre[3], g_diagFrustumCombPre[4], g_diagFrustumCombPre[5]);
+						g_diagFrustumCombPre[3], g_diagFrustumCombPre[4], g_diagFrustumCombPre[5],
+						g_diagFrustumExact, g_derivedTan, g_derivedMag,
+						g_derivedTan > 0.0f ? g_diagFrustumEye0[2] / g_derivedTan : 0.0f,
+						g_derivedTan > 0.0f ? g_diagFrustumEye0[1] / g_derivedTan : 0.0f);
 				}
 			}
 

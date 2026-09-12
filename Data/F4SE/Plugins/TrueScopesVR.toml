@@ -33,6 +33,23 @@ lensMode = 2
 # tuned to look good rather than to be faithful, which is why the two numbers
 # were never going to agree.
 scopeFovDegrees = 0.0
+# Is 10x really 10x? Since 0.3.30, yes: the engine's SetCameraFOV scales the
+# frustum by 10/9 (and the horizontal by the frame buffer aspect), which used
+# to present a 10x scope at 9.0x tall by 9.6x wide. The derived FOV now
+# pre-divides the 10/9, and scopeFrustumExact squares the horizontal up after
+# the call so both axes equal the weapon's fovMult. false = the engine's
+# frustum (vertical exact, world circles about 6 percent wide).
+scopeFrustumExact = true
+# Taming knobs, both off at these values. magnificationScale multiplies every
+# scope (0.5 = a 10x presents as 5x, a 4x as 2x). magnificationMax caps the
+# strong ones and leaves the weak ones alone (4 = the hunting rifle's 6x and
+# 10x both present as 4x; the .44's 4x is untouched). Neither changes how big
+# the porthole looks - a 10x rifle scope here is a 10.8 degree porthole with a
+# 1.2 degree field inside it; a real 10x42 is about 20 and 2 degrees. What
+# makes a scope feel unusable is mostly the small porthole, and the lever for
+# that is widgetApertureScale below.
+magnificationScale = 1.0
+magnificationMax = 0.0
 
 # Scope camera frustum near/far planes. near must be < far (near==far is a NaN
 # projection and a black lens). 15 = engine default near.
@@ -166,6 +183,12 @@ rimShadowParallax = 0.2
 
 # Under-aperture sizing: the picture disc sits this fraction of the housing
 # hole so no bright pixel touches the seam. 1.0 = exact fit (old behavior).
+# Above 1.0 it is the porthole lever: the derived FOV reads the disc's live
+# radius, so a bigger disc widens the apparent field AND the true field at
+# unchanged magnification (1.4 = 15 degree porthole on the rifle scopes, 1.8 =
+# 20, real-riflescope territory). The picture then spills past the glass onto
+# the ocular housing by that factor, so it needs the rim shadow to stay
+# believable. Range 0.8 to 2.0.
 widgetApertureScale = 0.97
 
 # GLASS SHEEN - additive light on the eyepiece surface, in front of picture
