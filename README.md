@@ -17,6 +17,11 @@ scopes finally work at arm's length), and bullet-hole decals render in the lens.
 - ⚠️ **True Scopes REPLACES Better Scopes VR — they CANNOT coexist.** Both rework the
   same scope pipeline. If `FO4VR_better_scopes.dll` is present the log names the
   conflict. Disable one.
+- ⚠️ **ROCK** (the physics/two-hand plugin built on FRIK) has its own native-scope
+  subsystem that patches the same eye-gate site as this plugin's pose gate and
+  validates a second site this plugin hooks. Whichever loads second loses: either
+  ROCK declines to load or True Scopes' pose gate goes inert (the log names it either
+  way). Not resolvable by settings yet; coordination with ROCK's author is in progress.
 - ⚠️ **Remove `UpscalerScopeFix.dll`** (Nexus 102526, the companion to PureDark's
   upscaler) if you run it. It patches the same scope-arm call site this plugin does,
   with a writer that checks nothing first, and it loads after us — so it silently

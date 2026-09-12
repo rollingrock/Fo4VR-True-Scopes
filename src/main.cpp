@@ -67,6 +67,21 @@ namespace
 				"ScopeFix.dll is loaded - the January scope prototype, superseded by this plugin. "
 				"Disable it."sv);
 		}
+		// ROCK's native-scope subsystem (rockEnableImmersiveScopes, on by default)
+		// patches the eye-gate verdict call at 0xEF851F - the same five bytes as our
+		// pose-gate hook - and refuses to load unless the housing-show call at
+		// 0xEFAAF2 is still vanilla, which our filter thunks. Whoever loads second
+		// loses: ROCK first = our pose gate is inert (the "byte mismatch" warning
+		// above); us first = ROCK's F4SEPlugin_Load returns false. Its own scope
+		// switch does not avoid it - the validation runs before the switch is read.
+		if (::GetModuleHandleW(L"ROCK.dll")) {
+			logger::critical(
+				"ROCK.dll is loaded - its native-scope subsystem patches the same eye-gate verdict "
+				"site as True Scopes' pose gate and validates a second site this plugin hooks. One "
+				"of the two loses on load order: if the pose-gate line above says byte mismatch, "
+				"True Scopes lost; otherwise ROCK declined to load. There is no setting on either "
+				"side that avoids it yet."sv);
+		}
 		if (!TrueScopes::Hooks::VerifyArmWriteHookIntact() && !upscalerScopeFix) {
 			logger::critical(
 				"the scope-arm hook was overwritten by a plugin I cannot name - check "
