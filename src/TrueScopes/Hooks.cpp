@@ -37,6 +37,23 @@ namespace TrueScopes::Hooks
 		// render-thread consumer of weapon 3D stands down.
 		std::atomic_bool g_teardownLatch{ false };
 
+		// Scope episode generation: +1 on every g_scopeActive edge, raise and lower
+		// alike. Exported as TrueScopes_ScopeEpisode (main.cpp) so another plugin can
+		// poll it once a frame and still see an edge that came and went between two
+		// of its frames - the engine's own renderer+4 byte is a per-pass pulse and
+		// cannot tell a raise from the render it drives.
+		std::atomic<std::uint64_t> g_scopeEpisodeGeneration{ 0 };
+
+		// The one writer of g_scopeActive. True when the state changed.
+		bool SetScopeActive(bool a_on)
+		{
+			if (g_scopeActive.exchange(a_on) == a_on) {
+				return false;
+			}
+			g_scopeEpisodeGeneration.fetch_add(1, std::memory_order_release);
+			return true;
+		}
+
 		using ImageSpaceManagerCopy_t = void (*)(std::uint32_t a_srcRT, std::uint32_t a_dstRT);
 
 		[[nodiscard]] ImageSpaceManagerCopy_t ImageSpaceCopy()
@@ -60,7 +77,7 @@ namespace TrueScopes::Hooks
 				const bool on = a_on != 0;
 				if (on) {
 					g_gateRaw.store(true);
-					if (!g_scopeActive.exchange(true)) {
+					if (SetScopeActive(true)) {
 						logger::info("scope active -> true"sv);
 						// camera-smoothing reset on the scope-in edge (weapon swap
 						// may reuse the same camera node, so the dt-gap heuristic
@@ -370,7 +387,7 @@ namespace TrueScopes::Hooks
 				// down now instead of a staleness-poll second from now.
 				g_teardownLatch.store(true);
 				g_gateRaw.store(false);
-				if (g_scopeActive.exchange(false)) {
+				if (SetScopeActive(false)) {
 					LensComposite::RestoreReticleQuad();
 				}
 				ScopeIdent::InvalidateForLifecycle();
@@ -625,7 +642,7 @@ namespace TrueScopes::Hooks
 					                        ? 0ull
 					                        : static_cast<std::uint64_t>(std::max<std::int64_t>(0, *Settings::scopeOffHoldMs));
 					if (static_cast<std::uint64_t>(::GetTickCount64()) - g_gateOffTick.load() >= holdMs) {
-						g_scopeActive.store(false);
+						SetScopeActive(false);
 						LensComposite::RestoreReticleQuad();
 						logger::info("scope active -> false (held)"sv);
 					}
@@ -641,7 +658,7 @@ namespace TrueScopes::Hooks
 				if (g_installed && g_verdictHookInstalled &&
 					g_scopeActive.load() && PoseGate::SiteStale(90)) {
 					g_gateRaw.store(false);
-					g_scopeActive.store(false);
+					SetScopeActive(false);
 					LensComposite::RestoreReticleQuad();
 					logger::info("scope active -> false (verdict stale: holstered or menu)"sv);
 				}
@@ -1042,7 +1059,7 @@ namespace TrueScopes::Hooks
 		// clears the teardown latch.
 		g_teardownLatch.store(true, std::memory_order_release);
 		g_gateRaw.store(false, std::memory_order_relaxed);
-		if (g_scopeActive.exchange(false)) {
+		if (SetScopeActive(false)) {
 			LensComposite::RestoreReticleQuad();
 		}
 		ScopeIdent::InvalidateForLifecycle();
@@ -1063,6 +1080,11 @@ namespace TrueScopes::Hooks
 	bool ScopeActive()
 	{
 		return g_scopeActive.load();
+	}
+
+	std::uint64_t ScopeEpisodeGeneration()
+	{
+		return g_scopeEpisodeGeneration.load(std::memory_order_acquire);
 	}
 
 	bool WidgetPresenceShown()

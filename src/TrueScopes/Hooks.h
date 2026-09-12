@@ -31,6 +31,12 @@ namespace TrueScopes::Hooks
 	// record which state it was taken in instead of trusting the operator's notes.
 	bool ScopeActive();
 
+	// Advances by one on every ScopeActive() edge, raise and lower alike. With
+	// ScopeActive() it is the feed behind the exported TrueScopes_ScopeEpisode
+	// (main.cpp): a poller comparing generations sees every edge, including one
+	// that came and went between two of its frames. Safe from any thread.
+	std::uint64_t ScopeEpisodeGeneration();
+
 	// Is the plugin-owned widget presence currently showing the nodes.
 	bool WidgetPresenceShown();
 

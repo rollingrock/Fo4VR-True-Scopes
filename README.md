@@ -96,6 +96,23 @@ the game keeps running.
    `[Scopes]` override to fit them (worked example in the TOML).
 5. Night scope image is serviceable but unpolished — a dedicated night pass is planned.
 
+## For other plugins
+
+The DLL exports two C functions so another F4SE plugin can follow the scope without
+a messaging handshake (F4SEVR's listener slots make that load-order dependent;
+`GetProcAddress` is not):
+
+```c
+uint32_t TrueScopes_ApiVersion();                       // 1
+uint32_t TrueScopes_ScopeEpisode(uint64_t* generation); // 1 while the lens is live
+```
+
+`generation` goes up by one on every raise and every lower, so a caller that polls
+once a frame still sees an edge it slept through. Resolve them at `kPostPostLoad`
+with `GetModuleHandleW(L"truescopes_vr.dll")`; both are safe from any thread.
+[Fo4VR Upscaler](https://github.com/rollingrock/Fo4VR-Upscaler) uses them for its
+`resetOnScope` history reset.
+
 ## Building
 
 CMake + vcpkg + [rollingrock/CommonLibF4](https://github.com/rollingrock/CommonLibF4)

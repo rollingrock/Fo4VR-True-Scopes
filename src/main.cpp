@@ -106,6 +106,27 @@ namespace
 	}
 }
 
+// Cross-plugin scope episode feed, for a mod that has to know when the lens is
+// live (an upscaler resetting its history around our second world render, say).
+// Polled, not pushed: F4SEVR's messaging snapshots listener slots at registration
+// and a plugin loading after us dispatches into an empty list, while GetProcAddress
+// works in any load order. *a_generation advances by one on every raise and every
+// lower, so a caller polling once a frame still sees an edge it slept through.
+// Returns 1 while the scope is active. Safe from any thread; two atomic loads.
+// TrueScopes_ApiVersion is 1 for as long as this signature holds.
+extern "C" DLLEXPORT std::uint32_t TrueScopes_ApiVersion()
+{
+	return 1;
+}
+
+extern "C" DLLEXPORT std::uint32_t TrueScopes_ScopeEpisode(std::uint64_t* a_generation)
+{
+	if (a_generation) {
+		*a_generation = TrueScopes::Hooks::ScopeEpisodeGeneration();
+	}
+	return TrueScopes::Hooks::ScopeActive() ? 1u : 0u;
+}
+
 extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Query(const F4SE::QueryInterface* a_f4se, F4SE::PluginInfo* a_info)
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
