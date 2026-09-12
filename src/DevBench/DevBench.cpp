@@ -274,6 +274,12 @@ namespace DevBench
 				{ "eyeBoxReliefUnits", Kind::Float, &eyeBoxReliefUnits },
 				{ "eyeBoxAxialStrength", Kind::Float, &eyeBoxAxialStrength },
 				{ "eyeBoxDistancePower", Kind::Float, &eyeBoxDistancePower },
+				{ "eyeBoxShadowShift", Kind::Float, &eyeBoxShadowShift },
+				{ "eyeBoxRadiusUnits", Kind::Float, &eyeBoxRadiusUnits },
+				{ "eyeBoxBaseRadius", Kind::Float, &eyeBoxBaseRadius },
+				{ "eyeBoxLateralShrink", Kind::Float, &eyeBoxLateralShrink },
+				{ "eyeBoxEdgeSoft", Kind::Float, &eyeBoxEdgeSoft },
+				{ "eyeBoxAxialDeadband", Kind::Float, &eyeBoxAxialDeadband },
 				{ "edgeBlurStrength", Kind::Float, &edgeBlurStrength },
 				{ "edgeBlurStart", Kind::Float, &edgeBlurStart },
 				{ "caStrength", Kind::Float, &caStrength },
@@ -324,6 +330,7 @@ namespace DevBench
 				{ "poseWidgetAlways", Kind::Bool, &poseWidgetAlways },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
+				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },
 				{ "hideWidgetHousing", Kind::Bool, &hideWidgetHousing },
 				{ "widgetFitEnabled", Kind::Bool, &widgetFitEnabled },
 				{ "widgetApertureRadius", Kind::Float, &widgetApertureRadius },
@@ -515,6 +522,9 @@ namespace DevBench
 				out += ",\"eyeRelief\":" + std::to_string(lc.eyeRelief);
 				out += ",\"eyeGainFactor\":" + std::to_string(lc.eyeGainFactor);
 				out += ",\"eyeAxialShrink\":" + std::to_string(lc.eyeAxialShrink);
+				out += ",\"eyeLateralMiss\":" + std::to_string(lc.eyeLateralMiss);
+				out += ",\"eyeShiftX\":" + std::to_string(lc.eyeShiftX);
+				out += ",\"eyeShiftY\":" + std::to_string(lc.eyeShiftY);
 				out += ",\"renderer\":" + Quote(lc.rendererName) + "}";
 			}
 			// Pose-based activation: the live pose numbers + verdicts. `evals`

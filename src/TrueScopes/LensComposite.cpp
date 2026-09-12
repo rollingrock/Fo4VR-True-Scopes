@@ -62,7 +62,8 @@ cbuffer Params : register(b0)
     float4 rim;       // x band start (disc units), y band end, z strength, w top bias (center drop)
     float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
     float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
-    float4 glass2;    // x residual brightness-adapt scale, y axial pupil shrink, zw reserved
+    float4 glass2;    // x residual brightness-adapt scale, y axial pupil shrink, z lateral miss (eyebox radii), w lateral shrink
+    float4 glass3;    // x base pupil radius (disc units), y edge softness, zw reserved
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -168,20 +169,20 @@ float4 PSMain(VSOut i) : SV_Target
     // response - on a real scope the reticle stays faintly visible inside the
     // blacked-out eye box, silhouetted against residual scatter (which the
     // dark-adaptive sheen provides). nvp.w = reticleEyeBoxFollow: 1 = reticle
-    // clips with the picture, 0 = reticle immune. eyebox.xy is the eye's real
-    // lateral offset from the tube axis in disc units (computed per frame on
-    // the CPU, gain-scaled). The exit pupil shifts opposite the eye and
-    // shrinks as the eye moves off axis; on axis it is larger than the
-    // picture = no-op.
+    // clips with the picture, 0 = reticle immune. Two separate inputs, on
+    // purpose: eyebox.xy is where the visible window sits (disc units, the
+    // eye's lateral offset times eyeBoxShadowShift - positive slides it toward
+    // the eye, so the shadow crescent grows on the far side), and glass2.z is
+    // how far off the eye is in eyebox radii (physical units on the CPU, so a
+    // pistol ocular and a plasma ocular forgive the same head movement). The
+    // window starts larger than the picture (glass3.x) and shrinks with the
+    // lateral miss (glass2.w) and the axial miss (glass2.y, the ring); on axis
+    // at the relief distance it is a no-op.
     float ebMul = 1.0;
     if (eyebox.z > 0.0 && flags.y == 0.0) {
         float2 p   = cuv * 2.0;
-        float  m   = length(eyebox.xy);
-        // glass2.y: axial pupil shrink - the on-axis exit pupil closes as the
-        // eye leaves the relief distance in either direction (the scope-shadow
-        // ring). 0 = pupil size depends on lateral offset only.
-        float  rad = 1.15 - glass2.y - 0.9 * saturate(m);
-        float  vis = 1.0 - smoothstep(rad - 0.25, rad + 0.15, length(p + eyebox.xy));
+        float  rad = glass3.x - glass2.y - glass2.w * saturate(glass2.z);
+        float  vis = 1.0 - smoothstep(rad - glass3.y, rad + 0.15, length(p - eyebox.xy));
         ebMul = lerp(1.0, vis, saturate(eyebox.z));
     }
     // The clip bottoms out at a faint flat scatter (eyebox.w), not pure
@@ -280,6 +281,7 @@ float4 PSMain(VSOut i) : SV_Target
 			float sheen[4];
 			float sheen2[4];
 			float glass2[4];
+			float glass3[4];
 		};
 
 		// eye-box pose
@@ -295,14 +297,16 @@ float4 PSMain(VSOut i) : SV_Target
 		// rot[r][c] * v[r], rows 0x10 apart.
 		// Returns false (offsets zeroed) when any pointer is missing or the
 		// numbers are not sane - the shader then behaves as eye-on-axis.
-		// parallax EMA state (render thread only).
-		float         g_pllxPrev[2] = {};
-		std::uint64_t g_pllxLastMs = 0;
+		// pose EMA state (render thread only): the smoothed eye offset every
+		// pose-driven term reads, so the nearest-eye flip never pops.
+		float         g_posePrev[2] = {};
+		std::uint64_t g_poseLastMs = 0;
 
-		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y, float& a_axialY) noexcept
+		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y, float& a_axialY, float& a_discR) noexcept
 		{
 			a_x = a_y = 0.0f;
 			a_axialY = 0.0f;
+			a_discR = 0.0f;
 			if (!a_scopeParent) {
 				return false;
 			}
@@ -334,6 +338,7 @@ float4 PSMain(VSOut i) : SV_Target
 			if (!(discR > 0.001f)) {
 				return false;
 			}
+			a_discR = discR;
 			float best = -1.0f;
 			for (const float side : { -1.0f, 1.0f }) {
 				const float e[3] = { camPos[0] + side * halfIpd * camRot[0],
@@ -909,7 +914,7 @@ float4 PSMain(VSOut i) : SV_Target
 		// optical tubes (screen mode skips them - an LCD has no exit
 		// pupil and no field curvature).
 		{
-			float ex = 0.0f, ey = 0.0f, ly = 0.0f;
+			float ex = 0.0f, ey = 0.0f, ly = 0.0f, discR = 0.0f;
 			// glassFlatMode zeroes every pose-driven term in one switch (static
 			// picture, recon-screen behavior); the static vignette/rim ring and
 			// the NV/recon looks are untouched.
@@ -926,15 +931,31 @@ float4 PSMain(VSOut i) : SV_Target
 			const float pllxD = flat ? 0.0f : static_cast<float>(*Settings::parallaxDepthUnits);
 			const bool wantPose = strength > 0.0f || shStr > 0.0f || shFre > 0.0f ||
 			                      pllxD > 0.0f || (rimStr > 0.0f && rimPll != 0.0f);
-			const bool havePose = wantPose && EyeLateral(a_in.scopeParent, ex, ey, ly);
+			const bool havePose = wantPose && EyeLateral(a_in.scopeParent, ex, ey, ly, discR);
+			// One EMA for every pose-driven term. The nearest-eye pick flips by a
+			// full IPD at the crossover; smoothing the offset once here keeps the
+			// eyebox, the rim, the sheen and the parallax moving together. A
+			// >500 ms gap snaps so nothing stale slides in on scope-in; a pose
+			// failure decays toward zero instead of popping.
+			{
+				const auto now = ::GetTickCount64();
+				const float sm = (std::clamp)(static_cast<float>(*Settings::parallaxSmoothing), 0.0f, 0.95f);
+				if (now - g_poseLastMs > 500) {
+					g_posePrev[0] = ex;
+					g_posePrev[1] = ey;
+				} else {
+					g_posePrev[0] += (ex - g_posePrev[0]) * (1.0f - sm);
+					g_posePrev[1] += (ey - g_posePrev[1]) * (1.0f - sm);
+				}
+				g_poseLastMs = now;
+				ex = g_posePrev[0];
+				ey = g_posePrev[1];
+			}
 			if (havePose && strength > 0.0f) {
-				auto gain = static_cast<float>(*Settings::eyeBoxGain);
-				// Distance-adaptive gain (the biconic eyebox): unchanged at the
-				// relief distance, tighter closer in, progressively forgiving as
-				// the eye backs off. ly is the tube-axial eye position; the eye
-				// sits behind the ocular, so relief L = -ly.
-				// per-optic relief when the ident resolved one (a pistol scope is
-				// built for arm's length); the global is the fallback
+				// Relief: per-optic when the ident resolved one (a pistol scope is
+				// built for arm's length); the global is the fallback. ly is the
+				// tube-axial eye position; the eye sits behind the ocular, so the
+				// live relief L = -ly.
 				const auto scopeRelief = ScopeIdent::EyeReliefUnits();
 				const auto relief = scopeRelief > 0.01f
 				                        ? scopeRelief
@@ -942,28 +963,48 @@ float4 PSMain(VSOut i) : SV_Target
 				float       gainFactor = 1.0f;
 				const float L = (std::max)(0.5f, std::isfinite(ly) ? -ly : 0.0f);
 				if (relief > 0.01f && std::isfinite(ly) && ly < 0.0f) {
+					// Distance-adaptive tolerance: unchanged at the relief distance,
+					// tighter closer in, more forgiving as the eye backs off.
 					const auto pw = static_cast<float>(*Settings::eyeBoxDistancePower);
-					gainFactor = std::clamp(std::pow(relief / L, pw), 0.35f, 3.0f);
-					gain *= gainFactor;
+					gainFactor = std::clamp(std::pow(relief / L, pw), 0.5f, 2.0f);
 					// Axial (ring) term: the on-axis pupil closes as the eye leaves
-					// the relief distance in EITHER direction - the scope-shadow
-					// ring, and the visible in-and-out response. Ratio-based, so
-					// the close side collapses faster, like the real tube. The
-					// lateral gain alone changes nothing for an on-axis eye.
+					// the relief distance in either direction, past a deadband
+					// where being roughly at relief costs nothing. Ratio-based, so
+					// the close side collapses faster, like the real tube.
 					const auto axial = static_cast<float>(*Settings::eyeBoxAxialStrength);
 					if (axial > 0.0f) {
 						const float miss = (std::max)(relief / L, L / relief) - 1.0f;
-						p.glass2[1] = std::clamp(axial * miss, 0.0f, 0.85f);
+						const float dead = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxAxialDeadband));
+						p.glass2[1] = std::clamp(axial * (std::max)(0.0f, miss - dead), 0.0f, 0.85f);
 					}
 				}
-				p.eyebox[0] = ex * gain;
-				p.eyebox[1] = ey * gain;
+				// Lateral miss in eyebox radii, from the eye's offset in game units
+				// (ex/ey are in disc radii; discR converts back). Physical units on
+				// purpose: normalising to the ocular made a 0.65-unit pistol ocular
+				// five times stricter than a 3-unit plasma one for the same head
+				// movement, and let the cosmetic aperture scale retune the feel.
+				const float radiusUnits = (std::max)(0.05f, static_cast<float>(*Settings::eyeBoxRadiusUnits));
+				const float lateralUnits = std::sqrt(ex * ex + ey * ey) * discR;
+				const float miss = lateralUnits / radiusUnits *
+				                   static_cast<float>(*Settings::eyeBoxGain) * gainFactor;
+				// Window shift in disc units, signed: positive slides the visible
+				// window toward the eye (shadow on the far side).
+				const auto shift = static_cast<float>(*Settings::eyeBoxShadowShift);
+				p.eyebox[0] = ex * shift;
+				p.eyebox[1] = ey * shift;
 				p.eyebox[2] = strength;
 				p.eyebox[3] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidual));
 				p.glass2[0] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxResidualAdapt));
+				p.glass2[2] = miss;
+				p.glass2[3] = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxLateralShrink));
+				p.glass3[0] = (std::max)(0.2f, static_cast<float>(*Settings::eyeBoxBaseRadius));
+				p.glass3[1] = (std::max)(0.01f, static_cast<float>(*Settings::eyeBoxEdgeSoft));
 				g_diag.eyeRelief = L;
 				g_diag.eyeGainFactor = gainFactor;
 				g_diag.eyeAxialShrink = p.glass2[1];
+				g_diag.eyeLateralMiss = miss;
+				g_diag.eyeShiftX = p.eyebox[0];
+				g_diag.eyeShiftY = p.eyebox[1];
 			}
 			if (havePose) {
 				p.pose[0] = ex;
@@ -972,10 +1013,8 @@ float4 PSMain(VSOut i) : SV_Target
 			// parallax depth (optical tubes only; an LCD sits at the housing).
 			// Image plane D units behind the lens; shift = -0.5*D/(L+D)*offset,
 			// L = live eye relief (a pistol at arm's length shows less than a
-			// shouldered rifle). EMA across fills absorbs the auto-eye flip; a
-			// >500 ms gap snaps so nothing stale slides in on scope-in; a pose
-			// failure decays toward zero through the same EMA instead of
-			// popping. The clamp keeps clamp-sampler smear under the rim band.
+			// shouldered rifle). The offset is already smoothed above. The clamp
+			// keeps clamp-sampler smear under the rim band.
 			{
 				float tx = 0.0f, ty = 0.0f;
 				if (havePose && pllxD > 0.0f && !screenMode && std::isfinite(ly) && ly < 0.0f) {
@@ -990,18 +1029,8 @@ float4 PSMain(VSOut i) : SV_Target
 						ty *= cap / m;
 					}
 				}
-				const auto now = ::GetTickCount64();
-				const float sm = (std::clamp)(static_cast<float>(*Settings::parallaxSmoothing), 0.0f, 0.95f);
-				if (now - g_pllxLastMs > 500) {
-					g_pllxPrev[0] = tx;
-					g_pllxPrev[1] = ty;
-				} else {
-					g_pllxPrev[0] += (tx - g_pllxPrev[0]) * (1.0f - sm);
-					g_pllxPrev[1] += (ty - g_pllxPrev[1]) * (1.0f - sm);
-				}
-				g_pllxLastMs = now;
-				p.pose[2] = g_pllxPrev[0];
-				p.pose[3] = g_pllxPrev[1];
+				p.pose[2] = tx;
+				p.pose[3] = ty;
 				p.sheen2[2] = static_cast<float>(*Settings::reticleParallaxFraction);
 			}
 			// rim shadow: fill whenever on - without pose it degrades to the

@@ -248,31 +248,46 @@ namespace Settings
 	// tube axis, computed per frame from the real head-to-scope pose (camera
 	// root vs ScopeParent, fed from the HMD). On axis it is a no-op. Strength 0
 	// disables (and skips the pose math); 1.0 = the shadow goes fully black,
-	// like a real scope shadow. Gain scales how strongly head movement moves
-	// the shadow - raise it for a twitchier, less forgiving scope.
+	// like a real scope shadow. Gain multiplies the lateral miss - raise it for
+	// a twitchier, less forgiving scope, lower it for a more relaxed one.
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxStrength, 1.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 0.9);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxGain, 1.0);
+	// The eyebox model. The eye's lateral offset from the tube axis, in game
+	// units, is measured against eyeBoxRadiusUnits (1 unit ~ 1.43 cm): at one
+	// radius the visible window has closed by eyeBoxLateralShrink from its
+	// on-axis size eyeBoxBaseRadius (disc units; > 1 means an on-axis eye sees
+	// the whole picture). The window also slides by eyeBoxShadowShift times the
+	// eye offset (disc units): positive = toward the eye, so the shadow crescent
+	// grows on the far side and nudging the head toward the shadow recentres it;
+	// negative = the pre-0.3.29 direction. Sign and size of that are the first
+	// things to A/B against a real scope. eyeBoxEdgeSoft is the crescent's
+	// gradient width (disc units).
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxShadowShift, 0.35);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxRadiusUnits, 2.6);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxBaseRadius, 1.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxLateralShrink, 0.45);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxEdgeSoft, 0.35);
 	// Interpupillary distance in game units (1 unit ~ 1.43 cm; 64 mm ~ 4.5).
 	// The camera root is the HMD centre, so the aiming eye sits half of this
 	// off it; the eye-box tests both eyes and follows whichever is closer to
 	// the tube axis.
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxIpdUnits, 4.5);
 	// A real eyebox is distance-dependent: widest at the scope's eye relief,
-	// collapsing steeply as the eye moves closer in, forgiving as it backs off
-	// (checked against a real scope). The effective gain is
-	//     eyeBoxGain * clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.35, 3)
-	// - unchanged at the relief distance, tighter closer, looser farther. A
-	// fixed gain punishes normal eye relief as if the eye were jammed on the
-	// ocular. relief 0 = the old fixed gain.
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxReliefUnits, 12.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxDistancePower, 1.6);
-	// Axial (ring) response: the on-axis exit pupil closes as the eye leaves the
+	// tighter as the eye moves closer in, forgiving as it backs off. The lateral
+	// miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2)
+	// - unchanged at the relief distance, tighter closer, looser farther.
+	// relief 0 = no distance adaptation.
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxReliefUnits, 14.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxDistancePower, 1.0);
+	// Axial (ring) response: the on-axis window closes as the eye leaves the
 	// relief distance in either direction - the classic scope-shadow ring, and
-	// the visible cue that moving in and out does something. Pupil shrink =
-	// strength * (max(relief/L, L/relief) - 1), clamped; ratio-based, so the
-	// close side collapses faster. 0 = off (pupil size from lateral offset only,
-	// which is invisible to an on-axis eye).
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxAxialStrength, 0.5);
+	// the visible cue that moving in and out does something. Shrink =
+	// strength * max(0, max(relief/L, L/relief) - 1 - deadband), clamped;
+	// ratio-based, so the close side collapses faster. The deadband is the
+	// relief tolerance that costs nothing (0.3 = anywhere within about 30
+	// percent of relief). strength 0 = off.
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxAxialStrength, 0.45);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxAxialDeadband, 0.3);
 	// Edge blur: field-curvature softness from edgeBlurStart (disc radius 0..1)
 	// out to the rim. 0 disables.
 	MAKE_SETTING(fSetting, "TrueScopesVR", edgeBlurStrength, 0.35);
@@ -356,16 +371,18 @@ namespace Settings
 	// Eye→ocular distance band, game units (1 ≈ 1.43 cm). 90 ≈ 1.3 m covers a
 	// pistol at full extension with margin; vanilla's cap was 38/40.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxDistance, 90.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitDistance, 100.0);
-	// Eye's perpendicular distance from the tube axis, game units. 6 ≈ 8.6 cm:
-	// ~26 deg off-axis at a shouldered rifle (13 units), ~6.9 deg at arm's
-	// length (50) — the natural distance-scaled cone.
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxLateral, 6.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitLateral, 9.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitDistance, 110.0);
+	// Eye's perpendicular distance from the tube axis, game units (1 ≈ 1.43 cm).
+	// This gate only answers "is the eye plausibly behind the tube"; the eyebox
+	// shadow does the graduated feedback inside it, so the band is wide.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxLateral, 12.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseExitLateral, 18.0);
 	// Head orientation: angle between HMD forward and the direction to the
 	// ocular. Vanilla used 25/35 against the weapon; ours is against the scope.
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeDegrees, 35.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeExitDegrees, 45.0);
+	// Wide on purpose: this is the "looked away with the gun up" perf guard,
+	// not the alignment test.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeDegrees, 60.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookConeExitDegrees, 75.0);
 	// The lateral band scales with eye distance when adapt > 0: enter/exit are
 	// multiplied by max(1, 1 + adapt * (dist / poseLateralRefDist - 1)), i.e. a
 	// constant angular cone beyond the reference distance instead of a constant
@@ -377,11 +394,11 @@ namespace Settings
 	// game units) - being on the axis is looking through the scope. At 5-12
 	// units from the ocular the 35-45 deg band is one or two centimetres of
 	// head translation, below VR jitter, and flaps the gate. 0 = always test.
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookWaiveLateral, 4.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseLookWaiveLateral, 10.0);
 	// Minimum continuous time the enter conditions must hold before the gate
 	// re-arms, in ms. Stops sub-second live/frozen cycling on the enter edge;
 	// the exit edge stays immediate.
-	MAKE_SETTING(iSetting, "TrueScopesVR", poseReArmDwellMs, std::int64_t(250));
+	MAKE_SETTING(iSetting, "TrueScopesVR", poseReArmDwellMs, std::int64_t(120));
 	// Widget presence: true = the scope widget meshes stay visible the whole
 	// time the weapon is drawn (lens frozen while the pose is inactive — RT
 	// 0x62 persists, so freeze = don't fill; no pop-in). This is plugin-owned
@@ -393,14 +410,18 @@ namespace Settings
 	MAKE_SETTING(bSetting, "TrueScopesVR", poseWidgetAlways, true);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.55);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
 	// After the dim, the frozen picture keeps fading to near-black over this
 	// many seconds. The eyebox used to be the only thing taking the lens dark on
 	// eye-exit, and it is baked into the last live frames — with eyeBoxStrength
 	// at 0 a frozen lens stayed bright and read as live. 0 = no fade. Lens
 	// primes and idle refreshes stay at the plain dim (they are meant to be
 	// seen); only a live→frozen edge arms the fade.
-	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenFadeSeconds, 1.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenFadeSeconds, 4.0);
+	// Where the fade stops, as a fraction of the dimmed level. Kept well above
+	// black so a frozen lens reads as frozen and never as an eyebox blackout -
+	// the two used to look identical and recover differently.
+	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenFadeFloor, 0.3);
 	// Hide the widget model's own housing meshes (scope_Hunting:0 /
 	// scope_recon:0 in world_scope.nif - the pale speckled ring Bethesda drew
 	// around the picture). The real weapon's scope provides the housing; the
@@ -729,6 +750,12 @@ namespace Settings
 		LOAD(eyeBoxReliefUnits);
 		LOAD(eyeBoxDistancePower);
 		LOAD(eyeBoxAxialStrength);
+		LOAD(eyeBoxAxialDeadband);
+		LOAD(eyeBoxShadowShift);
+		LOAD(eyeBoxRadiusUnits);
+		LOAD(eyeBoxBaseRadius);
+		LOAD(eyeBoxLateralShrink);
+		LOAD(eyeBoxEdgeSoft);
 		LOAD(edgeBlurStrength);
 		LOAD(edgeBlurStart);
 		LOAD(caStrength);
@@ -770,6 +797,7 @@ namespace Settings
 		LOAD(poseWidgetAlways);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
+		LOAD(poseFrozenFadeFloor);
 		LOAD(hideWidgetHousing);
 		LOAD(widgetFitEnabled);
 		LOAD(widgetApertureRadius);

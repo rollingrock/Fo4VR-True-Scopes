@@ -92,31 +92,49 @@ hideHoldBreathHint = true
 glassFlatMode = false
 
 # --- glass effects (v0.2.113) — optical tubes only; screens (recon/thermal) skip them
-# Eye-box / exit pupil: the picture clips and dims as your head drifts off the tube
-# axis, from the real head-to-scope pose. The signature "real scope" feel.
-# strength 0..1 (0 = off); gain = how strongly head movement moves the shadow
-# (raise for a twitchier, less forgiving scope; lower if it feels too strict).
-# strength 1.0 = shadow goes fully black (a real scope shadow is); lower for a
-# deliberately see-through shadow. The eye-box follows whichever EYE is closer
-# to the tube axis (the camera sits between your eyes), using eyeBoxIpdUnits
-# (game units; 64 mm ~ 4.5) to find them.
+# Eye-box / scope shadow: a crescent shadow grows across the picture as your
+# head drifts off the tube axis, from the real head-to-scope pose. Relaxed by
+# design: the picture stays up and the reticle slides (parallax) for ordinary
+# head movement; the shadow appears when the eye is clearly off, and the
+# picture blacks out only when it is well off. strength 0..1 (0 = off; 1.0 =
+# the shadow goes fully black, as a real one does). The eye-box follows
+# whichever EYE is closer to the tube axis (the camera sits between your
+# eyes), using eyeBoxIpdUnits (game units; 64 mm ~ 4.5) to find them.
 eyeBoxStrength = 1.0
-# 0.9 since 2026-08-24: 1.5 made the arm's-length sweet spot twitchy (hand
-# jitter is magnified at distance). Raise it back for a stricter scope.
-eyeBoxGain = 0.9
+# Tolerance, in game units of sideways head movement (1 unit ~ 1.43 cm): at
+# eyeBoxRadiusUnits off the axis the window has closed by eyeBoxLateralShrink
+# from its on-axis size eyeBoxBaseRadius (disc units; 1.0 = the picture's
+# edge, so 1.5 leaves an on-axis eye the whole picture). The same head
+# movement forgives the same on every scope, whatever its ocular size.
+# eyeBoxGain multiplies the miss: raise for stricter, lower for more relaxed.
+# With these defaults on the hunting rifle: crescent first visible around 1.5
+# cm off, obvious at 3 cm, black past 6 cm.
+eyeBoxRadiusUnits = 2.6
+eyeBoxBaseRadius = 1.5
+eyeBoxLateralShrink = 0.45
+eyeBoxGain = 1.0
+# Which way the shadow goes. The visible window slides by this times the eye
+# offset: positive = toward the eye, so the crescent grows on the FAR side and
+# nudging your head toward the shadow recentres the picture; negative = the
+# opposite, the pre-0.3.29 direction (-0.9 is closest to how it was). Check
+# this one against your real scope first.
+eyeBoxShadowShift = 0.35
+# Width of the crescent's gradient, disc units.
+eyeBoxEdgeSoft = 0.35
 eyeBoxIpdUnits = 4.5
 # A real eyebox is distance-dependent: widest at the scope's eye relief,
-# collapsing steeply as the eye moves closer in, forgiving as it backs off.
-# Effective gain = eyeBoxGain * clamp((eyeBoxReliefUnits / eyeRelief)^power,
-# 0.35, 3): unchanged at the relief distance, tighter closer, looser farther.
-# reliefUnits 0 = the old fixed gain. 1 unit ~ 1.43 cm.
-eyeBoxReliefUnits = 12.0
-eyeBoxDistancePower = 1.6
-# Axial (ring) response: the on-axis pupil closes as the eye leaves the relief
-# distance in either direction - the scope-shadow ring. This is what makes
-# moving in and out visibly change the view; the gain adaptation above only
-# changes lateral forgiveness. 0 = off.
-eyeBoxAxialStrength = 0.5
+# tighter as the eye moves closer in, forgiving as it backs off. The lateral
+# miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2):
+# unchanged at the relief distance, tighter closer, looser farther.
+# reliefUnits 0 = no distance adaptation.
+eyeBoxReliefUnits = 14.0
+eyeBoxDistancePower = 1.0
+# Axial (ring) response: the on-axis window closes as the eye leaves the relief
+# distance in either direction - the scope-shadow ring, the visible cue that
+# moving in and out does something. The deadband is the relief tolerance that
+# costs nothing (0.3 = within about 30 percent of relief). strength 0 = off.
+eyeBoxAxialStrength = 0.45
+eyeBoxAxialDeadband = 0.3
 # Eye relief is per-optic where known: the .44 pistol scopes carry a built-in
 # ~30 (a scout scope is built for arm's length), and a [Scopes] entry can set
 # eyeRelief per scope; eyeBoxReliefUnits above is the fallback for the rest.
@@ -235,16 +253,17 @@ poseGateEnabled = true
 # Eye-to-ocular distance band, game units (1 unit ~ 1.43 cm). Enter under
 # poseMaxDistance, drop only past poseExitDistance.
 poseMaxDistance = 90.0
-poseExitDistance = 100.0
+poseExitDistance = 110.0
 # Sideways offset of the (nearest) eye from the tube axis, game units. This is
-# the "could the eye be looking down the tube" test: 6 units is ~26 deg off-axis
-# at a shouldered rifle and ~7 deg at arm's length - the cone scales with
-# distance the way real optics do.
-poseMaxLateral = 6.0
-poseExitLateral = 9.0
+# only the "could the eye be looking down the tube" test - the eyebox shadow
+# does the graduated feedback inside it - so the band is wide: 12 units is
+# ~43 deg off-axis at a shouldered rifle, ~14 deg at arm's length.
+poseMaxLateral = 12.0
+poseExitLateral = 18.0
 # The head must be oriented at the scope: HMD-forward vs direction-to-ocular.
-poseLookConeDegrees = 35.0
-poseLookConeExitDegrees = 45.0
+# Wide on purpose: this catches "looked away with the gun up", not alignment.
+poseLookConeDegrees = 60.0
+poseLookConeExitDegrees = 75.0
 # The lateral band scales with eye distance when adapt > 0 (constant angular
 # cone beyond the reference distance instead of a constant offset; never
 # tightens below the base values up close). 0 = fixed band.
@@ -253,10 +272,10 @@ poseLateralRefDist = 13.0
 # Skip the look-cone test while the eye is within this lateral distance of the
 # tube axis - on the axis you are looking through the scope, and at close range
 # the head-forward angle is dominated by translation jitter. 0 = always test.
-poseLookWaiveLateral = 4.0
+poseLookWaiveLateral = 10.0
 # Minimum continuous ms the enter conditions must hold before the gate re-arms
 # (the exit edge stays immediate). Stops sub-second live/frozen cycling.
-poseReArmDwellMs = 250
+poseReArmDwellMs = 120
 # true = the scope widget stays visible the whole time the weapon is drawn, with
 # the lens FROZEN (last live picture, dimmed once) while the pose is inactive -
 # no pop-in. false = the widget appears/disappears with the pose test.
@@ -270,11 +289,14 @@ poseWidgetAlways = true
 # now a true never-render. Toggling false live restores the NIF scales.
 hideWidgetHousing = true
 # One-shot dim multiplier applied to the frozen picture (1.0 = no dim).
-poseFrozenDim = 0.55
+poseFrozenDim = 0.8
 # After the dim, the frozen picture keeps fading to near-black over this many
 # seconds, so a stale picture never reads as live even with the eyebox off.
 # 0 = no fade. Lens primes and idle refreshes stay at the plain dim.
-poseFrozenFadeSeconds = 1.5
+poseFrozenFadeSeconds = 4.0
+# Where the fade stops, as a fraction of the dimmed level. Well above black,
+# so a frozen lens reads as frozen and never as an eyebox blackout.
+poseFrozenFadeFloor = 0.3
 
 # Also suppress the eye-approach dimming fade (leave false for the vanilla feel).
 # TRUE with the pose gate (2026-08-24): the vanilla fade ramps at the OLD

@@ -803,8 +803,8 @@ namespace TrueScopes::Hooks
 							s_fadeLastTick = ::GetTickCount64();
 						}
 						// The fade itself: multiplicative steps every 200 ms until the
-						// picture reaches ~3% of the dimmed level, spread over
-						// poseFrozenFadeSeconds. Each step is one small quad draw on
+						// picture reaches poseFrozenFadeFloor of the dimmed level, spread
+						// over poseFrozenFadeSeconds. Each step is one small quad draw on
 						// the lens RT.
 						if (s_fadeArmed) {
 							const auto fadeS = static_cast<float>(*Settings::poseFrozenFadeSeconds);
@@ -816,8 +816,10 @@ namespace TrueScopes::Hooks
 								if (s_fadeSteps < steps && now - s_fadeLastTick >= kStepMs) {
 									s_fadeLastTick = now;
 									++s_fadeSteps;
+									const auto fadeFloor = std::clamp(
+										static_cast<float>(*Settings::poseFrozenFadeFloor), 0.01f, 1.0f);
 									ScopeRender::DimFrozenLens(
-										std::pow(0.03f, 1.0f / static_cast<float>(steps)));
+										std::pow(fadeFloor, 1.0f / static_cast<float>(steps)));
 								}
 							}
 						}

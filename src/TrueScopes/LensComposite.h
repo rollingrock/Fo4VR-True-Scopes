@@ -60,6 +60,9 @@ namespace TrueScopes::LensComposite
 		float eyeRelief;
 		float eyeGainFactor;
 		float eyeAxialShrink;
+		float eyeLateralMiss;   // lateral offset in eyebox radii (1 = the window has closed to base - shrink)
+		float eyeShiftX;        // visible window centre, disc units (sign = eyeBoxShadowShift)
+		float eyeShiftY;
 	};
 	Diag GetDiag() noexcept;
 }
