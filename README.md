@@ -113,9 +113,10 @@ uint32_t TrueScopes_ScopeEpisode(uint64_t* generation); // 1 while the lens is l
 ```
 
 `generation` goes up by one on every raise and every lower, so a caller that polls
-once a frame still sees an edge it slept through; the returned state is the state
-as of the returned generation. Resolve them at `kPostPostLoad` with
-`GetModuleHandleW(L"truescopes_vr.dll")`; both are safe from any thread.
+once a frame still sees an edge it slept through. It starts at 0 with the scope down,
+so its parity is the state and the return value is that parity: one value, nothing to
+tear. Resolve them at `kPostPostLoad` with `GetModuleHandleW(L"truescopes_vr.dll")`;
+both are safe from any thread.
 [Fo4VR Upscaler](https://github.com/rollingrock/Fo4VR-Upscaler) uses them for its
 `resetOnScope` history reset.
 

@@ -44,7 +44,10 @@ namespace TrueScopes::Hooks
 		// cannot tell a raise from the render it drives.
 		std::atomic<std::uint64_t> g_scopeEpisodeGeneration{ 0 };
 
-		// The one writer of g_scopeActive. True when the state changed.
+		// The one writer of g_scopeActive. True when the state changed. Keep it the
+		// one writer: the export derives the state from the generation's parity,
+		// which holds only while every transition passes through here from the
+		// initial (down, 0).
 		bool SetScopeActive(bool a_on)
 		{
 			if (g_scopeActive.exchange(a_on) == a_on) {
