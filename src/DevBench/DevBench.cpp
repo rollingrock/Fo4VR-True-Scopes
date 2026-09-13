@@ -334,6 +334,8 @@ namespace DevBench
 				{ "poseReArmDwellMs", Kind::Int, &poseReArmDwellMs },
 				{ "poseWidgetAlways", Kind::Bool, &poseWidgetAlways },
 				{ "frikProvider", Kind::Bool, &frikProvider },
+				{ "frikLookingLateral", Kind::Float, &frikLookingLateral },
+				{ "frikLookingConeDegrees", Kind::Float, &frikLookingConeDegrees },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },

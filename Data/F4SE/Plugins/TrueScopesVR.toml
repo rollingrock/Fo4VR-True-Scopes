@@ -319,6 +319,13 @@ poseWidgetAlways = true
 # for hand and recoil damping, Pip-Boy use and two-hand grip release. false =
 # FRIK behaves as before 0.79. Restart to change.
 frikProvider = true
+# What FRIK is told counts as looking through the scope, narrower than the
+# activation gate above: eye within this many game units of the tube axis and
+# head within this cone of the ocular (exit at 1.5x / +10 degrees). FRIK keys
+# hand and recoil damping, Pip-Boy use and two-hand grip release on it, so the
+# wide activation gate must not reach it. 0 = tell FRIK the activation gate.
+frikLookingLateral = 6.0
+frikLookingConeDegrees = 40.0
 
 # Never render the widget's own housing meshes (the pale speckled ring /
 # bezel inside world_scope.nif) - the real weapon provides the housing; the

@@ -442,6 +442,14 @@ namespace Settings
 	// for hand/recoil damping, Pip-Boy interaction and two-hand grip release.
 	// false = FRIK behaves as it did before 0.79. Needs a restart to change.
 	MAKE_SETTING(bSetting, "TrueScopesVR", frikProvider, true);
+	// What FRIK is told counts as looking through the scope, narrower than the
+	// render gate: eye within this many game units of the tube axis and the head
+	// within this cone of the ocular. FRIK keys hand/recoil damping, Pip-Boy use
+	// and two-hand grip release on it, so a gate that goes live at the hip must
+	// not reach it. Exit thresholds are 1.5x / +10 degrees. 0 = publish the
+	// render gate unchanged.
+	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingLateral, 6.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingConeDegrees, 40.0);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -835,6 +843,8 @@ namespace Settings
 		LOAD(poseReArmDwellMs);
 		LOAD(poseWidgetAlways);
 		LOAD(frikProvider);
+		LOAD(frikLookingLateral);
+		LOAD(frikLookingConeDegrees);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

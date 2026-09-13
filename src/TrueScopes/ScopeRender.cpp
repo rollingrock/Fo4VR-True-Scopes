@@ -1116,6 +1116,71 @@ namespace TrueScopes::ScopeRender
 			std::snprintf(g_place.reason, sizeof(g_place.reason), "%s", a_why);
 		}
 
+		// Placement hold. At the gate's exit edge the weapon snaps for a frame or
+		// two (FRIK switches damping and grip on our exit publish, vanilla re-poses
+		// the unsighted weapon), and the per-frame census placement faithfully
+		// follows: one frame's candidate is refused as implausible, the next lands
+		// the disc 25 units away, and a second later it is back. So: a transient
+		// decline keeps the last good offset for up to a second and a half, and a
+		// candidate that jumps more than a few units from the last applied one is
+		// applied only once it has agreed with itself for three consecutive fits.
+		struct PlacementHold
+		{
+			bool          valid = false;
+			bool          eyeIndependent = false;
+			float         offset[3] = {};
+			float         target[3] = {};
+			std::uint64_t tick = 0;
+			float         pending[3] = {};
+			std::uint32_t pendingFits = 0;
+		};
+		PlacementHold g_placeHold;
+
+		[[nodiscard]] float Dist3(const float (&a_a)[3], const float (&a_b)[3]) noexcept
+		{
+			const float dx = a_a[0] - a_b[0], dy = a_a[1] - a_b[1], dz = a_a[2] - a_b[2];
+			return std::sqrt(dx * dx + dy * dy + dz * dz);
+		}
+
+		void HoldPlacement()
+		{
+			const auto now = ::GetTickCount64();
+			if (g_place.valid) {
+				if (g_placeHold.valid && Dist3(g_place.offset, g_placeHold.offset) > 3.0f) {
+					if (g_placeHold.pendingFits > 0 && Dist3(g_place.offset, g_placeHold.pending) < 1.0f) {
+						++g_placeHold.pendingFits;
+					} else {
+						std::memcpy(g_placeHold.pending, g_place.offset, sizeof(g_placeHold.pending));
+						g_placeHold.pendingFits = 1;
+					}
+					if (g_placeHold.pendingFits < 3) {
+						// jumped: keep what is applied until the jump proves itself
+						std::memcpy(g_place.offset, g_placeHold.offset, sizeof(g_place.offset));
+						std::memcpy(g_place.target, g_placeHold.target, sizeof(g_place.target));
+						std::snprintf(g_place.reason, sizeof(g_place.reason), "held (candidate jumped)");
+						return;
+					}
+				}
+				g_placeHold.valid = true;
+				g_placeHold.eyeIndependent = g_place.eyeIndependent;
+				std::memcpy(g_placeHold.offset, g_place.offset, sizeof(g_placeHold.offset));
+				std::memcpy(g_placeHold.target, g_place.target, sizeof(g_placeHold.target));
+				g_placeHold.tick = now;
+				g_placeHold.pendingFits = 0;
+				return;
+			}
+			if (g_placeHold.valid && now - g_placeHold.tick < 1500) {
+				char why[sizeof(g_place.reason)];
+				std::snprintf(why, sizeof(why), "%s", g_place.reason);
+				g_place.valid = true;
+				g_place.eyeIndependent = g_placeHold.eyeIndependent;
+				std::memcpy(g_place.offset, g_placeHold.offset, sizeof(g_place.offset));
+				std::memcpy(g_place.target, g_placeHold.target, sizeof(g_place.target));
+				std::snprintf(g_place.method, sizeof(g_place.method), "held");
+				std::snprintf(g_place.reason, sizeof(g_place.reason), "held through: %.40s", why);
+			}
+		}
+
 		// Always runs; never writes anything. The caller decides whether to use it.
 		//
 		// a_keepLoopState is set when the caller refreshes the target for a new
@@ -1554,6 +1619,7 @@ namespace TrueScopes::ScopeRender
 			ScopeIdent::Request();
 			g_rotAdoptTick = ::GetTickCount64();
 			ResetRotationSettle();
+			g_placeHold = PlacementHold{};
 			logger::info(FMT_STRING("WIDGET LIFECYCLE: adopted generation {} (node=0x{:X}, old baseline {})"),
 				epoch, a_sp, restored ? "restored"sv : "engine/rebuilt"sv);
 			return true;
@@ -1689,6 +1755,7 @@ namespace TrueScopes::ScopeRender
 			const bool relatch = !g_place.valid || rebaselined || g_placeDirty.exchange(false);
 			if (relatch || g_place.eyeIndependent) {
 				ComputeAutoPlacement(a_player);
+				HoldPlacement();
 				// A decline keeps relatch true every frame until the transforms
 				// settle - cap the line at 2/s so a settle burst is a few lines,
 				// not dozens.

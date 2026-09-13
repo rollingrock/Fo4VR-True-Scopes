@@ -288,9 +288,27 @@ namespace TrueScopes::PoseGate
 		g_lookDeg.store(s.lookDeg, std::memory_order_relaxed);
 		g_owned.store(true, std::memory_order_relaxed);
 		g_fillLive.store(live, std::memory_order_relaxed);
-		// FRIK (0.79+) keys its scope behaviour on this, not on ScopeMenu, once
-		// we are its provider. Game thread, which is what its contract asks.
-		FrikBridge::PublishLookingThrough(live);
+		// FRIK (0.79+) keys its scope behaviour on this once we are its provider.
+		// Game thread, which is what its contract asks. The render gate is wide
+		// on purpose (it decides whether the render is worth doing, and goes live
+		// at the hip); FRIK is told the narrower truth - eye near the axis and
+		// looking down the tube - with its own hysteresis so a flap at the
+		// threshold does not become a damping switch per frame. 0 on either knob
+		// = publish the render gate as-is.
+		{
+			static bool s_frikLooking = false;
+			const auto  latMax = static_cast<float>(*Settings::frikLookingLateral);
+			const auto  coneMax = static_cast<float>(*Settings::frikLookingConeDegrees);
+			bool        looking = live;
+			if (live && latMax > 0.0f) {
+				looking = looking && s.lateral < (s_frikLooking ? latMax * 1.5f : latMax);
+			}
+			if (live && coneMax > 0.0f) {
+				looking = looking && s.lookDeg < (s_frikLooking ? coneMax + 10.0f : coneMax);
+			}
+			s_frikLooking = looking;
+			FrikBridge::PublishLookingThrough(looking);
+		}
 
 		// The verdict fed to vanilla is always the pose. Feeding a perpetual
 		// "true" keeps the player sighted the whole time the weapon is drawn -
