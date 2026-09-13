@@ -458,6 +458,10 @@ namespace Settings
 	// "active for too long when clearly not aligned with the eye".
 	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingLateral, 3.5);
 	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingConeDegrees, 35.0);
+	// A change of the FRIK state has to hold this long before it is published,
+	// both directions - one flap at the threshold is a damping switch on FRIK's
+	// side. 0 = immediate.
+	MAKE_SETTING(iSetting, "TrueScopesVR", frikLookingDwellMs, std::int64_t(150));
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -855,6 +859,7 @@ namespace Settings
 		LOAD(frikProvider);
 		LOAD(frikLookingLateral);
 		LOAD(frikLookingConeDegrees);
+		LOAD(frikLookingDwellMs);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

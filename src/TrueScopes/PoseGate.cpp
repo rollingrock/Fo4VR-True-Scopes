@@ -306,8 +306,26 @@ namespace TrueScopes::PoseGate
 			if (live && coneMax > 0.0f) {
 				looking = looking && s.lookDeg < (s_frikLooking ? coneMax + 5.0f : coneMax);
 			}
-			s_frikLooking = looking;
-			FrikBridge::PublishLookingThrough(looking, s.dist, s.lateral, s.lookDeg);
+			// Dwell: a candidate state has to hold for frikLookingDwellMs before it is
+			// published, in both directions. Hysteresis alone let an exit/enter/exit
+			// through in 33 ms at the threshold edge; FRIK switches damping per flip.
+			static bool          s_pending = false;
+			static std::uint64_t s_pendingSince = 0;
+			const auto           now = static_cast<std::uint64_t>(::GetTickCount64());
+			const auto           dwellMs = static_cast<std::uint64_t>((std::max)(std::int64_t(0), *Settings::frikLookingDwellMs));
+			if (looking == s_frikLooking) {
+				s_pendingSince = 0;
+			} else {
+				if (s_pendingSince == 0 || s_pending != looking) {
+					s_pending = looking;
+					s_pendingSince = now;
+				}
+				if (now - s_pendingSince >= dwellMs) {
+					s_frikLooking = looking;
+					s_pendingSince = 0;
+					FrikBridge::PublishLookingThrough(looking, s.dist, s.lateral, s.lookDeg);
+				}
+			}
 		}
 
 		// The verdict fed to vanilla is always the pose. Feeding a perpetual

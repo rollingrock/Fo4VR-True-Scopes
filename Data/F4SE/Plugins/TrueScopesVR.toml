@@ -334,6 +334,9 @@ frikProvider = true
 # "active for too long when clearly not aligned". 0 = tell FRIK the gate.
 frikLookingLateral = 3.5
 frikLookingConeDegrees = 35.0
+# A change has to hold this many ms before FRIK is told, both directions; a
+# flap at the threshold edge is a damping switch on FRIK's side. 0 = immediate.
+frikLookingDwellMs = 150
 
 # Never render the widget's own housing meshes (the pale speckled ring /
 # bezel inside world_scope.nif) - the real weapon provides the housing; the

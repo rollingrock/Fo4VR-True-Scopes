@@ -338,6 +338,7 @@ namespace DevBench
 				{ "frikProvider", Kind::Bool, &frikProvider },
 				{ "frikLookingLateral", Kind::Float, &frikLookingLateral },
 				{ "frikLookingConeDegrees", Kind::Float, &frikLookingConeDegrees },
+				{ "frikLookingDwellMs", Kind::Int, &frikLookingDwellMs },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },
