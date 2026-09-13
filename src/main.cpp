@@ -1,6 +1,7 @@
 #include "DevBench/DevBench.h"
 #include "DevBenchClient/DevBenchClient.h"
 #include "Settings/Settings.h"
+#include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeRender.h"
 
@@ -103,6 +104,8 @@ namespace
 				a_msg->type == F4SE::MessagingInterface::kGameDataReady)) {
 			TrueScopes::Hooks::RegisterEquipSink();
 			TrueScopes::Hooks::OnGameLoaded();
+			// FRIK is loaded by now; registering as its scope provider is idempotent.
+			TrueScopes::FrikBridge::OnGameLoaded();
 		}
 		// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.
 		// F4SEVR's RegisterListener(sender = nullptr) snapshots the listener slots that

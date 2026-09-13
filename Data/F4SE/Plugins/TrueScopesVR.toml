@@ -314,6 +314,11 @@ poseReArmDwellMs = 120
 # the lens FROZEN (last live picture, dimmed once) while the pose is inactive -
 # no pop-in. false = the widget appears/disappears with the pose test.
 poseWidgetAlways = true
+# Register with FRIK 0.79 or later as its scope provider: FRIK keeps the body
+# visible while scoped and follows this plugin's pose gate (not the ScopeMenu)
+# for hand and recoil damping, Pip-Boy use and two-hand grip release. false =
+# FRIK behaves as before 0.79. Restart to change.
+frikProvider = true
 
 # Never render the widget's own housing meshes (the pale speckled ring /
 # bezel inside world_scope.nif) - the real weapon provides the housing; the

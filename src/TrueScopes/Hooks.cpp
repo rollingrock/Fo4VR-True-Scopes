@@ -1,3 +1,4 @@
+#include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 
 #include "Settings/Settings.h"
@@ -78,6 +79,12 @@ namespace TrueScopes::Hooks
 				// true->false transition and the actual deactivation is polled
 				// from the per-frame fill hook.
 				const bool on = a_on != 0;
+				// With the pose gate owning the verdict, PoseGate publishes to FRIK
+				// per evaluation; when vanilla's gate is the verdict, its edges are
+				// the only game-thread signal there is.
+				if (!(g_verdictHookInstalled && *Settings::poseGateEnabled)) {
+					FrikBridge::PublishLookingThrough(on);
+				}
 				if (on) {
 					g_gateRaw.store(true);
 					if (SetScopeActive(true)) {
@@ -118,8 +125,9 @@ namespace TrueScopes::Hooks
 
 		// Plugin-owned widget presence: keep the widget visible while the weapon
 		// is drawn without holding the enable switch on (that also keeps the
-		// player sighted and the ScopeMenu open, which collapses FRIK's body and
-		// blocks the Pip-Boy). The switch's show/hide is just SetAppCulled - a
+		// player sighted and the ScopeMenu open - and, under a FRIK older than
+		// 0.79, collapsed the body and blocked the Pip-Boy). The switch's
+		// show/hide is just SetAppCulled - a
 		// write of flag bit 0 at node+0x108 - on three nodes: ScopeParent
 		// (player+0x7d0) and the WSScopeModel singleton's +0x50/+0x68
 		// (FUN_140c8e340). Presence keeps those bits cleared, refreshed after
@@ -390,6 +398,9 @@ namespace TrueScopes::Hooks
 				// down now instead of a staleness-poll second from now.
 				g_teardownLatch.store(true);
 				g_gateRaw.store(false);
+				// The verdict site stops running with the weapon gone, so this is
+				// the last game-thread chance to tell FRIK the scope is down.
+				FrikBridge::PublishLookingThrough(false);
 				if (SetScopeActive(false)) {
 					LensComposite::RestoreReticleQuad();
 				}
@@ -1064,6 +1075,7 @@ namespace TrueScopes::Hooks
 		// clears the teardown latch.
 		g_teardownLatch.store(true, std::memory_order_release);
 		g_gateRaw.store(false, std::memory_order_relaxed);
+		FrikBridge::PublishLookingThrough(false);
 		if (SetScopeActive(false)) {
 			LensComposite::RestoreReticleQuad();
 		}

@@ -9,4 +9,5 @@ set(sources ${sources}
 	src/TrueScopes/VerdictInput.cpp
 	src/TrueScopes/ScopeIdent.cpp
 	src/TrueScopes/ScopeRender.cpp
+	src/TrueScopes/FrikBridge.cpp
 )

@@ -1,6 +1,7 @@
 #include "TrueScopes/PoseGate.h"
 
 #include "Settings/Settings.h"
+#include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/LensComposite.h"
 
@@ -287,14 +288,18 @@ namespace TrueScopes::PoseGate
 		g_lookDeg.store(s.lookDeg, std::memory_order_relaxed);
 		g_owned.store(true, std::memory_order_relaxed);
 		g_fillLive.store(live, std::memory_order_relaxed);
+		// FRIK (0.79+) keys its scope behaviour on this, not on ScopeMenu, once
+		// we are its provider. Game thread, which is what its contract asks.
+		FrikBridge::PublishLookingThrough(live);
 
 		// The verdict fed to vanilla is always the pose. Feeding a perpetual
 		// "true" keeps the player sighted the whole time the weapon is drawn -
-		// the enable switch's ActorState call drives the sighted state, sighted
-		// opens ScopeMenu, and FRIK reacts to ScopeMenu by collapsing the body
-		// root and blocking all Pip-Boy interaction. Widget permanence is
-		// plugin-owned node visibility in Hooks.cpp (WidgetPresence), which
-		// vanilla state never sees.
+		// the enable switch's ActorState call drives the sighted state and
+		// sighted opens ScopeMenu. Widget permanence is plugin-owned node
+		// visibility in Hooks.cpp (WidgetPresence), which vanilla state never
+		// sees. (FRIK used to collapse the body and block the Pip-Boy on
+		// ScopeMenu; as our provider it no longer does, but the vanilla reasons
+		// stand.)
 		return live;
 	}
 

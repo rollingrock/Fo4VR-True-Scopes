@@ -432,11 +432,16 @@ namespace Settings
 	// time the weapon is drawn (lens frozen while the pose is inactive — RT
 	// 0x62 persists, so freeze = don't fill; no pop-in). This is plugin-owned
 	// node visibility only — the verdict fed to vanilla is always the pose, so
-	// sighted/ScopeMenu/Pip-Boy/FRIK behave identically with this on or off
+	// sighted/ScopeMenu/Pip-Boy behave identically with this on or off
 	// (routing the verdict instead keeps the player sighted, ScopeMenu open and
 	// the Pip-Boy blocked whenever the weapon is drawn).
 	// false = the widget appears/disappears with the pose, vanilla-style.
 	MAKE_SETTING(bSetting, "TrueScopesVR", poseWidgetAlways, true);
+	// Register with FRIK 0.79+ as its scope provider: FRIK then keeps the body
+	// visible while scoped and follows this plugin's pose gate (not ScopeMenu)
+	// for hand/recoil damping, Pip-Boy interaction and two-hand grip release.
+	// false = FRIK behaves as it did before 0.79. Needs a restart to change.
+	MAKE_SETTING(bSetting, "TrueScopesVR", frikProvider, true);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -829,6 +834,7 @@ namespace Settings
 		LOAD(poseLookWaiveLateral);
 		LOAD(poseReArmDwellMs);
 		LOAD(poseWidgetAlways);
+		LOAD(frikProvider);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

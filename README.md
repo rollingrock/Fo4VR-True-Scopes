@@ -61,6 +61,13 @@ Vanilla quirks that are **correct behavior**, not bugs:
 - x2 (Fine) and x4 (Circle) reticles are hairline-thin **by design** (matches flat FO4).
 - Night-vision and recon scopes switch to their screen-style looks.
 
+## FRIK
+
+With FRIK 0.79 or later, True Scopes registers as FRIK's scope provider (API v3): the
+body stays visible while scoped and FRIK's hand/recoil damping, Pip-Boy use and
+two-hand grip release follow this plugin's pose gate instead of the ScopeMenu. Older
+FRIK versions work as before. `frikProvider = false` opts out.
+
 ## Settings
 
 `TrueScopesVR.toml` ships with every field-tuned default and **re-loads on each
