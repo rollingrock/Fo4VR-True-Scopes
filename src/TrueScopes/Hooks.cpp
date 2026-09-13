@@ -1069,9 +1069,15 @@ namespace TrueScopes::Hooks
 
 	void OnGameLoaded()
 	{
-		// kGameLoaded repeats for save loads. Treat every occurrence as a hard
-		// player-3D boundary even when the singleton pointers happen to be reused.
-		// The next live verdict proves the replacement weapon 3D is complete and
+		StandDownFor("game loaded"sv);
+	}
+
+	void StandDownFor(std::string_view a_reason)
+	{
+		// Every occurrence is a hard player-3D boundary even when the singleton
+		// pointers happen to be reused - the engine reuses the ScopeParent address
+		// across a save load, which is exactly how a stale calibration hid. The
+		// next live verdict proves the replacement weapon 3D is complete and
 		// clears the teardown latch.
 		g_teardownLatch.store(true, std::memory_order_release);
 		g_gateRaw.store(false, std::memory_order_relaxed);
@@ -1086,7 +1092,7 @@ namespace TrueScopes::Hooks
 		SetWidgetNodesHidden(player, true);
 		g_notPresentableRun = 0;
 		g_failOpenLogged = false;
-		logger::info(FMT_STRING("game loaded - scope stood down; widget lifecycle generation {}"), lifecycle);
+		logger::info(FMT_STRING("{} - scope stood down; widget lifecycle generation {}"), a_reason, lifecycle);
 	}
 
 	std::uint64_t FrameCount()

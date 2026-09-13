@@ -20,4 +20,11 @@ namespace TrueScopes::FrikBridge
 
 	// True once setScopeProvider succeeded this session.
 	bool Registered();
+
+	// F4SE messages FRIK broadcasts under its own plugin name ("F4VRBody"):
+	// kSkeletonDestroying / kSkeletonReady carry the skeleton generation and
+	// mark a player-3D rebuild the engine's own messages do not always announce.
+	// Registered at plugin load against that sender; works without FRIK (the
+	// registration is simply never dispatched).
+	void RegisterLifecycleListener();
 }

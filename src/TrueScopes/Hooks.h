@@ -16,8 +16,14 @@ namespace TrueScopes::Hooks
 	// at kGameDataReady - the event source singleton exists by then.
 	void RegisterEquipSink();
 
-	// Save-load/new-game lifecycle boundary. Stands down the active scope and
-	// invalidates every widget/ident result before rebuilt player 3D can draw.
+	// Player-3D lifecycle boundary: stands down the active scope and invalidates
+	// every widget/ident result before rebuilt player 3D can draw. Reasons: F4SE
+	// kGameLoaded / kPreLoadGame / kPostLoadGame / kNewGame, and FRIK's own
+	// skeleton destroy/ready broadcasts - a save loaded mid-session sends only
+	// the pre/post pair, and FRIK rebuilds its skeleton on it while the engine
+	// hands back the same ScopeParent address, so a stale rotation calibration
+	// survived until this listened to all of them. Game thread; idempotent.
+	void StandDownFor(std::string_view a_reason);
 	void OnGameLoaded();
 
 

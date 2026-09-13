@@ -1,6 +1,7 @@
 #include "TrueScopes/FrikBridge.h"
 
 #include "Settings/Settings.h"
+#include "TrueScopes/Hooks.h"
 #include "external/FRIKApiV3.h"
 
 namespace TrueScopes::FrikBridge
@@ -131,5 +132,36 @@ namespace TrueScopes::FrikBridge
 	bool Registered()
 	{
 		return g_registered;
+	}
+
+	namespace
+	{
+		void OnFrikMessage(F4SE::MessagingInterface::Message* a_msg)
+		{
+			if (!a_msg) {
+				return;
+			}
+			using Event = FRIKApiV3::LifecycleEvent;
+			const auto type = static_cast<Event>(a_msg->type);
+			if (type != Event::kSkeletonDestroying && type != Event::kSkeletonReady) {
+				return;
+			}
+			std::uint32_t generation = 0;
+			if (a_msg->data && a_msg->dataLen == sizeof(FRIKApiV3::SkeletonLifecycleData)) {
+				generation = static_cast<const FRIKApiV3::SkeletonLifecycleData*>(a_msg->data)->generation;
+			}
+			// Both edges stand the scope down: destroying because the nodes are
+			// about to go, ready because what came back is a different body even
+			// when the engine reused the addresses. The next live verdict re-arms.
+			char reason[64];
+			std::snprintf(reason, sizeof(reason), "FRIK skeleton %s (generation %u)",
+				type == Event::kSkeletonDestroying ? "destroying" : "ready", generation);
+			Hooks::StandDownFor(reason);
+		}
+	}
+
+	void RegisterLifecycleListener()
+	{
+		F4SE::GetMessagingInterface()->RegisterListener(OnFrikMessage, FRIKApiV3::FRIK_F4SE_MOD_NAME);
 	}
 }

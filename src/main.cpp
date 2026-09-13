@@ -97,8 +97,11 @@ namespace
 		}
 		// Unequip event sink for the teardown latch. kGameLoaded, not
 		// kGameDataReady: F4SEVR never dispatches the latter (field-observed
-		// message sequence is 0, 1, 9). Idempotent - the message can repeat
-		// across save loads.
+		// message sequence is 0, 1, 9). kGameLoaded fires for the FIRST load of
+		// a session only; a save loaded from the in-game menu sends kPreLoadGame
+		// and kPostLoadGame instead (field-observed 2026-09-13), so those stand
+		// the scope down too - the engine rebuilds player 3D on both, and FRIK
+		// rebuilds its skeleton with it.
 		if (g_hooksInstalled &&
 			(a_msg->type == F4SE::MessagingInterface::kGameLoaded ||
 				a_msg->type == F4SE::MessagingInterface::kGameDataReady)) {
@@ -106,6 +109,15 @@ namespace
 			TrueScopes::Hooks::OnGameLoaded();
 			// FRIK is loaded by now; registering as its scope provider is idempotent.
 			TrueScopes::FrikBridge::OnGameLoaded();
+		}
+		if (g_hooksInstalled &&
+			(a_msg->type == F4SE::MessagingInterface::kPreLoadGame ||
+				a_msg->type == F4SE::MessagingInterface::kPostLoadGame ||
+				a_msg->type == F4SE::MessagingInterface::kNewGame)) {
+			TrueScopes::Hooks::StandDownFor(
+				a_msg->type == F4SE::MessagingInterface::kPreLoadGame ? "pre-load game"sv :
+				a_msg->type == F4SE::MessagingInterface::kPostLoadGame ? "post-load game"sv :
+				                                                          "new game"sv);
 		}
 		// Register our tools into alandtse/devbench at kPostPostLoad, not kPostLoad.
 		// F4SEVR's RegisterListener(sender = nullptr) snapshots the listener slots that
@@ -204,6 +216,7 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	// Listen either way. With the hooks in we do the work; without them the only
 	// thing left worth doing is naming whichever mod took the call site.
 	F4SE::GetMessagingInterface()->RegisterListener(MessageHandler);
+	TrueScopes::FrikBridge::RegisterLifecycleListener();
 	if (!g_hooksInstalled) {
 		logger::critical("hook install failed — plugin inactive"sv);
 		return true;  // stay loaded so the log tells the story, but do nothing
