@@ -274,6 +274,7 @@ namespace DevBench
 				{ "eyeBoxStrength", Kind::Float, &eyeBoxStrength },
 				{ "eyeBoxGain", Kind::Float, &eyeBoxGain },
 				{ "eyeBoxIpdUnits", Kind::Float, &eyeBoxIpdUnits },
+				{ "eyeBoxEye", Kind::Int, &eyeBoxEye },
 				{ "eyeBoxReliefUnits", Kind::Float, &eyeBoxReliefUnits },
 				{ "eyeBoxAxialStrength", Kind::Float, &eyeBoxAxialStrength },
 				{ "eyeBoxDistancePower", Kind::Float, &eyeBoxDistancePower },

@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 
 #include "Settings/Settings.h"
+#include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeIdent.h"
 
 namespace TrueScopes::LensComposite
@@ -302,9 +303,16 @@ float4 PSMain(VSOut i) : SV_Target
 		// Returns false (offsets zeroed) when any pointer is missing or the
 		// numbers are not sane - the shader then behaves as eye-on-axis.
 		// pose EMA state (render thread only): the smoothed eye offset every
-		// pose-driven term reads, so the nearest-eye flip never pops.
+		// pose-driven term reads.
 		float         g_posePrev[2] = {};
 		std::uint64_t g_poseLastMs = 0;
+
+		// The aiming eye, latched once per scope episode. Picking the nearer eye
+		// every frame handed the axis to the other eye whenever the gun swung
+		// across the face, flipping the parallax and the shadow mid-aim. Written
+		// on the render thread, read by the pose gate on the game thread.
+		std::atomic<int>           g_eyeSide{ 0 };           // -1 left, +1 right, 0 unlatched
+		std::atomic<std::uint64_t> g_eyeSideEpisode{ ~0ull };  // Hooks::ScopeEpisodeGeneration() the latch belongs to
 
 		bool EyeLateral(std::uintptr_t a_scopeParent, float& a_x, float& a_y, float& a_axialY, float& a_discR) noexcept
 		{
@@ -343,8 +351,12 @@ float4 PSMain(VSOut i) : SV_Target
 				return false;
 			}
 			a_discR = discR;
-			float best = -1.0f;
-			for (const float side : { -1.0f, 1.0f }) {
+			// Both eyes in tube-local coordinates, then one is chosen: a forced
+			// side (eyeBoxEye), else the side latched for this scope episode, else
+			// the nearer one, which then becomes the latch.
+			float lat[2] = { -1.0f, -1.0f }, px[2] = {}, py[2] = {}, pl[2] = {};
+			for (int i = 0; i < 2; ++i) {
+				const float side = i == 0 ? -1.0f : 1.0f;
 				const float e[3] = { camPos[0] + side * halfIpd * camRot[0],
 					                 camPos[1] + side * halfIpd * camRot[1],
 					                 camPos[2] + side * halfIpd * camRot[2] };
@@ -360,16 +372,38 @@ float4 PSMain(VSOut i) : SV_Target
 				if (!std::isfinite(lx) || !std::isfinite(lz) || !std::isfinite(ly)) {
 					continue;
 				}
-				const float m2 = lx * lx + lz * lz;
-				if (best < 0.0f || m2 < best) {
-					best = m2;
-					// mesh X = right = screen +u; mesh Z = up = screen -v
-					a_x = lx / discR;
-					a_y = -lz / discR;
-					a_axialY = ly;
+				lat[i] = std::sqrt(lx * lx + lz * lz);
+				// mesh X = right = screen +u; mesh Z = up = screen -v
+				px[i] = lx / discR;
+				py[i] = -lz / discR;
+				pl[i] = ly;
+			}
+			if (lat[0] < 0.0f && lat[1] < 0.0f) {
+				return false;
+			}
+			int side = 0;
+			const auto forced = *Settings::eyeBoxEye;
+			if (forced == 1 || forced == 2) {
+				side = forced == 1 ? -1 : 1;
+			} else {
+				const auto episode = TrueScopes::Hooks::ScopeEpisodeGeneration();
+				side = g_eyeSide.load(std::memory_order_relaxed);
+				if (side == 0 || g_eyeSideEpisode.load(std::memory_order_relaxed) != episode) {
+					side = (lat[1] >= 0.0f && (lat[0] < 0.0f || lat[1] <= lat[0])) ? 1 : -1;
+					g_eyeSide.store(side, std::memory_order_relaxed);
+					g_eyeSideEpisode.store(episode, std::memory_order_relaxed);
+					logger::info(FMT_STRING("aiming eye latched for this scope episode: {} (lateral left {:.2f} right {:.2f} units)"),
+						side > 0 ? "right"sv : "left"sv, lat[0], lat[1]);
 				}
 			}
-			return best >= 0.0f && std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
+			const int i = side > 0 ? 1 : 0;
+			if (lat[i] < 0.0f) {
+				return false;
+			}
+			a_x = px[i];
+			a_y = py[i];
+			a_axialY = pl[i];
+			return std::fabs(a_x) < 50.0f && std::fabs(a_y) < 50.0f;
 		}
 
 		using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
@@ -679,6 +713,18 @@ float4 PSMain(VSOut i) : SV_Target
 			}
 		}
 		g_diag.quadHidden = false;
+	}
+
+	int AimingEyeSide() noexcept
+	{
+		const auto forced = *Settings::eyeBoxEye;
+		if (forced == 1 || forced == 2) {
+			return forced == 1 ? -1 : 1;
+		}
+		if (g_eyeSideEpisode.load(std::memory_order_relaxed) != TrueScopes::Hooks::ScopeEpisodeGeneration()) {
+			return 0;
+		}
+		return g_eyeSide.load(std::memory_order_relaxed);
 	}
 
 	Diag GetDiag() noexcept

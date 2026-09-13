@@ -139,6 +139,10 @@ eyeBoxShadowShift = 0.35
 # Width of the crescent's gradient, disc units.
 eyeBoxEdgeSoft = 0.35
 eyeBoxIpdUnits = 4.5
+# Which eye the lens follows. 0 = pick the nearer eye once per scope raise and
+# keep it for that raise; 1 = always left, 2 = always right. Set your aiming
+# eye if the automatic pick ever lands on the wrong one.
+eyeBoxEye = 0
 # A real eyebox is distance-dependent: widest at the scope's eye relief,
 # tighter as the eye moves closer in, forgiving as it backs off. The lateral
 # miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2):

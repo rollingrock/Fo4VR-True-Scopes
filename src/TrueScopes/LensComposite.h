@@ -65,4 +65,9 @@ namespace TrueScopes::LensComposite
 		float eyeShiftY;
 	};
 	Diag GetDiag() noexcept;
+
+	// The eye the lens is following: -1 left, +1 right, 0 = not latched yet this
+	// scope episode. eyeBoxEye forces it; otherwise the render thread latches the
+	// nearer eye on the episode's first fill. Safe from any thread.
+	int AimingEyeSide() noexcept;
 }

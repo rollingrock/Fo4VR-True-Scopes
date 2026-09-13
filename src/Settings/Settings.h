@@ -286,6 +286,12 @@ namespace Settings
 	// off it; the eye-box tests both eyes and follows whichever is closer to
 	// the tube axis.
 	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxIpdUnits, 4.5);
+	// Which eye the lens follows. 0 = latch the nearer eye once per scope
+	// episode and keep it (picking the nearer eye every frame flipped the
+	// parallax and the shadow whenever the gun swung across the face);
+	// 1 = always the left eye, 2 = always the right. Set your aiming eye if
+	// the automatic pick ever lands on the wrong one.
+	MAKE_SETTING(iSetting, "TrueScopesVR", eyeBoxEye, std::int64_t(0));
 	// A real eyebox is distance-dependent: widest at the scope's eye relief,
 	// tighter as the eye moves closer in, forgiving as it backs off. The lateral
 	// miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2)
@@ -773,6 +779,7 @@ namespace Settings
 		LOAD(eyeBoxStrength);
 		LOAD(eyeBoxGain);
 		LOAD(eyeBoxIpdUnits);
+		LOAD(eyeBoxEye);
 		LOAD(eyeBoxReliefUnits);
 		LOAD(eyeBoxDistancePower);
 		LOAD(eyeBoxAxialStrength);

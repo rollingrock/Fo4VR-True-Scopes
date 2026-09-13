@@ -2,6 +2,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
+#include "TrueScopes/LensComposite.h"
 
 namespace TrueScopes::PoseGate
 {
@@ -99,10 +100,14 @@ namespace TrueScopes::PoseGate
 			const float headX[3] = { camRot[0], camRot[1], camRot[2] };
 			const float headFwd[3] = { camRot[4], camRot[5], camRot[6] };
 
-			// Both real eyes (camera root is the HMD centre); keep whichever sits
-			// closer to the tube axis - the aiming eye, no dominance setting.
+			// Both real eyes (camera root is the HMD centre). The eye the lens has
+			// latched for this scope episode wins (LensComposite::AimingEyeSide,
+			// or the forced eyeBoxEye); before the first fill of an episode, the
+			// nearer one. Gate and lens must agree or the gate drops the picture
+			// the lens is still centred on.
 			const float halfIpd = 0.5f * static_cast<float>(*Settings::eyeBoxIpdUnits);
 			float       bestLat = -1.0f, bestDist = 0.0f;
+			float       sideLat[2] = { -1.0f, -1.0f }, sideDist[2] = {};
 			for (const float side : { -1.0f, 1.0f }) {
 				const float e[3] = { camPos[0] + side * halfIpd * headX[0],
 					                 camPos[1] + side * halfIpd * headX[1],
@@ -120,9 +125,18 @@ namespace TrueScopes::PoseGate
 				if (!std::isfinite(lat)) {
 					continue;
 				}
+				sideLat[side > 0.0f ? 1 : 0] = lat;
+				sideDist[side > 0.0f ? 1 : 0] = std::sqrt(d2);
 				if (bestLat < 0.0f || lat < bestLat) {
 					bestLat = lat;
 					bestDist = std::sqrt(d2);
+				}
+			}
+			if (const int latched = LensComposite::AimingEyeSide(); latched != 0) {
+				const int i = latched > 0 ? 1 : 0;
+				if (sideLat[i] >= 0.0f) {
+					bestLat = sideLat[i];
+					bestDist = sideDist[i];
 				}
 			}
 			if (bestLat < 0.0f) {
