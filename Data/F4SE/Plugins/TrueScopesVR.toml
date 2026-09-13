@@ -147,7 +147,9 @@ eyeBoxEye = 0
 # takes a raise only when it is nearer to the tube axis than the dominant eye
 # by eyeBoxSwitchMargin game units (1 unit ~ 1.43 cm) as the scope comes up.
 eyeBoxDominantEye = 2
-eyeBoxSwitchMargin = 4.0
+# 2.5: the two eyes never differ by more than the IPD (~4.5), so 4 demanded a
+# near-perfect off-eye raise (the field switch cleared it by 0.01).
+eyeBoxSwitchMargin = 2.5
 # A real eyebox is distance-dependent: widest at the scope's eye relief,
 # tighter as the eye moves closer in, forgiving as it backs off. The lateral
 # miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2):

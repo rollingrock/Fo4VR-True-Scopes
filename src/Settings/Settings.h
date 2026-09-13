@@ -298,7 +298,7 @@ namespace Settings
 	// eyeBoxSwitchMargin game units (1 unit ~ 1.43 cm) at the moment the pose
 	// gate goes live near the axis. Set your dominant eye; most people are right.
 	MAKE_SETTING(iSetting, "TrueScopesVR", eyeBoxDominantEye, std::int64_t(2));
-	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxSwitchMargin, 4.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxSwitchMargin, 2.5);
 	// A real eyebox is distance-dependent: widest at the scope's eye relief,
 	// tighter as the eye moves closer in, forgiving as it backs off. The lateral
 	// miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2)
