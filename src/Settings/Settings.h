@@ -292,6 +292,13 @@ namespace Settings
 	// 1 = always the left eye, 2 = always the right. Set your aiming eye if
 	// the automatic pick ever lands on the wrong one.
 	MAKE_SETTING(iSetting, "TrueScopesVR", eyeBoxEye, std::int64_t(0));
+	// In automatic mode (eyeBoxEye 0): the eye the lens follows by default,
+	// 1 = left, 2 = right. The other eye takes a scope raise only when it is
+	// clearly the one on the tube - nearer to the axis than the dominant eye by
+	// eyeBoxSwitchMargin game units (1 unit ~ 1.43 cm) at the moment the pose
+	// gate goes live near the axis. Set your dominant eye; most people are right.
+	MAKE_SETTING(iSetting, "TrueScopesVR", eyeBoxDominantEye, std::int64_t(2));
+	MAKE_SETTING(fSetting, "TrueScopesVR", eyeBoxSwitchMargin, 4.0);
 	// A real eyebox is distance-dependent: widest at the scope's eye relief,
 	// tighter as the eye moves closer in, forgiving as it backs off. The lateral
 	// miss is multiplied by clamp((eyeBoxReliefUnits / eyeRelief)^power, 0.5, 2)
@@ -793,6 +800,8 @@ namespace Settings
 		LOAD(eyeBoxGain);
 		LOAD(eyeBoxIpdUnits);
 		LOAD(eyeBoxEye);
+		LOAD(eyeBoxDominantEye);
+		LOAD(eyeBoxSwitchMargin);
 		LOAD(eyeBoxReliefUnits);
 		LOAD(eyeBoxDistancePower);
 		LOAD(eyeBoxAxialStrength);

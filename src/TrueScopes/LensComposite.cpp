@@ -387,24 +387,29 @@ float4 PSMain(VSOut i) : SV_Target
 			if (forced == 1 || forced == 2) {
 				side = forced == 1 ? -1 : 1;
 			} else {
+				// Dominant eye by default. The other eye takes the episode only when
+				// it is clearly the one on the tube: nearer to the axis than the
+				// dominant eye by eyeBoxSwitchMargin, judged once the gate is live and
+				// the eye is within frikLookingLateral of the axis (the render gate
+				// itself goes live 25 units off the tube, where nearer is a coin toss).
+				const int  dominant = *Settings::eyeBoxDominantEye == 1 ? -1 : 1;
 				const auto episode = TrueScopes::Hooks::ScopeEpisodeGeneration();
 				side = g_eyeSide.load(std::memory_order_relaxed);
 				if (side == 0 || g_eyeSideEpisode.load(std::memory_order_relaxed) != episode) {
-					const int nearer = (lat[1] >= 0.0f && (lat[0] < 0.0f || lat[1] <= lat[0])) ? 1 : -1;
-					// Latch only once the pose gate is live AND the nearer eye is
-					// actually near the axis: the episode's first fill is the presence
-					// prime, and the render gate itself goes live 25 units off the
-					// tube, where the nearer eye is a coin toss that then sticks. The
-					// same distance FRIK is told counts as looking through.
-					const float nearLat = (std::min)(lat[0] < 0.0f ? 1.0e9f : lat[0], lat[1] < 0.0f ? 1.0e9f : lat[1]);
+					const int   d = dominant > 0 ? 1 : 0, o = 1 - d;
+					const float margin = (std::max)(0.0f, static_cast<float>(*Settings::eyeBoxSwitchMargin));
+					const bool  otherClearly = lat[o] >= 0.0f && (lat[d] < 0.0f || lat[o] + margin < lat[d]);
+					const int   choose = otherClearly ? -dominant : dominant;
+					const float chosenLat = lat[choose > 0 ? 1 : 0];
 					const auto  latchWithin = static_cast<float>(*Settings::frikLookingLateral);
-					if (PoseGate::FillLive() && (latchWithin <= 0.0f || nearLat < latchWithin)) {
-						g_eyeSide.store(nearer, std::memory_order_relaxed);
+					if (PoseGate::FillLive() && chosenLat >= 0.0f && (latchWithin <= 0.0f || chosenLat < latchWithin)) {
+						g_eyeSide.store(choose, std::memory_order_relaxed);
 						g_eyeSideEpisode.store(episode, std::memory_order_relaxed);
-						logger::info(FMT_STRING("aiming eye latched for this scope episode: {} (lateral left {:.2f} right {:.2f} units)"),
-							nearer > 0 ? "right"sv : "left"sv, lat[0], lat[1]);
+						logger::info(FMT_STRING("aiming eye latched for this scope episode: {}{} (lateral left {:.2f} right {:.2f} units, margin {:.1f})"),
+							choose > 0 ? "right"sv : "left"sv, otherClearly ? " - the non-dominant eye, clearly on the tube"sv : ""sv,
+							lat[0], lat[1], margin);
 					}
-					side = nearer;
+					side = choose;
 				}
 			}
 			const int i = side > 0 ? 1 : 0;
@@ -733,7 +738,8 @@ float4 PSMain(VSOut i) : SV_Target
 			return forced == 1 ? -1 : 1;
 		}
 		if (g_eyeSideEpisode.load(std::memory_order_relaxed) != TrueScopes::Hooks::ScopeEpisodeGeneration()) {
-			return 0;
+			// not latched yet this episode: the dominant eye, never a nearest guess
+			return *Settings::eyeBoxDominantEye == 1 ? -1 : 1;
 		}
 		return g_eyeSide.load(std::memory_order_relaxed);
 	}
