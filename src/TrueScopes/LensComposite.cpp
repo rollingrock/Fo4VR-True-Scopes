@@ -391,10 +391,14 @@ float4 PSMain(VSOut i) : SV_Target
 				side = g_eyeSide.load(std::memory_order_relaxed);
 				if (side == 0 || g_eyeSideEpisode.load(std::memory_order_relaxed) != episode) {
 					const int nearer = (lat[1] >= 0.0f && (lat[0] < 0.0f || lat[1] <= lat[0])) ? 1 : -1;
-					// Latch only once the pose gate is live: the episode's first fill
-					// is the presence prime, with the gun nowhere near the face, and
-					// the nearer eye there is a coin toss that then sticks.
-					if (PoseGate::FillLive()) {
+					// Latch only once the pose gate is live AND the nearer eye is
+					// actually near the axis: the episode's first fill is the presence
+					// prime, and the render gate itself goes live 25 units off the
+					// tube, where the nearer eye is a coin toss that then sticks. The
+					// same distance FRIK is told counts as looking through.
+					const float nearLat = (std::min)(lat[0] < 0.0f ? 1.0e9f : lat[0], lat[1] < 0.0f ? 1.0e9f : lat[1]);
+					const auto  latchWithin = static_cast<float>(*Settings::frikLookingLateral);
+					if (PoseGate::FillLive() && (latchWithin <= 0.0f || nearLat < latchWithin)) {
 						g_eyeSide.store(nearer, std::memory_order_relaxed);
 						g_eyeSideEpisode.store(episode, std::memory_order_relaxed);
 						logger::info(FMT_STRING("aiming eye latched for this scope episode: {} (lateral left {:.2f} right {:.2f} units)"),
