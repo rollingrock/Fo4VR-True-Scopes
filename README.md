@@ -63,7 +63,7 @@ Vanilla quirks that are **correct behavior**, not bugs:
 
 ## FRIK
 
-With FRIK 0.79 or later, True Scopes registers as FRIK's scope provider (API v3): the
+With FRIK 0.79 or later, True Scopes registers as FRIK's scope provider (API v2.2): the
 body stays visible while scoped and FRIK's hand/recoil damping, Pip-Boy use and
 two-hand grip release follow this plugin's pose gate instead of the ScopeMenu. Older
 FRIK versions work as before. `frikProvider = false` opts out.

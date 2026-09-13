@@ -15,5 +15,5 @@ set(headers ${headers}
 	src/TrueScopes/WidgetLifecycle.h
 	src/TrueScopes/WidgetRotation.h
 	src/TrueScopes/FrikBridge.h
-	src/external/FRIKApiV3.h
+	src/external/FRIKApiV2.h
 )

@@ -2,7 +2,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
-#include "external/FRIKApiV3.h"
+#include "external/FRIKApiV2.h"
 
 namespace TrueScopes::FrikBridge
 {
@@ -15,8 +15,8 @@ namespace TrueScopes::FrikBridge
 		bool g_lastLooking = false;
 		bool g_attempted = false;
 
-		using frik::api::FRIKApiV3;
-		using ScopeCapability = FRIKApiV3::ScopeCapability;
+		using frik::api::FRIKApiV2;
+		using ScopeCapability = FRIKApiV2::ScopeCapability;
 
 		// A blocking menu opening is where vanilla force-offs the scope through
 		// the enable switch's other call sites, which we leave unhooked; our
@@ -77,21 +77,23 @@ namespace TrueScopes::FrikBridge
 			logger::info("FRIK scope provider: disabled by TOML (frikProvider=false) - FRIK keys its scope behaviour on ScopeMenu as before"sv);
 			return;
 		}
-		const int err = FRIKApiV3::initialize();
+		// Minimum 1 so a FRIK without the scope calls (0.78) still initialises; the
+		// scope API is v2.2, gated below on getVersion() >= 2.
+		const int err = FRIKApiV2::initialize(1);
 		if (err != 0) {
-			// 1 = FRIK.dll not loaded, 2/3 = no v3 API (FRIK older than 0.79),
-			// 4 = API older than the header asks, 5 = FRIK's table smaller than ours.
-			logger::info(FMT_STRING("FRIK scope provider: API v3 init returned {} ({}) - no provider registered, FRIK keys its scope behaviour on ScopeMenu as before"),
+			// 1 = FRIK.dll not loaded, 2/3 = no v2 API, 4 = API older than asked,
+			// 5 = FRIK's table smaller than the minimum requires.
+			logger::info(FMT_STRING("FRIK scope provider: API v2 init returned {} ({}) - no provider registered, FRIK keys its scope behaviour on ScopeMenu as before"),
 				err,
 				err == 1 ? "FRIK.dll not loaded"sv :
-				err == 2 || err == 3 ? "FRIK predates API v3 (needs 0.79 or later)"sv :
-				err == 4 ? "FRIK API v3 older than this build asks for"sv :
-				           "FRIK API table smaller than this header"sv);
+				err == 2 || err == 3 ? "no FRIK API v2 export"sv :
+				err == 4 ? "FRIK API v2 older than this build asks for"sv :
+				           "FRIK API table smaller than the minimum"sv);
 			return;
 		}
-		const auto* inst = FRIKApiV3::inst;
-		if (!inst || inst->getVersion() < 3 || !inst->setScopeProvider) {
-			logger::info("FRIK scope provider: API present but without the v3.3 scope calls - no provider registered"sv);
+		const auto* inst = FRIKApiV2::inst;
+		if (!inst || inst->getVersion() < 2 || !inst->setScopeProvider) {
+			logger::info("FRIK scope provider: FRIK API v2 present but predates the v2.2 scope calls (needs FRIK 0.79 or later) - no provider registered"sv);
 			return;
 		}
 		// KeepsBodyVisible: our render is the main view with the body in it.
@@ -107,7 +109,7 @@ namespace TrueScopes::FrikBridge
 		}
 		g_registered = true;
 		g_lastLooking = false;
-		logger::info(FMT_STRING("FRIK scope provider registered: tag {} capabilities 0x{:x} (FRIK {} API v3.{})"),
+		logger::info(FMT_STRING("FRIK scope provider registered: tag {} capabilities 0x{:x} (FRIK {} API v2, contract {})"),
 			kTag, caps, inst->getModVersion(), inst->getVersion());
 		InstallMenuSink();
 	}
@@ -117,7 +119,7 @@ namespace TrueScopes::FrikBridge
 		if (!g_registered || a_looking == g_lastLooking) {
 			return;
 		}
-		const auto* inst = FRIKApiV3::inst;
+		const auto* inst = FRIKApiV2::inst;
 		if (!inst || !inst->setLookingThroughScope) {
 			return;
 		}
@@ -141,14 +143,14 @@ namespace TrueScopes::FrikBridge
 			if (!a_msg) {
 				return;
 			}
-			using Event = FRIKApiV3::LifecycleEvent;
+			using Event = FRIKApiV2::LifecycleEvent;
 			const auto type = static_cast<Event>(a_msg->type);
 			if (type != Event::kSkeletonDestroying && type != Event::kSkeletonReady) {
 				return;
 			}
 			std::uint32_t generation = 0;
-			if (a_msg->data && a_msg->dataLen == sizeof(FRIKApiV3::SkeletonLifecycleData)) {
-				generation = static_cast<const FRIKApiV3::SkeletonLifecycleData*>(a_msg->data)->generation;
+			if (a_msg->data && a_msg->dataLen == sizeof(FRIKApiV2::SkeletonLifecycleData)) {
+				generation = static_cast<const FRIKApiV2::SkeletonLifecycleData*>(a_msg->data)->generation;
 			}
 			// Both edges stand the scope down: destroying because the nodes are
 			// about to go, ready because what came back is a different body even
@@ -162,6 +164,6 @@ namespace TrueScopes::FrikBridge
 
 	void RegisterLifecycleListener()
 	{
-		F4SE::GetMessagingInterface()->RegisterListener(OnFrikMessage, FRIKApiV3::FRIK_F4SE_MOD_NAME);
+		F4SE::GetMessagingInterface()->RegisterListener(OnFrikMessage, FRIKApiV2::FRIK_F4SE_MOD_NAME);
 	}
 }

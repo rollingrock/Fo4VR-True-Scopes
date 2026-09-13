@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -18,32 +19,32 @@ namespace RE
 // ----------------------------------------------------------------------------------------
 // EXAMPLE USAGE:
 // Copy this whole file into your project AS IS
-// Use the code below as a reference of FRIK API v3 use
+// Use the code below as a reference of FRIK API v2 use
 // Call initialize in GameLoaded event
-// v3 is append-only: a newer FRIK keeps serving this header, and entries added later are
+// v2 is append-only since v2.2: a newer FRIK keeps serving this header, and entries added later are
 // documented with the version that introduced them.
 
 // {
-//     const int err = frik::api::FRIKApiV3::initialize();
+//     const int err = frik::api::FRIKApiV2::initialize();
 //     if (err != 0) {
-//         logger::error("FRIK API v3 init failed with error: {}!", err);
+//         logger::error("FRIK API v2 init failed with error: {}!", err);
 //     }
-//     logger::info("FRIK (v{}) API v3 (v{}) init successful!", frik::api::FRIKApiV3::inst->getModVersion(), frik::api::FRIKApiV3::inst->getVersion());
+//     logger::info("FRIK (v{}) API v2 (v{}) init successful!", frik::api::FRIKApiV2::inst->getModVersion(), frik::api::FRIKApiV2::inst->getVersion());
 //
 //     // later...
-//     if (!frik::api::FRIKApiV3::inst->isSkeletonReady())
+//     if (!frik::api::FRIKApiV2::inst->isSkeletonReady())
 //         return;
 //
-//     RE::NiPoint3 tip = frik::api::FRIKApiV3::inst->getIndexFingerTipPosition(frik::api::FRIKApiV3::Hand::Left);
+//     RE::NiPoint3 tip = frik::api::FRIKApiV2::inst->getIndexFingerTipPosition(frik::api::FRIKApiV2::Hand::Left);
 //
 //     // Override the primary hand, tagged so it never clobbers another system
-//     frik::api::FRIKApiV3::inst->setHandPose("MyMod_Interaction",
-//         frik::api::FRIKApiV3::Hand::Primary,
-//         frik::api::FRIKApiV3::HandPoseKind::Pointing,
-//         frik::api::FRIKApiV3::HAND_POSE_PRIORITY_DEFAULT);
+//     frik::api::FRIKApiV2::inst->setHandPose("MyMod_Interaction",
+//         frik::api::FRIKApiV2::Hand::Primary,
+//         frik::api::FRIKApiV2::HandPoseKind::Pointing,
+//         frik::api::FRIKApiV2::HAND_POSE_PRIORITY_DEFAULT);
 //
 //     // Later:
-//     frik::api::FRIKApiV3::inst->clearHandPose("MyMod_Interaction", frik::api::FRIKApiV3::Hand::Primary);
+//     frik::api::FRIKApiV2::inst->clearHandPose("MyMod_Interaction", frik::api::FRIKApiV2::Hand::Primary);
 // }
 
 namespace frik::api
@@ -61,20 +62,20 @@ namespace frik::api
 #endif
 
     /**
-     * Version of the FRIK API v3 contract, independent of the v1-v4 and v2 tables.
-     * v3 is append-only: FRIK only ever adds entries at the end of the table and bumps
-     * this number, so a client built against an older header keeps working against a
-     * newer FRIK. Check getVersion() against the version that introduced an entry
-     * before calling it.
+     * Version of the FRIK API v2 contract, independent of the v1-v4 table.
+     * A v2 client never reads the older table and vice versa.
+     * Since v2.2 the table is append-only: FRIK only ever adds entries at the end and bumps this
+     * number, so one header serves every FRIK from the minVersion you initialize with. Each entry
+     * documents the version that introduced it; check getVersion() before calling a newer one.
      */
-    inline constexpr std::uint32_t FRIK_API_V3_VERSION = 3;
+    inline constexpr std::uint32_t FRIK_API_V2_VERSION = 2;
 
-    struct FRIKApiV3
+    struct FRIKApiV2
     {
         /**
          * The name of FRIK mod as registered in F4SE used to be able to send/receive messages from to FRIK.
          * Example:
-         * _messaging->RegisterListener(onFRIKMessage, frik::api::FRIKApiV3::FRIK_F4SE_MOD_NAME);
+         * _messaging->RegisterListener(onFRIKMessage, frik::api::FRIKApiV2::FRIK_F4SE_MOD_NAME);
          */
         static constexpr auto FRIK_F4SE_MOD_NAME = "F4VRBody";
 
@@ -253,7 +254,7 @@ namespace frik::api
             // the tag is set and actively used to override the hand pose
             Active,
             // the tag is set but currently overridden by another tag
-            Overridden,
+            Overriden,
         };
 
         /**
@@ -382,13 +383,13 @@ namespace frik::api
         {
             kSkeletonReady = 100,
             kSkeletonDestroying = 101,
-            // The looking-through-scope state flipped (no payload). Since v3.3.
+            // The looking-through-scope state flipped (no payload). Since v2.2.
             kScopeEnter = 102,
             kScopeExit = 103,
         };
 
         /**
-         * What a scope provider takes over from FRIK while the player looks through a scope. Since v3.3.
+         * What a scope provider takes over from FRIK while the player looks through a scope. Since v2.2.
          */
         enum class ScopeCapability : std::uint32_t
         {
@@ -406,7 +407,7 @@ namespace frik::api
          * Payload carried by kSkeletonReady and kSkeletonDestroying (msg->data, msg->dataLen == sizeof).
          * generation counts skeleton builds this session (1 for the first), so a client can tell a
          * rebuild from the body it measured. rootNode is the skeleton root and is valid for the
-         * duration of the message. Since v3.2.
+         * duration of the message. Since v2.2.
          */
         struct SkeletonLifecycleData
         {
@@ -421,7 +422,7 @@ namespace frik::api
         static_assert(sizeof(SkeletonLifecycleData) == 40, "SkeletonLifecycleData ABI changed");
 
         /**
-         * Get the API v3 version number.
+         * Get the API v2 version number.
          * Use this to check compatibility before calling other functions.
          */
         std::uint32_t(FRIK_CALL* getVersion)();
@@ -677,32 +678,30 @@ namespace frik::api
          */
         bool(FRIK_CALL* unregisterWeaponHandRecoilController)(const char* tag);
 
-        // ---- Added in v3.2 ----
+        // ---- Added in v2.2 ----
 
         /**
          * Number of skeletons FRIK has built this session: 0 before the first, +1 on every rebuild.
-         * Matches SkeletonLifecycleData::generation of the latest lifecycle message. Since v3.2.
+         * Matches SkeletonLifecycleData::generation of the latest lifecycle message. Since v2.2.
          */
         std::uint32_t(FRIK_CALL* getSkeletonGeneration)();
 
         /**
          * Whether the current skeleton is the power armor rig. FRIK debounces the game's transient
-         * power-armor state before rebuilding, so this only flips together with the generation. Since v3.2.
+         * power-armor state before rebuilding, so this only flips together with the generation. Since v2.2.
          */
         bool(FRIK_CALL* isInPowerArmor)();
-
-        // ---- Added in v3.3 ----
 
         /**
          * Register or replace a scope provider with the ScopeCapability bits it takes over.
          * Providers survive skeleton rebuilds; capabilities are the union over registered tags.
-         * Call once after FRIK has loaded (the GameLoaded event). Since v3.3.
+         * Call once after FRIK has loaded (the GameLoaded event). Since v2.2.
          * @return false for an empty tag or unknown capability bits.
          */
         bool(FRIK_CALL* setScopeProvider)(const char* tag, std::uint32_t capabilities);
 
         /**
-         * Drop a scope provider. Removing an unknown tag is idempotent. Since v3.3.
+         * Drop a scope provider. Removing an unknown tag is idempotent. Since v2.2.
          */
         bool(FRIK_CALL* clearScopeProvider)(const char* tag);
 
@@ -710,30 +709,42 @@ namespace frik::api
          * Publish whether the player is looking through the scope. Only a provider registered with
          * PublishesLookingThrough may; publish on the game update thread whenever the state changes.
          * FRIK keys body hiding, hand and recoil damping, Pip-Boy interaction and two-handed grip
-         * release on it, and broadcasts kScopeEnter / kScopeExit when it flips. Since v3.3.
+         * release on it, and broadcasts kScopeEnter / kScopeExit when it flips. Since v2.2.
          */
         bool(FRIK_CALL* setLookingThroughScope)(const char* tag, bool lookingThrough);
 
         /**
          * The looking-through-scope state FRIK is keying on this frame: a publishing provider's flag,
-         * else whether the vanilla ScopeMenu is open. Since v3.3.
+         * else whether the vanilla ScopeMenu is open. Since v2.2.
          */
         bool(FRIK_CALL* isLookingThroughScope)();
 
         /**
-         * Initialize the FRIK API v3 object.
+         * Size of the table as published at a given contract version; the append-only rule keeps every older prefix intact.
+         */
+        static constexpr std::size_t tableSizeForVersion(const std::uint32_t version)
+        {
+            constexpr std::size_t functionCountByVersion[] = { 0, 31, 37 };
+            const auto index = version < std::size(functionCountByVersion) ? version : std::size(functionCountByVersion) - 1;
+            return functionCountByVersion[index] * sizeof(void (*)());
+        }
+
+        /**
+         * Initialize the FRIK API v2 object.
          * NOTE: call after all mods have been loaded in the game (GameLoaded event).
          *
-         * @param minVersion the minimal version required (default: the compiled against version)
+         * @param minVersion the minimal version required (default: the compiled against version).
+         * Pass an older version to also run against an older FRIK, and gate every entry newer
+         * than it on getVersion().
          * @return error codes:
          * 0 - Successful
          * 1 - Failed to find FRIK.dll (trying to init too early?)
-         * 2 - No FRIKAPI_V3_GetApi API found
-         * 3 - Failed FRIKAPI_V3_GetApi call
-         * 4 - FRIK API v3 version is older than the minimal required version
-         * 5 - Loaded API v3 table is smaller than this header (FRIK is older than the header)
+         * 2 - No FRIKAPI_V2_GetApi API found
+         * 3 - Failed FRIKAPI_V2_GetApi call
+         * 4 - FRIK API v2 version is older than the minimal required version
+         * 5 - Loaded API v2 table is smaller than minVersion requires (FRIK is older than it claims)
          */
-        [[nodiscard]] static int initialize(const uint32_t minVersion = FRIK_API_V3_VERSION)
+        [[nodiscard]] static int initialize(const uint32_t minVersion = FRIK_API_V2_VERSION)
         {
             if (inst) {
                 return 0;
@@ -745,7 +756,7 @@ namespace frik::api
                 return 1;
             }
 
-            const auto getApi = reinterpret_cast<const FRIKApiV3*(FRIK_CALL*)()>(GetProcAddress(frikDll, "FRIKAPI_V3_GetApi"));
+            const auto getApi = reinterpret_cast<const FRIKApiV2*(FRIK_CALL*)()>(GetProcAddress(frikDll, "FRIKAPI_V2_GetApi"));
             if (!getApi) {
                 return 2;
             }
@@ -760,8 +771,8 @@ namespace frik::api
                 return 4;
             }
 
-            const auto getApiStructSize = reinterpret_cast<std::uint32_t(FRIK_CALL*)()>(GetProcAddress(frikDll, "FRIKAPI_V3_GetApiStructSize"));
-            if (!getApiStructSize || getApiStructSize() < sizeof(FRIKApiV3)) {
+            const auto getApiStructSize = reinterpret_cast<std::uint32_t(FRIK_CALL*)()>(GetProcAddress(frikDll, "FRIKAPI_V2_GetApiStructSize"));
+            if (!getApiStructSize || getApiStructSize() < tableSizeForVersion(minVersion)) {
                 return 5;
             }
 
@@ -770,13 +781,14 @@ namespace frik::api
         }
 
         /**
-         * The initialized instance of FRIK API v3 interface.
+         * The initialized instance of FRIK API v2 interface.
          * Use after successful call to initialize.
          */
-        inline static const FRIKApiV3* inst = nullptr;
+        inline static const FRIKApiV2* inst = nullptr;
     };
 
-    inline constexpr std::size_t FRIK_API_V3_FUNCTION_POINTER_SIZE = sizeof(decltype(FRIKApiV3::getVersion));
-    static_assert(std::is_standard_layout_v<FRIKApiV3>, "FRIKApiV3 must remain standard-layout for its exported function table ABI");
-    static_assert(sizeof(FRIKApiV3) == 37 * FRIK_API_V3_FUNCTION_POINTER_SIZE, "FRIK API v3 function table layout changed");
+    inline constexpr std::size_t FRIK_API_V2_FUNCTION_POINTER_SIZE = sizeof(decltype(FRIKApiV2::getVersion));
+    static_assert(std::is_standard_layout_v<FRIKApiV2>, "FRIKApiV2 must remain standard-layout for its exported function table ABI");
+    static_assert(sizeof(FRIKApiV2) == 37 * FRIK_API_V2_FUNCTION_POINTER_SIZE, "FRIK API v2 function table layout changed");
+    static_assert(FRIKApiV2::tableSizeForVersion(FRIK_API_V2_VERSION) == sizeof(FRIKApiV2), "tableSizeForVersion is out of step with the table");
 }

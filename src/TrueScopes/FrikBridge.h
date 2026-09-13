@@ -2,7 +2,7 @@
 
 namespace TrueScopes::FrikBridge
 {
-	// FRIK API v3 scope provider. FRIK keys body hiding, hand and recoil damping,
+	// FRIK API v2.2 scope provider. FRIK keys body hiding, hand and recoil damping,
 	// Pip-Boy interaction and two-hand grip release on one "looking through the
 	// scope" state; without a provider that state is the vanilla ScopeMenu. We
 	// register as the provider that keeps the body visible and publishes the
