@@ -453,10 +453,11 @@ namespace Settings
 	// render gate: eye within this many game units of the tube axis and the head
 	// within this cone of the ocular. FRIK keys hand/recoil damping, Pip-Boy use
 	// and two-hand grip release on it, so a gate that goes live at the hip must
-	// not reach it. Exit thresholds are 1.5x / +10 degrees. 0 = publish the
-	// render gate unchanged.
-	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingLateral, 6.0);
-	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingConeDegrees, 40.0);
+	// not reach it. Exit thresholds are 1.25x / +5 degrees. 0 = publish the
+	// render gate unchanged. 3.5 units is about 5 cm: the field read 6 / 9 as
+	// "active for too long when clearly not aligned with the eye".
+	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingLateral, 3.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", frikLookingConeDegrees, 35.0);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);

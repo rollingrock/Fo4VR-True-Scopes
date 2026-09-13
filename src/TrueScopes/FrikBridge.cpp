@@ -114,21 +114,53 @@ namespace TrueScopes::FrikBridge
 		InstallMenuSink();
 	}
 
+	namespace
+	{
+		bool Publish(bool a_looking)
+		{
+			if (!g_registered || a_looking == g_lastLooking) {
+				return false;
+			}
+			const auto* inst = FRIKApiV2::inst;
+			if (!inst || !inst->setLookingThroughScope) {
+				return false;
+			}
+			if (!inst->setLookingThroughScope(kTag, a_looking)) {
+				logger::warn(FMT_STRING("FRIK scope provider: setLookingThroughScope({}) refused"), a_looking);
+				return false;
+			}
+			g_lastLooking = a_looking;
+			return true;
+		}
+	}
+
 	void PublishLookingThrough(bool a_looking)
 	{
-		if (!g_registered || a_looking == g_lastLooking) {
+		if (Publish(a_looking)) {
+			logger::info(FMT_STRING("FRIK looking-through-scope -> {}"), a_looking ? "true"sv : "false"sv);
+		}
+	}
+
+	void PublishLookingThrough(bool a_looking, float a_dist, float a_lateral, float a_lookDeg)
+	{
+		if (Publish(a_looking)) {
+			logger::info(FMT_STRING("FRIK looking-through-scope -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg)"),
+				a_looking ? "true"sv : "false"sv, a_dist, a_lateral, a_lookDeg);
+		}
+	}
+
+	void QueueStandDown()
+	{
+		if (!g_registered || !g_lastLooking) {
 			return;
 		}
-		const auto* inst = FRIKApiV2::inst;
-		if (!inst || !inst->setLookingThroughScope) {
-			return;
+		if (auto* tasks = F4SE::GetTaskInterface()) {
+			tasks->AddTask([]() {
+				if (Publish(false)) {
+					logger::info("FRIK looking-through-scope -> false (verdict site quiet: holstered or menu)"sv);
+				}
+			});
 		}
-		if (!inst->setLookingThroughScope(kTag, a_looking)) {
-			logger::warn(FMT_STRING("FRIK scope provider: setLookingThroughScope({}) refused"), a_looking);
-			return;
-		}
-		g_lastLooking = a_looking;
-		logger::info(FMT_STRING("FRIK looking-through-scope -> {}"), a_looking ? "true"sv : "false"sv);
 	}
 
 	bool Registered()

@@ -674,6 +674,7 @@ namespace TrueScopes::Hooks
 					g_gateRaw.store(false);
 					SetScopeActive(false);
 					LensComposite::RestoreReticleQuad();
+					FrikBridge::QueueStandDown();
 					logger::info("scope active -> false (verdict stale: holstered or menu)"sv);
 				}
 				// widget presence dies with eligibility too — the verdict site

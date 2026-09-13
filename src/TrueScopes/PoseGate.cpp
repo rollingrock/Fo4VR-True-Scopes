@@ -301,13 +301,13 @@ namespace TrueScopes::PoseGate
 			const auto  coneMax = static_cast<float>(*Settings::frikLookingConeDegrees);
 			bool        looking = live;
 			if (live && latMax > 0.0f) {
-				looking = looking && s.lateral < (s_frikLooking ? latMax * 1.5f : latMax);
+				looking = looking && s.lateral < (s_frikLooking ? latMax * 1.25f : latMax);
 			}
 			if (live && coneMax > 0.0f) {
-				looking = looking && s.lookDeg < (s_frikLooking ? coneMax + 10.0f : coneMax);
+				looking = looking && s.lookDeg < (s_frikLooking ? coneMax + 5.0f : coneMax);
 			}
 			s_frikLooking = looking;
-			FrikBridge::PublishLookingThrough(looking);
+			FrikBridge::PublishLookingThrough(looking, s.dist, s.lateral, s.lookDeg);
 		}
 
 		// The verdict fed to vanilla is always the pose. Feeding a perpetual

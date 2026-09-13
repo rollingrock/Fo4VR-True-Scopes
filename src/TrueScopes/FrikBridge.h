@@ -18,6 +18,15 @@ namespace TrueScopes::FrikBridge
 	// repeats are swallowed, so call it from anywhere the verdict may have moved.
 	void PublishLookingThrough(bool a_looking);
 
+	// Same, with the pose the predicate saw, for the log line.
+	void PublishLookingThrough(bool a_looking, float a_dist, float a_lateral, float a_lookDeg);
+
+	// Publish false from a thread that is not the game thread: queued through the
+	// F4SE task interface and applied on the next game frame. For the render
+	// thread's stale-verdict stand-down (holster: the weapon stays equipped, so
+	// the unequip sink never fires, and the verdict site simply stops running).
+	void QueueStandDown();
+
 	// True once setScopeProvider succeeded this session.
 	bool Registered();
 
