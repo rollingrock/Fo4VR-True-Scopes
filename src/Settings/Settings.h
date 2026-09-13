@@ -404,6 +404,11 @@ namespace Settings
 	// arm's length, like real optics), and a head look cone. Each has an
 	// enter/exit pair for spatial hysteresis.
 	MAKE_SETTING(bSetting, "TrueScopesVR", poseGateEnabled, true);
+	// Whether to take the eye-gate verdict call site at all. false leaves it to
+	// whichever other plugin patches it (ROCK's native scopes do); the vanilla
+	// proximity gate then decides activation and every poseGate* setting is
+	// inert, while identification, fit and the render keep working. Load-time.
+	MAKE_SETTING(bSetting, "TrueScopesVR", verdictHookEnabled, true);
 	// Eye→ocular distance band, game units (1 ≈ 1.43 cm). 90 ≈ 1.3 m covers a
 	// pistol at full extension with margin; vanilla's cap was 38/40.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseMaxDistance, 90.0);
@@ -845,6 +850,7 @@ namespace Settings
 		LOAD(reticleParallaxFraction);
 		LOAD(nvScanlines);
 		LOAD(poseGateEnabled);
+		LOAD(verdictHookEnabled);
 		LOAD(poseMaxDistance);
 		LOAD(poseExitDistance);
 		LOAD(poseMaxLateral);

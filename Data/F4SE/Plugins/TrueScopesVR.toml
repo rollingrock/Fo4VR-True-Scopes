@@ -291,6 +291,13 @@ poseIdleRefreshSeconds = 0.0
 # head look cone. Each has an enter/exit pair (spatial hysteresis - no flicker
 # hold needed). ON for field judgment; set false for v0.2.115 behavior.
 poseGateEnabled = true
+# Take the eye-gate verdict call site at all. If another plugin patched it
+# first the log names that plugin and True Scopes leaves the site alone, which
+# is the same as setting this false: the vanilla proximity gate decides
+# activation, the poseGate* settings below are inert, and identification, fit
+# and the render keep working. Set false on purpose to keep such a plugin
+# (ROCK's native scopes patch this site). Restart to change.
+verdictHookEnabled = true
 # Eye-to-ocular distance band, game units (1 unit ~ 1.43 cm). Enter under
 # poseMaxDistance, drop only past poseExitDistance.
 poseMaxDistance = 90.0

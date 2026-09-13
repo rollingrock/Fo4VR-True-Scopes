@@ -37,6 +37,64 @@ namespace TrueScopes::Hooks
 		// drawn + eligible = the new 3D is complete) clears it. While armed, every
 		// render-thread consumer of weapon 3D stands down.
 		std::atomic_bool g_teardownLatch{ false };
+		// Frame the latch was last armed on. The verdict site is what clears the
+		// latch; when that site is not ours (another plugin owns the call, or the
+		// user left it alone) nothing would ever clear it, so a frame count does.
+		std::atomic<std::uint64_t> g_teardownLatchFrame{ 0 };
+
+		void ArmTeardownLatch()
+		{
+			g_teardownLatchFrame.store(g_frames.load(std::memory_order_relaxed), std::memory_order_relaxed);
+			g_teardownLatch.store(true, std::memory_order_release);
+		}
+
+		// The file name of whatever module contains a_address, for naming the
+		// plugin that patched a call site before we got there. Empty when it is
+		// not inside any loaded module.
+		std::string ModuleNameAt(std::uintptr_t a_address)
+		{
+			HMODULE mod = nullptr;
+			if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+					reinterpret_cast<LPCWSTR>(a_address), &mod) || !mod) {
+				return {};
+			}
+			wchar_t path[MAX_PATH]{};
+			const auto n = ::GetModuleFileNameW(mod, path, MAX_PATH);
+			if (n == 0) {
+				return {};
+			}
+			std::wstring w(path, n);
+			const auto slash = w.find_last_of(L"\\/");
+			if (slash != std::wstring::npos) {
+				w = w.substr(slash + 1);
+			}
+			std::string out;
+			for (const auto c : w) {
+				out.push_back(c < 128 ? static_cast<char>(c) : '?');
+			}
+			return out;
+		}
+
+		// A patched call site reads E8 rel32 to somewhere outside the game; say
+		// which DLL that is. Nothing else in the log can name it.
+		void NameForeignCall(std::uintptr_t a_site, std::string_view a_what)
+		{
+			const auto* p = reinterpret_cast<const std::uint8_t*>(a_site);
+			if (p[0] != 0xE8) {
+				return;
+			}
+			std::int32_t rel = 0;
+			std::memcpy(&rel, p + 1, sizeof(rel));
+			const auto target = a_site + 5 + static_cast<std::intptr_t>(rel);
+			const auto name = ModuleNameAt(target);
+			if (name.empty()) {
+				logger::critical(FMT_STRING("{}: the call there goes to {:016X}, which is not inside any loaded module (a trampoline)"), a_what, target);
+			} else if (name == "Fallout4VR.exe") {
+				logger::critical(FMT_STRING("{}: the call there goes to {:016X} inside Fallout4VR.exe itself - different game build?"), a_what, target);
+			} else {
+				logger::critical(FMT_STRING("{}: already patched by {} (its call goes to {:016X}). That plugin owns the site; True Scopes leaves it alone"), a_what, name, target);
+			}
+		}
 
 		// Scope episode generation: +1 on every g_scopeActive edge, raise and lower
 		// alike. Exported as TrueScopes_ScopeEpisode (main.cpp) so another plugin can
@@ -396,7 +454,7 @@ namespace TrueScopes::Hooks
 				}
 				// Game thread; teardown starts after this returns. Stand everything
 				// down now instead of a staleness-poll second from now.
-				g_teardownLatch.store(true);
+				ArmTeardownLatch();
 				g_gateRaw.store(false);
 				// The verdict site stops running with the weapon gone, so this is
 				// the last game-thread chance to tell FRIK the scope is down.
@@ -707,6 +765,16 @@ namespace TrueScopes::Hooks
 						g_teardownLatch.exchange(false)) {
 						logger::info("teardown latch cleared (verdict site long quiet)"sv);
 					}
+					// No verdict site of ours (hook refused or switched off) and it
+					// has never run: nothing above can clear the latch, and a latch
+					// that never clears is no identification, no fit and no render
+					// for the whole session. Teardown is over well within 90 frames.
+					if ((!g_verdictHookInstalled || !PoseGate::SiteEverRan()) &&
+						g_teardownLatch.load(std::memory_order_relaxed) &&
+						g_frames.load(std::memory_order_relaxed) - g_teardownLatchFrame.load(std::memory_order_relaxed) > 90 &&
+						g_teardownLatch.exchange(false)) {
+						logger::info("teardown latch cleared (no verdict site of ours; 90 frames after it was armed)"sv);
+					}
 					if (!g_teardownLatch.load(std::memory_order_relaxed)) {
 						if (const auto player = *reinterpret_cast<std::uintptr_t*>(
 								REL::Module::get().base() + Addr::kPlayerGlobal)) {
@@ -941,13 +1009,18 @@ namespace TrueScopes::Hooks
 		{
 			REL::Relocation<std::uintptr_t> verdictSite{ REL::Offset(Addr::kScopeGateVerdictCallSite) };
 			static constexpr std::uint8_t kVerdictOrig[] = { 0xE8, 0x3C, 0x25, 0x00, 0x00 };
-			if (VerifyBytes(verdictSite, { kVerdictOrig, 5 }, "eye-gate verdict site"sv)) {
+			if (!*Settings::verdictHookEnabled) {
+				logger::info("pose-gate verdict hook left uninstalled by TOML (verdictHookEnabled=false) - the vanilla "
+				             "eye gate decides activation, poseGate* settings are inert, ident and fit run from the fill hook"sv);
+			} else if (VerifyBytes(verdictSite, { kVerdictOrig, 5 }, "eye-gate verdict site"sv)) {
 				pstl::write_thunk_call<ScopeGateVerdictHook>(verdictSite.address());
 				g_verdictHookInstalled = true;
 				logger::info("pose-gate verdict hook installed"sv);
 			} else {
-				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) — poseGateEnabled will be inert; "
-				             "scope identification falls back to the per-frame fill-hook path"sv);
+				NameForeignCall(verdictSite.address(), "eye-gate verdict site"sv);
+				logger::warn("pose-gate verdict hook NOT installed (byte mismatch) - the vanilla eye gate decides activation, "
+				             "poseGate* settings are inert, ident and fit run from the fill hook. If the plugin named above "
+				             "is one you want, set verdictHookEnabled=false to make this deliberate"sv);
 			}
 		}
 
@@ -1080,7 +1153,7 @@ namespace TrueScopes::Hooks
 		// across a save load, which is exactly how a stale calibration hid. The
 		// next live verdict proves the replacement weapon 3D is complete and
 		// clears the teardown latch.
-		g_teardownLatch.store(true, std::memory_order_release);
+		ArmTeardownLatch();
 		g_gateRaw.store(false, std::memory_order_relaxed);
 		FrikBridge::PublishLookingThrough(false);
 		if (SetScopeActive(false)) {
@@ -1133,6 +1206,7 @@ namespace TrueScopes::Hooks
 			armWriteSite.address(), p[0], p[1], p[2], p[3], p[4],
 			g_armWriteHookBytes[0], g_armWriteHookBytes[1], g_armWriteHookBytes[2],
 			g_armWriteHookBytes[3], g_armWriteHookBytes[4]);
+		NameForeignCall(armWriteSite.address(), "scope-arm call site"sv);
 		return false;
 	}
 
