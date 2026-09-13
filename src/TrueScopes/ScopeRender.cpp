@@ -817,6 +817,24 @@ namespace TrueScopes::ScopeRender
 			return true;
 		}
 
+		// Rotation-capture settle gate. The calibration K is taken once per widget
+		// lifecycle from the scope shape's world rotation, and the first fit after a
+		// rebaseline lands within tens of milliseconds of FRIK's skeleton init and
+		// the equip, while the weapon is still in a transitional pose; a K taken
+		// there tilts the disc off the ocular for the rest of the lifecycle. Capture
+		// waits until the shape's rotation has held still over several consecutive
+		// fits and a settle time has passed since the lifecycle adoption.
+		float         g_rotPrevRw[9] = {};
+		bool          g_rotHavePrev = false;
+		std::uint32_t g_rotStableFits = 0;
+		std::uint64_t g_rotAdoptTick = 0;
+
+		void ResetRotationSettle() noexcept
+		{
+			g_rotHavePrev = false;
+			g_rotStableFits = 0;
+		}
+
 		// The disc's facing, slaved to the weapon. ScopeParent hangs off
 		// PrimaryUIAttachNode (the wand chain); one-handed the weapon is rigid
 		// to it, but a two-hand grip re-aims the weapon from the off-hand and a
@@ -839,6 +857,7 @@ namespace TrueScopes::ScopeRender
 					alignas(16) std::uint8_t upd[0x30]{};
 					Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
 					g_widget.rotation.Reset();
+				ResetRotationSettle();
 					g_widget.wroteRotation = false;
 				}
 				return false;
@@ -862,6 +881,21 @@ namespace TrueScopes::ScopeRender
 						return false;
 					}
 				}
+				// Settle gate: trace(Rw^T Rw_prev) = 1 + 2 cos(theta); 2.9985 is about
+				// 2.2 degrees of rotation between consecutive fits.
+				{
+					float dot = 0.0f;
+					for (std::size_t i = 0; i < 9; ++i) {
+						dot += Rw[i] * g_rotPrevRw[i];
+					}
+					const bool stable = g_rotHavePrev && dot > 2.9985f;
+					std::memcpy(g_rotPrevRw, Rw, sizeof(g_rotPrevRw));
+					g_rotHavePrev = true;
+					g_rotStableFits = stable ? g_rotStableFits + 1 : 0;
+					if (g_rotStableFits < 6 || ::GetTickCount64() - g_rotAdoptTick < 500) {
+						return false;  // engine baseline stays in place until the weapon settles
+					}
+				}
 				const auto* raw = reinterpret_cast<const float*>(a_sp + 0x30);
 				float       L0[9];
 				for (std::size_t r = 0; r < 3; ++r) {
@@ -875,6 +909,8 @@ namespace TrueScopes::ScopeRender
 				}
 				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
 				g_widget.rotation.Capture(Rw, Rp, L0);
+				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, {} ms after adoption"),
+					g_rotStableFits, ::GetTickCount64() - g_rotAdoptTick);
 			}
 			if (!g_widget.rotation.Compute(Rw, Rp, a_out)) {
 				return false;
@@ -1516,6 +1552,8 @@ namespace TrueScopes::ScopeRender
 			// as a fail-safe for an inferred reset and to order the probe after any
 			// baseline restoration done above.
 			ScopeIdent::Request();
+			g_rotAdoptTick = ::GetTickCount64();
+			ResetRotationSettle();
 			logger::info(FMT_STRING("WIDGET LIFECYCLE: adopted generation {} (node=0x{:X}, old baseline {})"),
 				epoch, a_sp, restored ? "restored"sv : "engine/rebuilt"sv);
 			return true;
@@ -1559,7 +1597,8 @@ namespace TrueScopes::ScopeRender
 				g_widget.node = sp;
 				g_widget.captured = true;
 				g_widget.applied = false;
-				g_widget.rotation.Reset();  // engine rewrite = pristine rotation too
+				g_widget.rotation.Reset();
+				ResetRotationSettle();  // engine rewrite = pristine rotation too
 				g_widget.wroteRotation = false;
 				g_widgetLifecycle.Withhold();
 				logger::info(FMT_STRING("WIDGET FIT baseline: translate=({:.3f},{:.3f},{:.3f}) scale={:.3f}"),
@@ -1586,6 +1625,7 @@ namespace TrueScopes::ScopeRender
 						std::memcpy(reinterpret_cast<void*>(sp + 0x30),
 							g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 						g_widget.rotation.Reset();
+				ResetRotationSettle();
 						g_widget.wroteRotation = false;
 					}
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);

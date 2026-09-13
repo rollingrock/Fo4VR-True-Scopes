@@ -5,6 +5,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
+#include "TrueScopes/PoseGate.h"
 #include "TrueScopes/ScopeIdent.h"
 
 namespace TrueScopes::LensComposite
@@ -389,11 +390,17 @@ float4 PSMain(VSOut i) : SV_Target
 				const auto episode = TrueScopes::Hooks::ScopeEpisodeGeneration();
 				side = g_eyeSide.load(std::memory_order_relaxed);
 				if (side == 0 || g_eyeSideEpisode.load(std::memory_order_relaxed) != episode) {
-					side = (lat[1] >= 0.0f && (lat[0] < 0.0f || lat[1] <= lat[0])) ? 1 : -1;
-					g_eyeSide.store(side, std::memory_order_relaxed);
-					g_eyeSideEpisode.store(episode, std::memory_order_relaxed);
-					logger::info(FMT_STRING("aiming eye latched for this scope episode: {} (lateral left {:.2f} right {:.2f} units)"),
-						side > 0 ? "right"sv : "left"sv, lat[0], lat[1]);
+					const int nearer = (lat[1] >= 0.0f && (lat[0] < 0.0f || lat[1] <= lat[0])) ? 1 : -1;
+					// Latch only once the pose gate is live: the episode's first fill
+					// is the presence prime, with the gun nowhere near the face, and
+					// the nearer eye there is a coin toss that then sticks.
+					if (PoseGate::FillLive()) {
+						g_eyeSide.store(nearer, std::memory_order_relaxed);
+						g_eyeSideEpisode.store(episode, std::memory_order_relaxed);
+						logger::info(FMT_STRING("aiming eye latched for this scope episode: {} (lateral left {:.2f} right {:.2f} units)"),
+							nearer > 0 ? "right"sv : "left"sv, lat[0], lat[1]);
+					}
+					side = nearer;
 				}
 			}
 			const int i = side > 0 ? 1 : 0;
