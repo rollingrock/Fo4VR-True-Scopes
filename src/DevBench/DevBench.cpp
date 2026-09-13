@@ -307,6 +307,7 @@ namespace DevBench
 				{ "dropSunGlareGroup", Kind::Bool, &dropSunGlareGroup },
 				{ "parallaxDepthUnits", Kind::Float, &parallaxDepthUnits },
 				{ "parallaxMaxShift", Kind::Float, &parallaxMaxShift },
+				{ "parallaxOversample", Kind::Float, &parallaxOversample },
 				{ "parallaxSmoothing", Kind::Float, &parallaxSmoothing },
 				{ "parallaxMinEyeRelief", Kind::Float, &parallaxMinEyeRelief },
 				{ "reticleParallaxFraction", Kind::Float, &reticleParallaxFraction },

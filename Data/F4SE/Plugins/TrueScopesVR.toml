@@ -246,9 +246,16 @@ dropSunGlareGroup = true
 # Real-scope verdict 2026-08-25: "way more" - the image through a scope sits
 # near optical infinity, so the factor should approach 1. Sweep 10/20/40.
 parallaxDepthUnits = 20.0
-# Raised with the depth bump; if a dark smear band appears at the shifted
-# edge while swaying hard, lower this first.
-parallaxMaxShift = 0.15
+# Cap on the shift in disc UV: 0.5 = the crosshair can reach the rim. Before
+# 0.3.33 this was 0.15 (30 percent of the way) because the render was exactly
+# the disc and any further shift smeared the picture's edge into view.
+parallaxMaxShift = 0.5
+# The fix for that: the scope camera renders this many times the disc's
+# tangent and the lens shows the central part, so the shift has margin to
+# move into. 2 = a full radius of shift with no smear; magnification is
+# unchanged and the disc still has more render pixels than headset pixels.
+# 1 = the old exact-disc render (then keep parallaxMaxShift near 0.15).
+parallaxOversample = 2.0
 parallaxSmoothing = 0.3
 parallaxMinEyeRelief = 4.0
 # Real-scope verdict 2026-08-25: reticle moves 1:1 with the image.

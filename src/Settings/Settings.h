@@ -362,9 +362,18 @@ namespace Settings
 	// through a distance-focused scope sits near optical infinity
 	// (D/(L+D) -> 1); 20 gives ~0.83 at rifle relief.
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxDepthUnits, 20.0);
-	// Cap on the UV shift. If a dark smear band shows at the shifted edge, this
-	// is the first knob to lower.
-	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.15);
+	// Cap on the shift, in disc UV (0.5 = the reticle reaches the rim). Smear at
+	// the shifted edge means the shift outran the oversample margin: raise
+	// parallaxOversample or lower this.
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMaxShift, 0.5);
+	// The scope camera renders this many times the disc's tangent and the
+	// composite shows the central part. The margin is what the parallax shift
+	// moves into; 2 covers a full radius of shift with no edge smear at no
+	// visible sharpness cost (the disc still carries more render pixels than
+	// headset pixels). 1 = the disc exactly, as before, and the shift is then
+	// limited to ~0.15 before the edge shows. Costs passes: the culled scene is
+	// k^2 wider.
+	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxOversample, 2.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxSmoothing, 0.3);
 	MAKE_SETTING(fSetting, "TrueScopesVR", parallaxMinEyeRelief, 4.0);
 	// How much the reticle rides the parallax shift. 1 = moves 1:1 with the
@@ -796,6 +805,7 @@ namespace Settings
 		LOAD(dropSunGlareGroup);
 		LOAD(parallaxDepthUnits);
 		LOAD(parallaxMaxShift);
+		LOAD(parallaxOversample);
 		LOAD(parallaxSmoothing);
 		LOAD(parallaxMinEyeRelief);
 		LOAD(reticleParallaxFraction);

@@ -983,7 +983,13 @@ namespace TrueScopes::ScopeRender
 			// half-angle lands on t exactly; the horizontal is squared up after the
 			// call (scopeFrustumExact) because no single angle can undo an aspect
 			// applied to a square.
-			const float t = (R / d) / mEff;
+			// Oversample: render parallaxOversample times the disc's tangent and let
+			// the composite show the central 1/k. Magnification is unchanged; the
+			// margin is what lets the parallax shift travel to the rim without the
+			// sampler smearing the picture's edge into view. k = 2 covers a full
+			// radius of shift exactly.
+			const float k = (std::clamp)(static_cast<float>(*Settings::parallaxOversample), 1.0f, 4.0f);
+			const float t = (R / d) / mEff * k;
 			const float fovDeg = 2.0f * std::atan(0.9f * t) * (180.0f / 3.14159265358979f);
 			if (!std::isfinite(fovDeg) || fovDeg < 0.05f || fovDeg > 170.0f) {
 				return 0.0f;
@@ -1810,6 +1816,15 @@ namespace TrueScopes::ScopeRender
 			}
 			if (a_fovDeg <= 0.0f) {
 				return false;  // asked to derive, could not; a zero FOV renders nothing useful
+			}
+			if (!derivedUsed) {
+				// A hand-set FOV is the disc's; widen its tangent by the same
+				// oversample the composite crops back out.
+				const float k = (std::clamp)(static_cast<float>(*Settings::parallaxOversample), 1.0f, 4.0f);
+				if (k > 1.001f) {
+					const float half = a_fovDeg * 0.5f * (3.14159265358979f / 180.0f);
+					a_fovDeg = 2.0f * std::atan(std::tan(half) * k) * (180.0f / 3.14159265358979f);
+				}
 			}
 			g_lastFovDeg = a_fovDeg;
 

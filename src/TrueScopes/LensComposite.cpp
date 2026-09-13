@@ -63,7 +63,7 @@ cbuffer Params : register(b0)
     float4 sheen;     // x glint strength, y glint width (disc units), z fresnel strength, w smudge amount
     float4 sheen2;    // x glint travel, y smudge scale, z reticle parallax fraction, w rim parallax
     float4 glass2;    // x residual brightness-adapt scale, y axial pupil shrink, z lateral miss (eyebox radii), w lateral shrink
-    float4 glass3;    // x base pupil radius (disc units), y edge softness, zw reserved
+    float4 glass3;    // x base pupil radius (disc units), y edge softness, z picture crop (1/oversample; 0 = 1), w reserved
 };
 Texture2D    picture  : register(t0);
 Texture2D    reticleT : register(t1);
@@ -84,11 +84,15 @@ float4 PSMain(VSOut i) : SV_Target
 {
     float2 cuv = i.uv - 0.5;
     float  r   = length(cuv) * 2.0;      // disc units: 1.0 at the picture edge
-    // parallax depth: picture samples shift by pose.zw (CPU-smoothed, clamped)
-    // while every rim-anchored term (cuv/r, vignette, eye-box, rim shadow,
-    // reticle at fraction 0) stays on geometric UV - the image plane reads
-    // deeper than the lens plane. (0,0) = bit-exact identity.
-    float2 puv = i.uv + pose.zw;
+    // parallax depth: picture samples shift by pose.zw (CPU-smoothed, clamped,
+    // in disc UV) while every rim-anchored term (cuv/r, vignette, eye-box, rim
+    // shadow, reticle at fraction 0) stays on geometric UV - the image plane
+    // reads deeper than the lens plane. The picture was rendered oversampled
+    // (a wider frustum than the disc shows); glass3.z crops the central part
+    // back out, and the margin around it is what the shift samples into
+    // instead of the sampler's clamped edge. (0,0) shift and crop 1 = identity.
+    float  crop = glass3.z > 0.0 ? glass3.z : 1.0;
+    float2 puv  = 0.5 + (i.uv - 0.5 + pose.zw) * crop;
 
     float3 c;
     // --- chromatic fringe at the rim (optical tubes only; a screen is a display)
@@ -1010,6 +1014,9 @@ float4 PSMain(VSOut i) : SV_Target
 				p.pose[0] = ex;
 				p.pose[1] = ey;
 			}
+			// The picture crop pairs with ScopeRender's oversampled frustum; it
+			// applies whether or not a pose was read this fill.
+			p.glass3[2] = 1.0f / (std::clamp)(static_cast<float>(*Settings::parallaxOversample), 1.0f, 4.0f);
 			// parallax depth (optical tubes only; an LCD sits at the housing).
 			// Image plane D units behind the lens; shift = -0.5*D/(L+D)*offset,
 			// L = live eye relief (a pistol at arm's length shows less than a
