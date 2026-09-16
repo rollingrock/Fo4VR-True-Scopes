@@ -37,6 +37,10 @@ namespace TrueScopes::Hooks
 		// drawn + eligible = the new 3D is complete) clears it. While armed, every
 		// render-thread consumer of weapon 3D stands down.
 		std::atomic_bool g_teardownLatch{ false };
+		// Vanilla-gate fallback publish, debounced. The candidate is whatever the
+		// last arm-write edge said; the fill hook publishes it once it has held.
+		std::atomic_bool                g_fallbackCandidate{ false };
+		std::atomic<std::uint64_t>      g_fallbackSince{ 0 };
 		// Frame the latch was last armed on. The verdict site is what clears the
 		// latch; when that site is not ours (another plugin owns the call, or the
 		// user left it alone) nothing would ever clear it, so a frame count does.
@@ -141,7 +145,18 @@ namespace TrueScopes::Hooks
 				// per evaluation; when vanilla's gate is the verdict, its edges are
 				// the only game-thread signal there is.
 				if (!(g_verdictHookInstalled && *Settings::poseGateEnabled)) {
-					FrikBridge::PublishLookingThrough(on);
+					// Vanilla's gate flaps: the field measured an in/out inside 80 ms
+					// (2026-09-16). FRIK switches its damping pair on every flip, and
+					// its in-scope path returns before writing the previous-frame
+					// filter state, so each flap back out hands the general filter a
+					// stale prevFrame - one catch-up transient in the hand, visible.
+					// ROCK rigs live here permanently, since ROCK owns the verdict
+					// site and our hook is refused. Record the candidate; the fill
+					// hook publishes it after the same dwell the pose gate applies.
+					if (g_fallbackCandidate.exchange(on) != on) {
+						g_fallbackSince.store(static_cast<std::uint64_t>(::GetTickCount64()),
+							std::memory_order_relaxed);
+					}
 				}
 				if (on) {
 					g_gateRaw.store(true);
@@ -744,6 +759,22 @@ namespace TrueScopes::Hooks
 						REL::Module::get().base() + Addr::kPlayerGlobal);
 					SetWidgetNodesHidden(player, true);
 					logger::info("widget presence -> hidden (verdict stale)"sv);
+				}
+				// Fallback publish, confirmed here because the arm-write edges are
+				// sparse and a dwell in the edge handler would have nothing to count
+				// against. Compared against what FRIK was actually last told rather
+				// than a local mirror, so a stand-down publishing false out of band
+				// cannot leave this stuck. Not the game thread - the publish queues.
+				if (g_installed && !(g_verdictHookInstalled && *Settings::poseGateEnabled)) {
+					const bool candidate = g_fallbackCandidate.load(std::memory_order_relaxed);
+					if (candidate != FrikBridge::LastLooking()) {
+						const auto dwellMs = static_cast<std::uint64_t>(
+							(std::max)(std::int64_t(0), *Settings::frikLookingDwellMs));
+						const auto since = g_fallbackSince.load(std::memory_order_relaxed);
+						if (static_cast<std::uint64_t>(::GetTickCount64()) - since >= dwellMs) {
+							FrikBridge::QueuePublish(candidate, "vanilla gate, debounced");
+						}
+					}
 				}
 				// controller verdict chords, polled per frame
 				if (g_installed) {

@@ -25,6 +25,14 @@ namespace TrueScopes::FrikBridge
 	// F4SE task interface and applied on the next game frame. For the render
 	// thread's stale-verdict stand-down (holster: the weapon stays equipped, so
 	// the unequip sink never fires, and the verdict site simply stops running).
+	// What FRIK was last told. Read from the render thread to debounce the
+	// vanilla-gate fallback publish without keeping a second mirror of it.
+	bool LastLooking();
+
+	// Publish from a thread that is not the game thread, with a reason for the
+	// log. Queued through the F4SE task interface like QueueStandDown.
+	void QueuePublish(bool a_looking, const char* a_why);
+
 	void QueueStandDown();
 
 	// True once setScopeProvider succeeded this session.

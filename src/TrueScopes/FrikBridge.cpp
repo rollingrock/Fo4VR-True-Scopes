@@ -10,9 +10,10 @@ namespace TrueScopes::FrikBridge
 	{
 		constexpr const char* kTag = "TrueScopes";
 
-		// Game thread only, both of them.
-		bool g_registered = false;
-		bool g_lastLooking = false;
+		// Game thread only, both of them - except g_lastLooking, which the render
+		// thread reads to debounce the vanilla-gate fallback publish.
+		bool             g_registered = false;
+		std::atomic_bool g_lastLooking{ false };
 		bool g_attempted = false;
 
 		using frik::api::FRIKApiV2;
@@ -108,7 +109,7 @@ namespace TrueScopes::FrikBridge
 			return;
 		}
 		g_registered = true;
-		g_lastLooking = false;
+		g_lastLooking.store(false);
 		logger::info(FMT_STRING("FRIK scope provider registered: tag {} capabilities 0x{:x} (FRIK {} API v2, contract {})"),
 			kTag, caps, inst->getModVersion(), inst->getVersion());
 		InstallMenuSink();
@@ -118,7 +119,7 @@ namespace TrueScopes::FrikBridge
 	{
 		bool Publish(bool a_looking)
 		{
-			if (!g_registered || a_looking == g_lastLooking) {
+			if (!g_registered || a_looking == g_lastLooking.load()) {
 				return false;
 			}
 			const auto* inst = FRIKApiV2::inst;
@@ -129,7 +130,7 @@ namespace TrueScopes::FrikBridge
 				logger::warn(FMT_STRING("FRIK scope provider: setLookingThroughScope({}) refused"), a_looking);
 				return false;
 			}
-			g_lastLooking = a_looking;
+			g_lastLooking.store(a_looking);
 			return true;
 		}
 	}
@@ -149,9 +150,30 @@ namespace TrueScopes::FrikBridge
 		}
 	}
 
+	bool LastLooking()
+	{
+		return g_lastLooking.load();
+	}
+
+	void QueuePublish(bool a_looking, const char* a_why)
+	{
+		if (!g_registered) {
+			return;
+		}
+		if (auto* tasks = F4SE::GetTaskInterface()) {
+			const std::string why = a_why ? a_why : "";
+			tasks->AddTask([a_looking, why]() {
+				if (Publish(a_looking)) {
+					logger::info(FMT_STRING("FRIK looking-through-scope -> {} ({})"),
+						a_looking ? "true"sv : "false"sv, why);
+				}
+			});
+		}
+	}
+
 	void QueueStandDown()
 	{
-		if (!g_registered || !g_lastLooking) {
+		if (!g_registered || !g_lastLooking.load()) {
 			return;
 		}
 		if (auto* tasks = F4SE::GetTaskInterface()) {
