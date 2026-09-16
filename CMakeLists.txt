@@ -283,16 +283,21 @@ if(DEFINED MO2_INSTALL_PATH AND NOT "${MO2_INSTALL_PATH}" STREQUAL "")
 	# (each entry points at a mod's F4SE/Plugins dir). It is a LIST: I run more than
 	# one MO2 instance, and a build that reaches only one of them looks like a
 	# successful deploy while the instance I actually launch stays a version behind.
+	# The copy goes through a script so it can REFUSE a Debug build. `cmake --build
+	# buildvr` with no --config builds Debug on a multi-config generator, and the copy
+	# used to deploy whatever it was handed - the documented command minus one flag
+	# would put unoptimised code on the rig I play and measure on, silently.
 	foreach(_mo2_path IN LISTS MO2_INSTALL_PATH)
 		add_custom_command(
 			TARGET ${PROJECT_NAME}
 			POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E make_directory "${_mo2_path}"
-			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${_mo2_path}"
-			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${_mo2_path}"
-			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/F4SE/Plugins/TrueScopesVR.toml" "${_mo2_path}"
-			COMMAND ${CMAKE_COMMAND} -E make_directory "${_mo2_path}/../../Interface"
-			COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/world_ScopeMenu.swf" "${CMAKE_CURRENT_SOURCE_DIR}/Data/Interface/ScopeMenu.swf" "${_mo2_path}/../../Interface/"
+			COMMAND ${CMAKE_COMMAND}
+				-DCONFIG=$<CONFIG>
+				-DDEST=${_mo2_path}
+				-DDLL=$<TARGET_FILE:${PROJECT_NAME}>
+				-DPDB=$<TARGET_PDB_FILE:${PROJECT_NAME}>
+				-DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+				-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/deploy.cmake"
 		)
 	endforeach()
 endif()
