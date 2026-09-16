@@ -6,12 +6,23 @@
 # measure on. FRIK hit exactly that on 2026-09-16 and it reached the test rig; the
 # giveaway was a DLL four times the usual size, not anything in the game.
 #
-# Invoked with -DCONFIG= -DDEST= -DDLL= -DPDB= -DSRC=.
+# Deploying Debug on purpose is a real workflow - it is how you attach a debugger to
+# the plugin running in the game - so this refuses the accident, not the intent:
+# configure with -DDEPLOY_DEBUG_BUILD=ON and it deploys, loudly. The refusal names
+# the flag so the next person needing it finds it from the message.
+#
+# Invoked with -DCONFIG= -DDEST= -DDLL= -DPDB= -DSRC= -DALLOW_DEBUG=.
 
 if(CONFIG STREQUAL "Debug")
-	message(STATUS "True Scopes: NOT deploying to ${DEST} - this is a ${CONFIG} build. "
-	               "Build with --config Release to deploy.")
-	return()
+	if(NOT ALLOW_DEBUG)
+		message(STATUS "True Scopes: NOT deploying to ${DEST} - this is a ${CONFIG} build. "
+		               "Build with --config Release, or configure with -DDEPLOY_DEBUG_BUILD=ON "
+		               "if you meant to put a Debug build on the rig (debugger attach).")
+		return()
+	endif()
+	message(WARNING "True Scopes: deploying a DEBUG build to ${DEST} because "
+	                "DEPLOY_DEBUG_BUILD=ON. It is unoptimised - do not measure performance "
+	                "against it, and put a Release build back before playing.")
 endif()
 
 file(MAKE_DIRECTORY "${DEST}")

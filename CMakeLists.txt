@@ -286,7 +286,9 @@ if(DEFINED MO2_INSTALL_PATH AND NOT "${MO2_INSTALL_PATH}" STREQUAL "")
 	# The copy goes through a script so it can REFUSE a Debug build. `cmake --build
 	# buildvr` with no --config builds Debug on a multi-config generator, and the copy
 	# used to deploy whatever it was handed - the documented command minus one flag
-	# would put unoptimised code on the rig I play and measure on, silently.
+	# would put unoptimised code on the rig I play and measure on, silently. Deploying
+	# Debug deliberately (to attach a debugger) is still available, opted into here.
+	option(DEPLOY_DEBUG_BUILD "Deploy Debug builds to the MO2 instances too (debugger attach)" OFF)
 	foreach(_mo2_path IN LISTS MO2_INSTALL_PATH)
 		add_custom_command(
 			TARGET ${PROJECT_NAME}
@@ -297,6 +299,7 @@ if(DEFINED MO2_INSTALL_PATH AND NOT "${MO2_INSTALL_PATH}" STREQUAL "")
 				-DDLL=$<TARGET_FILE:${PROJECT_NAME}>
 				-DPDB=$<TARGET_PDB_FILE:${PROJECT_NAME}>
 				-DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+				-DALLOW_DEBUG=$<BOOL:${DEPLOY_DEBUG_BUILD}>
 				-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/deploy.cmake"
 		)
 	endforeach()

@@ -142,6 +142,12 @@ cmake --build buildvr --config Release
 `CMakeUserPresets.json` (git-ignored) is where the local deploy path goes; copy
 `CMakeUserPresets.json.template` and edit it.
 
+`--config Release` matters. Without it a multi-config generator builds Debug, and the
+deploy step refuses to copy a Debug build into the MO2 folders rather than quietly
+putting unoptimised code on a rig you then play or measure on. If you want one there on
+purpose — attaching a debugger to the plugin in the game — configure with
+`-DDEPLOY_DEBUG_BUILD=ON` and it deploys, with a warning.
+
 The full reverse-engineering record — every address, mechanism, and dead end — lives
 in a companion research repo (`fallout4-scope-in-scope-investigation`, currently
 private). Ask if you want a look.
