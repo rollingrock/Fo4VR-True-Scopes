@@ -1106,6 +1106,12 @@ namespace TrueScopes::ScopeRender
 			// layout assumption is wrong -- which the loop survives, but it is worth
 			// knowing rather than inferring.
 			float parentResidual = -1.0f;
+			// The offset in effect when the disc position we are about to read was
+			// written. Observation runs a frame behind the write, so on the frame a
+			// new offset first lands the residual is the whole change and says
+			// nothing about the transform - see ObserveAutoPlacement.
+			float observedOffset[3] = {};
+			bool  haveObserved = false;
 		};
 		PlacementInfo    g_place;
 		std::atomic_bool g_placeDirty{ false };
@@ -1529,6 +1535,24 @@ namespace TrueScopes::ScopeRender
 			for (std::size_t k = 0; k < 3; ++k) {
 				g_place.discWorld[k] = world[k];
 			}
+			// The disc read above was written LAST frame, with last frame's offset.
+			// On the frame a new offset first lands, err is therefore the size of the
+			// offset change and nothing else - and since the warn latch resets on
+			// every census relatch, that is exactly the frame the warning used to
+			// sample. It reported |offset| as if it were transform error: the field
+			// saw 5.01 against an offset of magnitude 5.013 with the parent residual
+			// at 0.000, while a 10 Hz probe of that same placement ran 1307 samples
+			// over three minutes without once exceeding 0.71, median 0.004
+			// (2026-09-16). Only judge frames where the offset held.
+			const bool offsetSettled = g_place.haveObserved &&
+			                           std::fabs(g_place.offset[0] - g_place.observedOffset[0]) < 1.0e-3f &&
+			                           std::fabs(g_place.offset[1] - g_place.observedOffset[1]) < 1.0e-3f &&
+			                           std::fabs(g_place.offset[2] - g_place.observedOffset[2]) < 1.0e-3f;
+			for (std::size_t k = 0; k < 3; ++k) {
+				g_place.observedOffset[k] = g_place.offset[k];
+			}
+			g_place.haveObserved = true;
+
 			// One frame of weapon motion is a legitimate part of this, so the
 			// threshold is loose: it is looking for a broken transform, not tenths of
 			// a unit. The lens is ~1.3 units in radius. The per-placement latch
@@ -1536,7 +1560,7 @@ namespace TrueScopes::ScopeRender
 			// rate limit carries the actual spam control.
 			static std::uint64_t s_residualWarnTick = 0;
 			const auto           nowTick = ::GetTickCount64();
-			if (err > 2.0f && !g_place.warnedResidual && nowTick - s_residualWarnTick >= 5000) {
+			if (offsetSettled && err > 2.0f && !g_place.warnedResidual && nowTick - s_residualWarnTick >= 5000) {
 				s_residualWarnTick = nowTick;
 				g_place.warnedResidual = true;
 				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: disc landed {:.2f} units from its target "
