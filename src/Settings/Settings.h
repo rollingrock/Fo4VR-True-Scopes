@@ -82,9 +82,18 @@ namespace Settings
 	// Master switch for the per-frame lens fill.
 	MAKE_SETTING(bSetting, "TrueScopesVR", fillEnabled, true);
 	// Fill cadence: 1 = every frame, 2 = every other frame, ... RT 0x62 persists
-	// between frames, so low cadence just lowers the lens refresh rate. Cadence 1
-	// has shown intermittent black lens frames in content-heavy scenes.
-	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(1));
+	// between frames, so low cadence just lowers the lens refresh rate. 2 ships:
+	// the render is ~9 ms of render-thread CPU at a heavy spot and cadence is the
+	// only lever that scales it (resolution does nothing - measured); 2 was judged
+	// fine while panning Diamond City market and costs ~35% less than 1.
+	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(2));
+	// Cadence while a blocking menu (Pip-Boy, terminal, container, ...) is open.
+	// The eye can still be on the tube with the holo Pip-Boy up and the render
+	// costs the same, so this decimates rather than stops; never faster than
+	// fillEveryNFrames. 0 freezes the lens: the last picture holds, dimmed once
+	// by poseFrozenDim so it reads as paused, and the next fill after the menu
+	// closes overwrites it.
+	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFramesInMenu, std::int64_t(2));
 	// Eye-gate off hysteresis in ms. The vanilla gate flickers off in short
 	// windows while aiming, and every off-edge plays the widget's fade-to-black
 	// over the lens. Off-edges are only honored after the gate stayed off this
@@ -740,6 +749,7 @@ namespace Settings
 		LOAD(enabled);
 		LOAD(fillEnabled);
 		LOAD(fillEveryNFrames);
+		LOAD(fillEveryNFramesInMenu);
 		LOAD(glassFlatMode);
 		LOAD(scopeOffHoldMs);
 		LOAD(camSmoothEnabled);

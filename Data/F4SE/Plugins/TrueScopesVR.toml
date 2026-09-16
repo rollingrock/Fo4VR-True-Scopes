@@ -11,10 +11,17 @@ enabled = true
 # Master switch for the lens fill.
 fillEnabled = true
 
-# Lens refresh cadence: 1 = every frame (the shipped default), 2 = every other
-# frame, ... The lens render target persists between fills, so higher values just
-# trade refresh rate of the scope picture for perf.
-fillEveryNFrames = 1
+# Lens refresh cadence: 1 = every frame, 2 = every other frame (the shipped
+# default), ... The lens render target persists between fills, so higher values
+# just trade refresh rate of the scope picture for perf. The render is the
+# single biggest cost of this plugin and cadence is the only knob that scales
+# it; 2 costs about a third less than 1 and reads fine.
+fillEveryNFrames = 2
+
+# Cadence while a blocking menu (Pip-Boy, terminal, container, ...) is open.
+# Never faster than fillEveryNFrames. 0 freezes the lens on its last picture,
+# dimmed once so it reads as paused, until the menu closes.
+fillEveryNFramesInMenu = 2
 
 # What fills the lens: 0 = off, 1 = copy of the main frame, 2 = real magnified
 # world render from the scope camera (falls back to 1 on failure). Values above 2

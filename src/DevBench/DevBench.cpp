@@ -229,6 +229,7 @@ namespace DevBench
 			return {
 				{ "fillEnabled", Kind::Bool, &fillEnabled },
 				{ "fillEveryNFrames", Kind::Int, &fillEveryNFrames },
+				{ "fillEveryNFramesInMenu", Kind::Int, &fillEveryNFramesInMenu },
 				{ "scopeOffHoldMs", Kind::Int, &scopeOffHoldMs },
 				{ "lensMode", Kind::Int, &lensMode },
 				{ "scopeFovDegrees", Kind::Float, &scopeFovDegrees },

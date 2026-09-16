@@ -19,22 +19,15 @@ namespace TrueScopes::FrikBridge
 		using frik::api::FRIKApiV2;
 		using ScopeCapability = FRIKApiV2::ScopeCapability;
 
-		// A blocking menu opening is where vanilla force-offs the scope through
-		// the enable switch's other call sites, which we leave unhooked; our
-		// verdict site then stops running, so a published true would stay true
-		// and FRIK would keep the wrist Pip-Boy handler skipped and the scoped
-		// damping selected for as long as the menu is up. Publish false on the
-		// open edge; the next verdict re-arms it. Game thread.
-		[[nodiscard]] bool BlockingMenu(std::string_view a_name) noexcept
-		{
-			return a_name == "PipboyMenu"sv || a_name == "PauseMenu"sv || a_name == "TerminalMenu"sv ||
-			       a_name == "ContainerMenu"sv || a_name == "DialogueMenu"sv || a_name == "BarterMenu"sv ||
-			       a_name == "WorkshopMenu"sv || a_name == "LockpickingMenu"sv || a_name == "MessageBoxMenu"sv ||
-			       a_name == "ExamineMenu"sv || a_name == "CookingMenu"sv || a_name == "LevelUpMenu"sv ||
-			       a_name == "VATSMenu"sv || a_name == "LoadingMenu"sv || a_name == "MainMenu"sv ||
-			       a_name == "SleepWaitMenu"sv || a_name == "SPECIALMenu"sv || a_name == "BookMenu"sv;
-		}
-
+		// Blocking menus (Pip-Boy, terminal, ...) are tracked in Hooks for the fill
+		// cadence, on both edges. The open edge also tells FRIK the eye is off
+		// the tube: a blocking menu opening is where vanilla force-offs the scope
+		// through the enable switch's other call sites, which we leave unhooked;
+		// with the pose gate off our verdict site stops running there, so a
+		// published true would stay true and FRIK would keep the wrist Pip-Boy
+		// handler skipped and the scoped damping selected for as long as the
+		// menu is up. The next verdict re-arms it. Game thread. Installed whether
+		// or not FRIK registered - the cadence needs it either way.
 		class MenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 		{
 		public:
@@ -43,7 +36,7 @@ namespace TrueScopes::FrikBridge
 				RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
 			{
 				const char* name = a_event.menuName.c_str();
-				if (a_event.opening && name && BlockingMenu(name)) {
+				if (name && Hooks::SetBlockingMenuOpen(name, a_event.opening) && a_event.opening) {
 					PublishLookingThrough(false);
 				}
 				return RE::BSEventNotifyControl::kContinue;
@@ -60,7 +53,7 @@ namespace TrueScopes::FrikBridge
 			}
 			auto* ui = RE::UI::GetSingleton();
 			if (!ui) {
-				logger::warn("FRIK scope provider: UI singleton not up at kGameLoaded - menu-open stand-down not installed"sv);
+				logger::warn("UI singleton not up at kGameLoaded - blocking-menu sink not installed (menu cadence inert, FRIK not told on menu open)"sv);
 				return;
 			}
 			ui->RegisterSink<RE::MenuOpenCloseEvent>(&g_menuSink);
@@ -74,6 +67,7 @@ namespace TrueScopes::FrikBridge
 			return;
 		}
 		g_attempted = true;
+		InstallMenuSink();
 		if (!*Settings::frikProvider) {
 			logger::info("FRIK scope provider: disabled by TOML (frikProvider=false) - FRIK keys its scope behaviour on ScopeMenu as before"sv);
 			return;
@@ -112,7 +106,6 @@ namespace TrueScopes::FrikBridge
 		g_lastLooking.store(false);
 		logger::info(FMT_STRING("FRIK scope provider registered: tag {} capabilities 0x{:x} (FRIK {} API v2, contract {})"),
 			kTag, caps, inst->getModVersion(), inst->getVersion());
-		InstallMenuSink();
 	}
 
 	namespace

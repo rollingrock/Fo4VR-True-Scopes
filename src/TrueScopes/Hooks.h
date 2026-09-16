@@ -24,6 +24,14 @@ namespace TrueScopes::Hooks
 	// hands back the same ScopeParent address, so a stale rotation calibration
 	// survived until this listened to all of them. Game thread; idempotent.
 	void StandDownFor(std::string_view a_reason);
+
+	// Blocking-menu tracking for the fill cadence. Game thread writes on the
+	// menu open/close edges; the fill hook reads. Returns whether a_name is one
+	// of the menus the fill treats as blocking, so the caller can act on the
+	// same answer (FrikBridge tells FRIK the eye is off the tube on the open
+	// edge of exactly these).
+	bool SetBlockingMenuOpen(std::string_view a_name, bool a_open);
+	bool BlockingMenuOpen();
 	void OnGameLoaded();
 
 

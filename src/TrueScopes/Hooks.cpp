@@ -37,6 +37,18 @@ namespace TrueScopes::Hooks
 		// drawn + eligible = the new 3D is complete) clears it. While armed, every
 		// render-thread consumer of weapon 3D stands down.
 		std::atomic_bool g_teardownLatch{ false };
+		// Which blocking menus are open, one bit each in the order of
+		// kBlockingMenus. A bitmask rather than a counter so a close without a
+		// matching open (a menu that was up before the sink subscribed) clears a
+		// bit that is not set instead of driving a count negative.
+		constexpr std::string_view kBlockingMenus[] = {
+			"PipboyMenu"sv, "PauseMenu"sv, "TerminalMenu"sv, "ContainerMenu"sv, "DialogueMenu"sv,
+			"BarterMenu"sv, "WorkshopMenu"sv, "LockpickingMenu"sv, "MessageBoxMenu"sv, "ExamineMenu"sv,
+			"CookingMenu"sv, "LevelUpMenu"sv, "VATSMenu"sv, "LoadingMenu"sv, "MainMenu"sv,
+			"SleepWaitMenu"sv, "SPECIALMenu"sv, "BookMenu"sv
+		};
+		std::atomic<std::uint32_t> g_blockingMenus{ 0 };
+
 		// Vanilla-gate fallback publish, debounced. The candidate is whatever the
 		// last arm-write edge said; the fill hook publishes it once it has held.
 		std::atomic_bool                g_fallbackCandidate{ false };
@@ -519,6 +531,13 @@ namespace TrueScopes::Hooks
 			static void thunk(void* a_player, char a_verdict)
 			{
 				const auto player = reinterpret_cast<std::uintptr_t>(a_player);
+				{
+					static bool s_tidLogged = false;
+					if (!s_tidLogged) {
+						s_tidLogged = true;
+						logger::info(FMT_STRING("verdict site runs on thread {}"), ::GetCurrentThreadId());
+					}
+				}
 				// This site running at all means the weapon is drawn and its 3D is
 				// complete - the teardown latch's all-clear.
 				if (g_teardownLatch.exchange(false)) {
@@ -720,6 +739,13 @@ namespace TrueScopes::Hooks
 				// is the game's frame counter. Must stay first and unconditional —
 				// an early return below would undercount and bias the measurement.
 				g_frames.fetch_add(1, std::memory_order_relaxed);
+				{
+					static bool s_tidLogged = false;
+					if (!s_tidLogged) {
+						s_tidLogged = true;
+						logger::info(FMT_STRING("fill hook runs on thread {}"), ::GetCurrentThreadId());
+					}
+				}
 				// hysteresis poll: honor a gate-off only after it persisted
 				// scopeOffHoldMs; an on in between cancels it. When the pose gate
 				// owns the verdict its enter/exit thresholds are the hysteresis,
@@ -848,13 +874,42 @@ namespace TrueScopes::Hooks
 					static std::uint32_t s_fadeSteps = 0;
 					static std::uint64_t s_fadeLastTick = 0;
 					const bool  poseLive = PoseGate::FillLive();
+					// Blocking menu up (Pip-Boy, terminal, ...): the picture is still
+					// worth having - the holo Pip-Boy and the tube can share the eye,
+					// and the user saw both at once - but not at full rate, since the
+					// render costs the same and FRIK is drawing the screen on the
+					// other thread. fillEveryNFramesInMenu decimates; 0 holds the last
+					// picture, dimmed once so it reads as paused. The verdict site
+					// keeps running under these menus (measured: 8.9 s with the
+					// Pip-Boy open), so nothing here touches the gate or FRIK.
+					const bool menuOpen = BlockingMenuOpen();
+					const auto nMenu = *Settings::fillEveryNFramesInMenu;
+					static bool s_menuFrozen = false;
 					if (g_scopeActive.load() && poseLive &&
-						!g_teardownLatch.load(std::memory_order_relaxed)) {
+						!g_teardownLatch.load(std::memory_order_relaxed) &&
+						menuOpen && nMenu == 0) {
+						if (!s_menuFrozen) {
+							s_menuFrozen = true;
+							s_dimPending = false;  // one dim; the pose branch must not add another
+							const auto dim = std::clamp(static_cast<float>(*Settings::poseFrozenDim), 0.0f, 1.0f);
+							if (dim < 0.999f) {
+								ScopeRender::DimFrozenLens(dim);
+							}
+							logger::info("lens frozen (blocking menu open, fillEveryNFramesInMenu=0)"sv);
+						}
+					} else if (g_scopeActive.load() && poseLive &&
+					           !g_teardownLatch.load(std::memory_order_relaxed)) {
+						if (s_menuFrozen) {
+							s_menuFrozen = false;
+							logger::info("lens live again (blocking menu closed)"sv);
+						}
 						s_dimPending = true;
 						s_fadeArmed = false;
 						s_fadeSteps = 0;
+						const auto nBase = std::max<std::int64_t>(1, *Settings::fillEveryNFrames);
+						const auto n = menuOpen ? std::max<std::int64_t>(nBase, nMenu) : nBase;
 						static std::uint32_t frame = 0;
-						if ((++frame % static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames))) == 0) {
+						if ((++frame % static_cast<std::uint32_t>(n)) == 0) {
 							const bool rendered =
 								*Settings::lensMode >= 2 &&  // 2 = normal, 3 = G-buffer diagnostic
 								ScopeRender::Available() &&
@@ -1208,6 +1263,27 @@ namespace TrueScopes::Hooks
 	bool ScopeActive()
 	{
 		return g_scopeActive.load();
+	}
+
+	bool SetBlockingMenuOpen(std::string_view a_name, bool a_open)
+	{
+		for (std::size_t i = 0; i < std::size(kBlockingMenus); ++i) {
+			if (kBlockingMenus[i] == a_name) {
+				const auto bit = std::uint32_t(1) << i;
+				if (a_open) {
+					g_blockingMenus.fetch_or(bit, std::memory_order_relaxed);
+				} else {
+					g_blockingMenus.fetch_and(~bit, std::memory_order_relaxed);
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool BlockingMenuOpen()
+	{
+		return g_blockingMenus.load(std::memory_order_relaxed) != 0;
 	}
 
 	std::uint64_t ScopeEpisodeGeneration()
