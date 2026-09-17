@@ -73,7 +73,7 @@ int main()
 	Multiply(parent, engineLocal, weaponOneHand);
 
 	TrueScopes::WidgetRotation::Calibration calibration;
-	calibration.Capture(weaponOneHand, parent, engineLocal);
+	calibration.Capture(weaponOneHand, parent, engineLocal, /*aimed*/ false);
 	if (!Require(calibration.Captured(), "baseline capture must arm tracking")) {
 		return 1;
 	}
@@ -107,7 +107,7 @@ int main()
 	// Demonstrate the old failure mode: recapturing at the two-hand pose while
 	// feeding the engine's one-hand L0 forces the immediate output back to L0.
 	TrueScopes::WidgetRotation::Calibration oldBehavior;
-	oldBehavior.Capture(weaponTwoHand, parent, engineLocal);
+	oldBehavior.Capture(weaponTwoHand, parent, engineLocal, /*aimed*/ false);
 	if (!Require(oldBehavior.Compute(weaponTwoHand, parent, actualLocal),
 			"old behavior model must compute") ||
 		!Require(Near(actualLocal, engineLocal),
@@ -124,5 +124,32 @@ int main()
 	}
 
 	std::puts("widget rotation regression tests passed");
+	// Provisional vs aimed: only an aimed capture (or a cache restore, which is
+	// always aimed) may be kept across adoptions; Reset clears both, and Export
+	// round-trips the alignment so the cache holds exactly what was captured.
+	{
+		TrueScopes::WidgetRotation::Calibration c;
+		c.Capture(weaponOneHand, parent, engineLocal, /*aimed*/ false);
+		if (!Require(c.Captured() && !c.Aimed(), "a provisional capture is captured but not aimed")) {
+			return 1;
+		}
+		c.Capture(weaponOneHand, parent, engineLocal, /*aimed*/ true);
+		float k[9];
+		if (!Require(c.Aimed() && c.Export(k), "an aimed capture is aimed and exportable")) {
+			return 1;
+		}
+		TrueScopes::WidgetRotation::Calibration r;
+		float fromCache[9];
+		r.Restore(k);
+		if (!Require(r.Captured() && r.Aimed() && r.Export(fromCache) && Near(fromCache, k),
+				"a restore is aimed and reproduces the exported alignment")) {
+			return 1;
+		}
+		r.Reset();
+		if (!Require(!r.Captured() && !r.Aimed() && !r.Export(k), "Reset clears captured, aimed and export")) {
+			return 1;
+		}
+	}
+
 	return 0;
 }
