@@ -1326,6 +1326,17 @@ namespace TrueScopes::ScopeIdent
 		}
 	}
 
+	bool CurrentScopeKey(std::uint32_t& a_weaponFormID, char (&a_matched)[128])
+	{
+		const std::scoped_lock lock(g_lock);
+		if (!g_info.probed) {
+			return false;
+		}
+		a_weaponFormID = g_info.weaponFormID;
+		std::snprintf(a_matched, sizeof(a_matched), "%s", g_info.fromTable ? g_info.matched : "fallback");
+		return true;
+	}
+
 	bool WeaponParent(std::uintptr_t& a_node, std::uintptr_t& a_parent)
 	{
 		std::uintptr_t node = 0;

@@ -234,6 +234,11 @@ namespace TrueScopes::ScopeIdent
 	// treat the re-parent as an adoption edge.
 	bool WeaponParent(std::uintptr_t& a_node, std::uintptr_t& a_parent);
 
+	// The equipped scope's identity: weapon form and the census key it matched
+	// (or the fallback marker). False before the first probe. Keys the facing
+	// calibration cache: K is per weapon and scope, not per adoption.
+	bool CurrentScopeKey(std::uint32_t& a_weaponFormID, char (&a_matched)[128]);
+
 	// Magnification of the equipped scope (zoomData fovMult). 1.0 when unknown.
 	float FovMult();
 

@@ -831,6 +831,54 @@ namespace TrueScopes::ScopeRender
 		std::uint64_t g_rotAdoptTick = 0;
 		std::uint64_t g_rotStableSince = 0;  // tick the weapon-vs-parent relation went still; 0 = not still
 
+		// The facing calibration, kept per equipped scope across adoptions. Every
+		// adoption used to drop K and re-learn it from ScopeParent's local 500 ms
+		// later. After a carry that local is not the engine's - FRIK puts back
+		// whatever was there at takeover, which is our own previous write - and
+		// twice on 2026-09-17 the relation was "still" only because nothing had
+		// moved yet (a Pip-Boy transit; a probe restore before the re-grip), so K
+		// froze a pre-re-grip pose and every scope-in after sat at an angle. K is
+		// the mesh-to-disc rotation, a constant per weapon and grip: capture it
+		// once on a clean rigid raise, then restore it on every adoption.
+		struct RotationCache
+		{
+			bool          valid = false;
+			std::uint32_t weapon = 0;
+			char          matched[128] = {};
+			float         K[9] = {};
+		};
+		RotationCache g_rotCache;
+
+		bool RotationCacheHit()
+		{
+			std::uint32_t weapon = 0;
+			char          matched[128] = {};
+			if (!g_rotCache.valid || !ScopeIdent::CurrentScopeKey(weapon, matched)) {
+				return false;
+			}
+			return weapon == g_rotCache.weapon && std::strcmp(matched, g_rotCache.matched) == 0;
+		}
+
+		void RotationCacheStore(const WidgetRotation::Calibration& a_cal)
+		{
+			std::uint32_t weapon = 0;
+			char          matched[128] = {};
+			if (!ScopeIdent::CurrentScopeKey(weapon, matched) || !a_cal.Export(g_rotCache.K)) {
+				g_rotCache.valid = false;
+				return;
+			}
+			g_rotCache.weapon = weapon;
+			std::memcpy(g_rotCache.matched, matched, sizeof(matched));
+			g_rotCache.valid = true;
+		}
+
+		// Rotation angle of a 3x3, degrees: trace = 1 + 2 cos(theta).
+		float RotationAngleDeg(const float (&a_m)[9])
+		{
+			const float c = (std::clamp)((a_m[0] + a_m[4] + a_m[8] - 1.0f) * 0.5f, -1.0f, 1.0f);
+			return std::acos(c) * (180.0f / 3.14159265358979f);
+		}
+
 		void ResetRotationSettle() noexcept
 		{
 			g_rotHavePrev = false;
@@ -860,7 +908,8 @@ namespace TrueScopes::ScopeRender
 					alignas(16) std::uint8_t upd[0x30]{};
 					Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
 					g_widget.rotation.Reset();
-				ResetRotationSettle();
+					ResetRotationSettle();
+					g_rotCache.valid = false;
 					g_widget.wroteRotation = false;
 				}
 				return false;
@@ -872,6 +921,11 @@ namespace TrueScopes::ScopeRender
 			float Rp[9];
 			if (!ReadParentTrueRot(a_sp, Rp)) {
 				return false;
+			}
+			if (!g_widget.rotation.Captured() && RotationCacheHit()) {
+				g_widget.rotation.Restore(g_rotCache.K);
+				logger::info(FMT_STRING("WIDGET ROTATION: calibration restored from cache (weapon {:08X}, {}), no capture"),
+					g_rotCache.weapon, g_rotCache.matched);
 			}
 			if (!g_widget.rotation.Captured()) {
 				// K persists until the next rebaseline, so a torn cross-thread read
@@ -938,8 +992,22 @@ namespace TrueScopes::ScopeRender
 				}
 				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
 				g_widget.rotation.Capture(Rw, Rp, L0);
-				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, relation still for {} ms, {} ms after adoption"),
-					g_rotStableFits, ::GetTickCount64() - g_rotStableSince, ::GetTickCount64() - g_rotAdoptTick);
+				RotationCacheStore(g_widget.rotation);
+				// The numbers the next "why is it tilted" needs: how far the weapon sat
+				// from its parent at capture, and how big K came out. Two captures of
+				// the same scope that disagree here disagree on the disc's facing.
+				float Rrel[9];
+				for (std::size_t r = 0; r < 3; ++r) {
+					for (std::size_t c = 0; c < 3; ++c) {
+						Rrel[r * 3 + c] = Rp[0 * 3 + r] * Rw[0 * 3 + c] + Rp[1 * 3 + r] * Rw[1 * 3 + c] + Rp[2 * 3 + r] * Rw[2 * 3 + c];
+					}
+				}
+				float K[9] = {};
+				g_widget.rotation.Export(K);
+				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, relation still for {} ms, {} ms after adoption "
+				                        "(weapon-vs-parent {:.1f} deg, L0 {:.1f} deg, K {:.1f} deg; cached for weapon {:08X}, {})"),
+					g_rotStableFits, ::GetTickCount64() - g_rotStableSince, ::GetTickCount64() - g_rotAdoptTick,
+					RotationAngleDeg(Rrel), RotationAngleDeg(L0), RotationAngleDeg(K), g_rotCache.weapon, g_rotCache.matched);
 			}
 			if (!g_widget.rotation.Compute(Rw, Rp, a_out)) {
 				return false;

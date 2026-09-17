@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 
 namespace TrueScopes::WidgetRotation
 {
@@ -24,6 +25,25 @@ namespace TrueScopes::WidgetRotation
 		// when FRIK has already re-aimed the weapon from a two-hand grip. Rebuilding
 		// K against the engine's one-hand L0 in that pose snaps the disc off-axis.
 		void PreserveAcrossIdentityProbe() noexcept {}
+
+		// K is the mesh-to-disc rotation: a constant per weapon and grip. Restoring a
+		// cached K across an adoption is what keeps a carry edge, a FRIK rewrite or a
+		// Pip-Boy transit from re-learning it against a local that is our own previous
+		// write and a relation that has not settled yet.
+		void Restore(const float (&a_alignment)[9]) noexcept
+		{
+			std::memcpy(alignment_, a_alignment, sizeof(alignment_));
+			captured_ = true;
+		}
+
+		[[nodiscard]] bool Export(float (&a_out)[9]) const noexcept
+		{
+			if (!captured_) {
+				return false;
+			}
+			std::memcpy(a_out, alignment_, sizeof(alignment_));
+			return true;
+		}
 
 		void Capture(const float (&a_weaponWorld)[9], const float (&a_parentWorld)[9],
 			const float (&a_engineLocal)[9]) noexcept
