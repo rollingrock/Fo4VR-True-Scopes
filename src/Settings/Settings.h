@@ -547,6 +547,13 @@ namespace Settings
 	// weapon-shape orientation (census scopes only - the same live node the
 	// placement uses). Off: position-only tracking, the old behavior.
 	MAKE_SETTING(bSetting, "TrueScopesVR", widgetTrackRotation, true);
+	// How long the weapon-vs-parent relation must hold still before the
+	// facing calibration is captured. The old gate counted fits of a steady
+	// WORLD rotation, which a slow hand-back passes while the weapon is still
+	// travelling to the grip: K captured mid-transit, and every scope-in after
+	// it sat at the wrong angle (2026-09-17, twice). The relation is what K
+	// encodes, so the relation is what has to be still.
+	MAKE_SETTING(iSetting, "TrueScopesVR", widgetRotSettleMs, std::int64_t(300));
 	// Put the disc on the optic's ocular face automatically instead of relying on
 	// a hand-tuned offset per scope. Aims at the census-measured face where the
 	// scope has a row, and falls back to the rear of the optic's world bounding
@@ -894,6 +901,7 @@ namespace Settings
 		LOAD(widgetOffsetZ);
 		LOAD(widgetAutoPlace);
 		LOAD(widgetTrackRotation);
+		LOAD(widgetRotSettleMs);
 		LOAD(widgetPlaceMaxEyeDist);
 		LOAD(retryAfterFault);
 		LOAD(sunExecEnabled);

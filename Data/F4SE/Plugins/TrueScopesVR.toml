@@ -29,6 +29,11 @@ fillEveryNFrames = 1
 # headroom; it read as a bug to the author.
 fillEveryNFramesInMenu = 2
 
+# How long (ms) the weapon has to sit still relative to the hand before the
+# disc's facing is calibrated. Too short and a hand-back captures the facing
+# mid-transit, leaving the picture at an angle until the next re-grip.
+widgetRotSettleMs = 300
+
 # What fills the lens: 0 = off, 1 = copy of the main frame, 2 = real magnified
 # world render from the scope camera (falls back to 1 on failure). Values above 2
 # were removed diagnostics and are clamped to 2.

@@ -1,4 +1,5 @@
 #include "TrueScopes/ScopeRender.h"
+#include "TrueScopes/Hooks.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -828,11 +829,13 @@ namespace TrueScopes::ScopeRender
 		bool          g_rotHavePrev = false;
 		std::uint32_t g_rotStableFits = 0;
 		std::uint64_t g_rotAdoptTick = 0;
+		std::uint64_t g_rotStableSince = 0;  // tick the weapon-vs-parent relation went still; 0 = not still
 
 		void ResetRotationSettle() noexcept
 		{
 			g_rotHavePrev = false;
 			g_rotStableFits = 0;
+			g_rotStableSince = 0;
 		}
 
 		// The disc's facing, slaved to the weapon. ScopeParent hangs off
@@ -881,18 +884,44 @@ namespace TrueScopes::ScopeRender
 						return false;
 					}
 				}
-				// Settle gate: trace(Rw^T Rw_prev) = 1 + 2 cos(theta); 2.9985 is about
-				// 2.2 degrees of rotation between consecutive fits.
+				// Settle gate on the weapon-vs-PARENT relation Rp^T Rw - the thing K
+				// encodes. The old test watched the weapon's world rotation between
+				// fits, which a slow hand-back passes while the weapon is still
+				// travelling to the grip (2026-09-17: captured 906 ms after adoption
+				// with six "settled" fits, every scope-in after it at the wrong
+				// angle). trace(Rrel^T Rrel_prev) = 1 + 2 cos(theta); 2.9985 is about
+				// 2.2 degrees between consecutive fits. The relation must then hold
+				// for widgetRotSettleMs, and never with a blocking menu up: a Pip-Boy
+				// auto-open is what dropped that carry mid-motion.
 				{
+					float Rrel[9];
+					for (std::size_t r = 0; r < 3; ++r) {
+						for (std::size_t c = 0; c < 3; ++c) {
+							Rrel[r * 3 + c] = Rp[0 * 3 + r] * Rw[0 * 3 + c] +
+							                  Rp[1 * 3 + r] * Rw[1 * 3 + c] +
+							                  Rp[2 * 3 + r] * Rw[2 * 3 + c];
+						}
+					}
 					float dot = 0.0f;
 					for (std::size_t i = 0; i < 9; ++i) {
-						dot += Rw[i] * g_rotPrevRw[i];
+						dot += Rrel[i] * g_rotPrevRw[i];
 					}
 					const bool stable = g_rotHavePrev && dot > 2.9985f;
-					std::memcpy(g_rotPrevRw, Rw, sizeof(g_rotPrevRw));
+					std::memcpy(g_rotPrevRw, Rrel, sizeof(g_rotPrevRw));
 					g_rotHavePrev = true;
-					g_rotStableFits = stable ? g_rotStableFits + 1 : 0;
-					if (g_rotStableFits < 6 || ::GetTickCount64() - g_rotAdoptTick < 500) {
+					const auto now = ::GetTickCount64();
+					if (stable) {
+						++g_rotStableFits;
+						if (g_rotStableSince == 0) {
+							g_rotStableSince = now;
+						}
+					} else {
+						g_rotStableFits = 0;
+						g_rotStableSince = 0;
+					}
+					const auto settleMs = static_cast<std::uint64_t>((std::max)(std::int64_t(0), *Settings::widgetRotSettleMs));
+					if (g_rotStableFits < 6 || g_rotStableSince == 0 || now - g_rotStableSince < settleMs ||
+						now - g_rotAdoptTick < 500 || Hooks::BlockingMenuOpen()) {
 						return false;  // engine baseline stays in place until the weapon settles
 					}
 				}
@@ -909,8 +938,8 @@ namespace TrueScopes::ScopeRender
 				}
 				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
 				g_widget.rotation.Capture(Rw, Rp, L0);
-				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, {} ms after adoption"),
-					g_rotStableFits, ::GetTickCount64() - g_rotAdoptTick);
+				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, relation still for {} ms, {} ms after adoption"),
+					g_rotStableFits, ::GetTickCount64() - g_rotStableSince, ::GetTickCount64() - g_rotAdoptTick);
 			}
 			if (!g_widget.rotation.Compute(Rw, Rp, a_out)) {
 				return false;
