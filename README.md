@@ -103,8 +103,11 @@ the game keeps running.
    alien blaster** (deferred to a polish phase).
 2. Bullet-hole decals: freshly fired holes render; some pre-existing/distant decal
    species may not. `decalStageEnabled=false` turns the stage off.
-3. Heavy-scene performance: a scoped frame costs ~13.6 ms in dense areas (dominated by
-   one shadowed spot light in the measured scene). Dense-city scoping may drop frames.
+3. Heavy-scene performance: the scope render costs about 9 ms of CPU per render in dense
+   areas (Diamond City) and about 2 ms in a light cell; it does not scale with resolution,
+   only with what is in the frustum. `fillEveryNFrames = 2` halves it at the cost of the
+   picture's refresh rate (the lens shows the raw render cadence even when the world is
+   reprojected), and `fillEveryNFramesInMenu` decimates while a menu is up.
 4. Modded scopes not in the built-in table fall back to a default aperture — use the
    `[Scopes]` override to fit them (worked example in the TOML).
 5. Night scope image is serviceable but unpolished — a dedicated night pass is planned.
