@@ -1106,12 +1106,13 @@ namespace TrueScopes::ScopeRender
 			// layout assumption is wrong -- which the loop survives, but it is worth
 			// knowing rather than inferring.
 			float parentResidual = -1.0f;
-			// The offset in effect when the disc position we are about to read was
-			// written. Observation runs a frame behind the write, so on the frame a
-			// new offset first lands the residual is the whole change and says
-			// nothing about the transform - see ObserveAutoPlacement.
-			float observedOffset[3] = {};
-			bool  haveObserved = false;
+			// The target the disc was last written toward. Observation runs a frame
+			// behind the write, so the disc read this frame is where LAST frame's
+			// target put it - judge it against that, not against this frame's. A
+			// target that moves every frame (a carry: the mesh on one hand, the
+			// disc's frame on the other) is then judged instead of silenced.
+			float prevTarget[3] = {};
+			bool  havePrevTarget = false;
 		};
 		PlacementInfo    g_place;
 		std::atomic_bool g_placeDirty{ false };
@@ -1524,35 +1525,30 @@ namespace TrueScopes::ScopeRender
 				return;
 			}
 			const auto* world = reinterpret_cast<const float*>(a_sp + kWorldTranslate);
-			const float ex = g_place.target[0] - world[0];
-			const float ey = g_place.target[1] - world[1];
-			const float ez = g_place.target[2] - world[2];
+			// The disc read here was written last frame toward last frame's target.
+			// Judged against this frame's target it reads |offset change| on any
+			// frame the target moved - the field saw 5.01 against an offset of
+			// magnitude 5.013 with the parent residual at 0.000, and a 10 Hz probe
+			// of the same placement ran 1307 samples without exceeding 0.71. And
+			// gating on "our offset held still" (the first fix) went silent for the
+			// whole of a ROCK left carry, the one time it mattered. Previous target
+			// it is; the first frame after a relatch has none and is skipped.
+			const bool judge = g_place.havePrevTarget;
+			const float ex = g_place.prevTarget[0] - world[0];
+			const float ey = g_place.prevTarget[1] - world[1];
+			const float ez = g_place.prevTarget[2] - world[2];
 			const float err = std::sqrt(ex * ex + ey * ey + ez * ez);
-			if (!std::isfinite(err)) {
+			for (std::size_t k = 0; k < 3; ++k) {
+				g_place.prevTarget[k] = g_place.target[k];
+			}
+			g_place.havePrevTarget = true;
+			if (!judge || !std::isfinite(err)) {
 				return;
 			}
 			g_place.residual = err;
 			for (std::size_t k = 0; k < 3; ++k) {
 				g_place.discWorld[k] = world[k];
 			}
-			// The disc read above was written LAST frame, with last frame's offset.
-			// On the frame a new offset first lands, err is therefore the size of the
-			// offset change and nothing else - and since the warn latch resets on
-			// every census relatch, that is exactly the frame the warning used to
-			// sample. It reported |offset| as if it were transform error: the field
-			// saw 5.01 against an offset of magnitude 5.013 with the parent residual
-			// at 0.000, while a 10 Hz probe of that same placement ran 1307 samples
-			// over three minutes without once exceeding 0.71, median 0.004
-			// (2026-09-16). Only judge frames where the offset held.
-			const bool offsetSettled = g_place.haveObserved &&
-			                           std::fabs(g_place.offset[0] - g_place.observedOffset[0]) < 1.0e-3f &&
-			                           std::fabs(g_place.offset[1] - g_place.observedOffset[1]) < 1.0e-3f &&
-			                           std::fabs(g_place.offset[2] - g_place.observedOffset[2]) < 1.0e-3f;
-			for (std::size_t k = 0; k < 3; ++k) {
-				g_place.observedOffset[k] = g_place.offset[k];
-			}
-			g_place.haveObserved = true;
-
 			// One frame of weapon motion is a legitimate part of this, so the
 			// threshold is loose: it is looking for a broken transform, not tenths of
 			// a unit. The lens is ~1.3 units in radius. The per-placement latch
@@ -1560,13 +1556,14 @@ namespace TrueScopes::ScopeRender
 			// rate limit carries the actual spam control.
 			static std::uint64_t s_residualWarnTick = 0;
 			const auto           nowTick = ::GetTickCount64();
-			if (offsetSettled && err > 2.0f && !g_place.warnedResidual && nowTick - s_residualWarnTick >= 5000) {
+			if (err > 2.0f && !g_place.warnedResidual && nowTick - s_residualWarnTick >= 5000) {
 				s_residualWarnTick = nowTick;
 				g_place.warnedResidual = true;
-				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: disc landed {:.2f} units from its target "
-				                        "(offset=({:.2f},{:.2f},{:.2f})). Some of that is one frame of "
-				                        "weapon motion; a persistently large value means the placement "
-				                        "transform is wrong."),
+				logger::warn(FMT_STRING("WIDGET AUTO-PLACE: disc landed {:.2f} units from the target it was "
+				                        "written toward (offset=({:.2f},{:.2f},{:.2f})). One frame of weapon "
+				                        "motion is inside 2; persistently large means something else moves "
+				                        "the disc or its frame after the fit (another writer, or a carry "
+				                        "that left the disc's parent on the other hand)."),
 					err, g_place.offset[0], g_place.offset[1], g_place.offset[2]);
 			}
 		}
@@ -1766,6 +1763,34 @@ namespace TrueScopes::ScopeRender
 			// (e.g. a bound-heuristic placement computed in the probe gap) must
 			// re-latch. The generation counter makes that structural instead of
 			// hoping the paths happen to order correctly.
+			// A carry re-parents the weapon under the other hand while ScopeParent
+			// and the scope camera stay on the wand chain (measured 2026-09-17:
+			// Weapon under LArm_Hand, ScopeParent still under PrimaryUIAttachNode,
+			// the camera still under PrimaryWeaponOffsetNode). The rotation
+			// calibration K was taken with the weapon rigid to that chain, so
+			// after the hand-back the disc sat at the carry's angle until the next
+			// adoption happened to come along. A re-parent IS an adoption edge:
+			// drop K, re-latch placement, restart the settle gate - the re-capture
+			// then lands ~0.5 s after either edge with nobody's event required.
+			{
+				static std::uintptr_t s_weaponNode = 0;
+				static std::uintptr_t s_weaponParent = 0;
+				std::uintptr_t        node = 0, parent = 0;
+				if (ScopeIdent::WeaponParent(node, parent)) {
+					if (node == s_weaponNode && parent != s_weaponParent && s_weaponParent != 0) {
+						g_widget.rotation.Reset();
+						ResetRotationSettle();
+						g_rotAdoptTick = ::GetTickCount64();
+						g_placeHold = PlacementHold{};
+						g_placeDirty.store(true, std::memory_order_relaxed);
+						logger::info(FMT_STRING("WIDGET: weapon node re-parented (0x{:X} -> 0x{:X}) - adopting: "
+						                        "rotation calibration dropped, placement re-latched, settle gate restarted"),
+							s_weaponParent, parent);
+					}
+					s_weaponNode = node;
+					s_weaponParent = parent;
+				}
+			}
 			static std::uint32_t s_probeGen = 0;
 			if (const auto gen = ScopeIdent::ProbeCount(); gen != s_probeGen) {
 				s_probeGen = gen;

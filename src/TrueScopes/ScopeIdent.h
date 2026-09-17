@@ -227,6 +227,13 @@ namespace TrueScopes::ScopeIdent
 	// widgetOffset* settings for any axis this scope does not specify.
 	void WidgetOffsets(float& a_x, float& a_y, float& a_z);
 
+	// The equipped weapon node and its live parent, or false when there is no
+	// probed weapon or the node no longer carries the name the probe saw. A
+	// carry (FRIK, ROCK) re-parents the weapon under the other hand while the
+	// scope widget and camera stay on the wand chain; the fit watches this to
+	// treat the re-parent as an adoption edge.
+	bool WeaponParent(std::uintptr_t& a_node, std::uintptr_t& a_parent);
+
 	// Magnification of the equipped scope (zoomData fovMult). 1.0 when unknown.
 	float FovMult();
 

@@ -1306,6 +1306,47 @@ namespace TrueScopes::ScopeIdent
 		}
 	}
 
+	namespace
+	{
+		constexpr std::uintptr_t kParentInNiAVObject = 0x28;
+
+		// POD frame, SEH: the weapon 3D can be freed between the probe and this read.
+		static bool ReadParentLive(std::uintptr_t a_node, const char* a_want, std::uintptr_t& a_parent) noexcept
+		{
+			__try {
+				char live[kNameLen] = {};
+				if (!NodeName(a_node, live) || std::strcmp(live, a_want) != 0) {
+					return false;
+				}
+				a_parent = *reinterpret_cast<const std::uintptr_t*>(a_node + kParentInNiAVObject);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+	}
+
+	bool WeaponParent(std::uintptr_t& a_node, std::uintptr_t& a_parent)
+	{
+		std::uintptr_t node = 0;
+		char           want[kNameLen] = {};
+		{
+			const std::scoped_lock lock(g_lock);
+			if (!g_info.probed || !g_info.weaponNode || !g_info.weaponNodeName[0]) {
+				return false;
+			}
+			node = g_info.weaponNode;
+			std::memcpy(want, g_info.weaponNodeName, sizeof(want));
+		}
+		std::uintptr_t parent = 0;
+		if (!ReadParentLive(node, want, parent)) {
+			return false;
+		}
+		a_node = node;
+		a_parent = parent;
+		return true;
+	}
+
 	bool OcularFaceWorld(float (&a_world)[3])
 	{
 		const std::scoped_lock lock(g_lock);
