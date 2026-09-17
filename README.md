@@ -80,6 +80,7 @@ scope-raise** (no restart for most values). Reasonable knobs to touch:
 | `vignette*`, `rimShadow*`, `sheen*`, `eyeBox*`, `parallax*`, `edgeBlur*`, `caStrength` | the glass look |
 | `reticleAlpha/Scale/Offset` | reticle presentation |
 | `fillEveryNFrames` | render cadence (1 = every frame, the default) |
+| `fillEveryNFramesInMenu` | cadence while a blocking menu (Pip-Boy, terminal, container...) is open, never faster than `fillEveryNFrames`; 0 freezes the lens on its last picture (default 2) |
 | `[Scopes]` table | per-scope aperture/offset overrides — **this is how mod-added scopes get fitted**; copy the hunting-rifle example row |
 
 Leave the rest alone unless asked — a misspelled or wrong-typed key is named in the

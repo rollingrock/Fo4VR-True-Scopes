@@ -901,7 +901,7 @@ namespace TrueScopes::Hooks
 					           !g_teardownLatch.load(std::memory_order_relaxed)) {
 						if (s_menuFrozen) {
 							s_menuFrozen = false;
-							logger::info("lens live again (blocking menu closed)"sv);
+							logger::info("lens live again (menu closed or menu cadence restored)"sv);
 						}
 						s_dimPending = true;
 						s_fadeArmed = false;

@@ -11,16 +11,22 @@ enabled = true
 # Master switch for the lens fill.
 fillEnabled = true
 
-# Lens refresh cadence: 1 = every frame, 2 = every other frame (the shipped
-# default), ... The lens render target persists between fills, so higher values
-# just trade refresh rate of the scope picture for perf. The render is the
-# single biggest cost of this plugin and cadence is the only knob that scales
-# it; 2 costs about a third less than 1 and reads fine.
-fillEveryNFrames = 2
+# Lens refresh cadence: 1 = every frame (the shipped default), 2 = every other
+# frame, ... The lens render target persists between fills, so higher values
+# trade the scope picture's refresh rate for perf. The picture is a texture on
+# a quad: it shows the raw render cadence even when the world is being
+# reprojected to the headset rate, so at a 50 fps app rate cadence 2 is a 25 Hz
+# picture in a 90 Hz world - visibly choppier than 1. Set 2 as the performance
+# option in heavy scenes: the render is the single biggest cost of this plugin
+# (~9 ms per render at Diamond City, ~2 ms in a light cell) and cadence is the
+# only knob that scales it. Live-settable from the bench.
+fillEveryNFrames = 1
 
 # Cadence while a blocking menu (Pip-Boy, terminal, container, ...) is open.
-# Never faster than fillEveryNFrames. 0 freezes the lens on its last picture,
-# dimmed once so it reads as paused, until the menu closes.
+# Never faster than fillEveryNFrames. 2 was preferred with the holo Pip-Boy up;
+# 3 and 4 read worse. 0 freezes the lens on its last picture, dimmed once so it
+# reads as paused, until the menu closes - a fallback for rigs that need the
+# headroom; it read as a bug to the author.
 fillEveryNFramesInMenu = 2
 
 # What fills the lens: 0 = off, 1 = copy of the main frame, 2 = real magnified

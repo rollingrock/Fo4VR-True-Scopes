@@ -82,17 +82,22 @@ namespace Settings
 	// Master switch for the per-frame lens fill.
 	MAKE_SETTING(bSetting, "TrueScopesVR", fillEnabled, true);
 	// Fill cadence: 1 = every frame, 2 = every other frame, ... RT 0x62 persists
-	// between frames, so low cadence just lowers the lens refresh rate. 2 ships:
-	// the render is ~9 ms of render-thread CPU at a heavy spot and cadence is the
-	// only lever that scales it (resolution does nothing - measured); 2 was judged
-	// fine while panning Diamond City market and costs ~35% less than 1.
-	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(2));
+	// between frames, so low cadence just lowers the lens refresh rate. 1 ships,
+	// judged blind against 2 and 3 on 2026-09-17: the lens is a texture on a quad
+	// and shows the raw render cadence while the world is reprojected to the
+	// headset rate, so at a ~50 fps app rate cadence 2 is a 25 Hz picture inside
+	// a 90 Hz world. 2 is the performance option for heavy scenes: the render is
+	// ~9 ms of CPU per render at Diamond City and ~1.8 ms in a light cell, and
+	// cadence is the only lever that scales it (resolution does nothing - measured).
+	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFrames, std::int64_t(1));
 	// Cadence while a blocking menu (Pip-Boy, terminal, container, ...) is open.
 	// The eye can still be on the tube with the holo Pip-Boy up and the render
 	// costs the same, so this decimates rather than stops; never faster than
 	// fillEveryNFrames. 0 freezes the lens: the last picture holds, dimmed once
 	// by poseFrozenDim so it reads as paused, and the next fill after the menu
-	// closes overwrites it.
+	// closes overwrites it. Judged blind 2026-09-17 with the holo screen up: 2
+	// preferred, 3 and 4 visibly worse, 0 "felt like a bug" - 0 stays as the
+	// fallback for a rig that needs every millisecond.
 	MAKE_SETTING(iSetting, "TrueScopesVR", fillEveryNFramesInMenu, std::int64_t(2));
 	// Eye-gate off hysteresis in ms. The vanilla gate flickers off in short
 	// windows while aiming, and every off-edge plays the widget's fade-to-black
