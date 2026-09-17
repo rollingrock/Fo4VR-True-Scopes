@@ -16,9 +16,20 @@ namespace TrueScopes::WidgetRotation
 			return captured_;
 		}
 
+		// An aimed capture was taken with the scope armed and the eye on the tube;
+		// a provisional one only with the weapon still. Provisional K is re-taken at
+		// every adoption (the pre-cache behaviour, which is fine at load); aimed K
+		// is cached for the scope and never re-learned. One provisional capture
+		// made permanent by the cache tilted a whole session (2026-09-17).
+		[[nodiscard]] bool Aimed() const noexcept
+		{
+			return aimed_;
+		}
+
 		void Reset() noexcept
 		{
 			captured_ = false;
+			aimed_ = false;
 		}
 
 		// Deliberately preserves K. Scope-in requests an identity probe, including
@@ -34,6 +45,7 @@ namespace TrueScopes::WidgetRotation
 		{
 			std::memcpy(alignment_, a_alignment, sizeof(alignment_));
 			captured_ = true;
+			aimed_ = true;  // only aimed captures are ever cached
 		}
 
 		[[nodiscard]] bool Export(float (&a_out)[9]) const noexcept
@@ -46,12 +58,13 @@ namespace TrueScopes::WidgetRotation
 		}
 
 		void Capture(const float (&a_weaponWorld)[9], const float (&a_parentWorld)[9],
-			const float (&a_engineLocal)[9]) noexcept
+			const float (&a_engineLocal)[9], bool a_aimed) noexcept
 		{
 			float parentTimesLocal[9];
 			Multiply(a_parentWorld, a_engineLocal, parentTimesLocal);
 			MultiplyTransposeLeft(a_weaponWorld, parentTimesLocal, alignment_);
 			captured_ = true;
+			aimed_ = a_aimed;
 		}
 
 		[[nodiscard]] bool Compute(const float (&a_weaponWorld)[9],
@@ -93,6 +106,7 @@ namespace TrueScopes::WidgetRotation
 		}
 
 		bool  captured_ = false;
+		bool  aimed_ = false;
 		float alignment_[9] = {};
 	};
 }

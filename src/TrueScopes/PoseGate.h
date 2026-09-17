@@ -38,6 +38,13 @@ namespace TrueScopes::PoseGate
 	// so freeze = don't fill. Always true when the pose gate is not in charge.
 	bool FillLive();
 
+	// Whether the pose gate is the verdict (our hook installed and enabled), and
+	// the narrow looking-through state it publishes to FRIK - the eye on the tube
+	// after the dwell. The facing calibration keys its "aimed" capture on these:
+	// a rifle being aimed through is seated in the hand by definition.
+	bool Owns();
+	bool LookingThrough();
+
 	// True when the verdict site has not evaluated within the last a_maxFrames
 	// game frames while the pose gate had taken ownership - i.e. the weapon is
 	// holstered or a blocking menu is open (vanilla eligibility stops the site).

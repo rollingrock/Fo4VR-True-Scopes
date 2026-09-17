@@ -23,6 +23,7 @@ namespace TrueScopes::PoseGate
 
 		std::atomic_bool           g_fillLive{ true };
 		std::atomic_bool           g_owned{ false };
+		std::atomic_bool           g_looking{ false };  // the narrow FRIK predicate, after dwell
 		std::atomic<float>         g_dist{ 0.0f };
 		std::atomic<float>         g_lateral{ 0.0f };
 		std::atomic<float>         g_lookDeg{ 0.0f };
@@ -175,6 +176,7 @@ namespace TrueScopes::PoseGate
 		g_siteFrame.store(Hooks::FrameCount(), std::memory_order_relaxed);
 		if (!*Settings::poseGateEnabled) {
 			g_owned.store(false, std::memory_order_relaxed);
+			g_looking.store(false, std::memory_order_relaxed);
 			g_fillLive.store(true, std::memory_order_relaxed);
 			return a_vanillaVerdict;
 		}
@@ -185,6 +187,7 @@ namespace TrueScopes::PoseGate
 			// Pose sources missing (no rig / no camera yet): behave exactly like
 			// the un-hooked game rather than guessing.
 			g_owned.store(false, std::memory_order_relaxed);
+			g_looking.store(false, std::memory_order_relaxed);
 			g_fillLive.store(true, std::memory_order_relaxed);
 			return a_vanillaVerdict;
 		}
@@ -322,6 +325,7 @@ namespace TrueScopes::PoseGate
 				}
 				if (now - s_pendingSince >= dwellMs) {
 					s_frikLooking = looking;
+					g_looking.store(looking, std::memory_order_relaxed);
 					s_pendingSince = 0;
 					FrikBridge::PublishLookingThrough(looking, s.dist, s.lateral, s.lookDeg);
 				}
@@ -363,6 +367,16 @@ namespace TrueScopes::PoseGate
 	bool SiteEverRan()
 	{
 		return g_siteFrame.load(std::memory_order_relaxed) != 0;
+	}
+
+	bool Owns()
+	{
+		return g_owned.load(std::memory_order_relaxed);
+	}
+
+	bool LookingThrough()
+	{
+		return g_looking.load(std::memory_order_relaxed);
 	}
 
 	bool FillLive()

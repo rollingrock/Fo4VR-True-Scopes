@@ -1,5 +1,6 @@
 #include "TrueScopes/ScopeRender.h"
 #include "TrueScopes/Hooks.h"
+#include "TrueScopes/PoseGate.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -849,6 +850,14 @@ namespace TrueScopes::ScopeRender
 		};
 		RotationCache g_rotCache;
 
+		// The engine-authored local rotation of ScopeParent, read the first time we
+		// calibrate in a session - before any write of ours. After a carry FRIK
+		// restores whatever the node held at takeover, which is our own tracked
+		// rotation, so a later capture reading the node would learn K from that.
+		// The aimed capture uses this instead.
+		float g_authoredRotRaw[12] = {};
+		bool  g_authoredRotValid = false;
+
 		bool RotationCacheHit()
 		{
 			std::uint32_t weapon = 0;
@@ -922,12 +931,18 @@ namespace TrueScopes::ScopeRender
 			if (!ReadParentTrueRot(a_sp, Rp)) {
 				return false;
 			}
+			// Aimed: the scope is armed with the eye on the tube (our narrow predicate
+			// when the pose gate is the verdict; the vanilla gate alone otherwise).
+			// A rifle being aimed through is seated in the hand by definition -
+			// stillness alone is not that: the post-load pose is still and unseated,
+			// and so is a dropped weapon under a menu.
+			const bool aimedNow = Hooks::ScopeActive() && (!PoseGate::Owns() || PoseGate::LookingThrough());
 			if (!g_widget.rotation.Captured() && RotationCacheHit()) {
 				g_widget.rotation.Restore(g_rotCache.K);
 				logger::info(FMT_STRING("WIDGET ROTATION: calibration restored from cache (weapon {:08X}, {}), no capture"),
 					g_rotCache.weapon, g_rotCache.matched);
 			}
-			if (!g_widget.rotation.Captured()) {
+			if (!g_widget.rotation.Captured() || (!g_widget.rotation.Aimed() && aimedNow)) {
 				// K persists until the next rebaseline, so a torn cross-thread read
 				// here would stick: require near-unit rows on the weapon rotation
 				// before trusting the capture (a declined frame just retries).
@@ -980,19 +995,28 @@ namespace TrueScopes::ScopeRender
 					}
 				}
 				const auto* raw = reinterpret_cast<const float*>(a_sp + 0x30);
-				float       L0[9];
+				if (!g_authoredRotValid) {
+					// First calibration of the session: the node still holds the
+					// engine's rotation. Keep it for every aimed capture after.
+					std::memcpy(g_authoredRotRaw, raw, sizeof(g_authoredRotRaw));
+					g_authoredRotValid = true;
+				}
+				const float* src = aimedNow ? g_authoredRotRaw : raw;
+				float        L0[9];
 				for (std::size_t r = 0; r < 3; ++r) {
 					for (std::size_t c = 0; c < 3; ++c) {
-						const float v = raw[c * kMatrixRowStride + r];
+						const float v = src[c * kMatrixRowStride + r];
 						if (!std::isfinite(v)) {
 							return false;
 						}
 						L0[r * 3 + c] = v;
 					}
 				}
-				std::memcpy(g_widget.baseRotRaw, raw, sizeof(g_widget.baseRotRaw));
-				g_widget.rotation.Capture(Rw, Rp, L0);
-				RotationCacheStore(g_widget.rotation);
+				std::memcpy(g_widget.baseRotRaw, src, sizeof(g_widget.baseRotRaw));
+				g_widget.rotation.Capture(Rw, Rp, L0, aimedNow);
+				if (aimedNow) {
+					RotationCacheStore(g_widget.rotation);
+				}
 				// The numbers the next "why is it tilted" needs: how far the weapon sat
 				// from its parent at capture, and how big K came out. Two captures of
 				// the same scope that disagree here disagree on the disc's facing.
@@ -1004,10 +1028,12 @@ namespace TrueScopes::ScopeRender
 				}
 				float K[9] = {};
 				g_widget.rotation.Export(K);
-				logger::info(FMT_STRING("WIDGET ROTATION: calibration captured after {} settled fits, relation still for {} ms, {} ms after adoption "
-				                        "(weapon-vs-parent {:.1f} deg, L0 {:.1f} deg, K {:.1f} deg; cached for weapon {:08X}, {})"),
+				logger::info(FMT_STRING("WIDGET ROTATION: {} calibration captured after {} settled fits, relation still for {} ms, {} ms after adoption "
+				                        "(weapon-vs-parent {:.1f} deg, L0 {:.1f} deg, K {:.1f} deg{})"),
+					aimedNow ? "AIMED"sv : "provisional"sv,
 					g_rotStableFits, ::GetTickCount64() - g_rotStableSince, ::GetTickCount64() - g_rotAdoptTick,
-					RotationAngleDeg(Rrel), RotationAngleDeg(L0), RotationAngleDeg(K), g_rotCache.weapon, g_rotCache.matched);
+					RotationAngleDeg(Rrel), RotationAngleDeg(L0), RotationAngleDeg(K),
+					aimedNow ? fmt::format("; cached for weapon {:08X}, {}", g_rotCache.weapon, g_rotCache.matched) : std::string("; not cached"));
 			}
 			if (!g_widget.rotation.Compute(Rw, Rp, a_out)) {
 				return false;
