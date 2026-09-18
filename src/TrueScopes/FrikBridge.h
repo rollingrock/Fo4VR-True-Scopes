@@ -38,6 +38,13 @@ namespace TrueScopes::FrikBridge
 	// True once setScopeProvider succeeded this session.
 	bool Registered();
 
+	// Whether the off hand is gripping the weapon this frame: FRIK's own two-
+	// handed grip, or one an external mod (ROCK) reported to it. False without
+	// FRIK. The facing calibration must not be captured inside a grip: the grip
+	// rotates the weapon relative to ScopeParent, which is exactly the relation
+	// K encodes.
+	bool OffHandGripping();
+
 	// F4SE messages FRIK broadcasts under its own plugin name ("F4VRBody"):
 	// kSkeletonDestroying / kSkeletonReady carry the skeleton generation and
 	// mark a player-3D rebuild the engine's own messages do not always announce.

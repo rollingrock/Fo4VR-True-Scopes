@@ -178,6 +178,15 @@ namespace TrueScopes::FrikBridge
 		}
 	}
 
+	bool OffHandGripping()
+	{
+		const auto* inst = FRIKApiV2::inst;
+		if (!inst || !inst->isOffHandGrippingWeapon) {
+			return false;
+		}
+		return inst->isOffHandGrippingWeapon();
+	}
+
 	bool Registered()
 	{
 		return g_registered;

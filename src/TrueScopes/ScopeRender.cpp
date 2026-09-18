@@ -1,4 +1,5 @@
 #include "TrueScopes/ScopeRender.h"
+#include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/PoseGate.h"
 
@@ -962,6 +963,23 @@ namespace TrueScopes::ScopeRender
 				// 2.2 degrees between consecutive fits. The relation must then hold
 				// for widgetRotSettleMs, and never with a blocking menu up: a Pip-Boy
 				// auto-open is what dropped that carry mid-motion.
+				//
+				// Nor inside a two-handed grip. FRIK's and ROCK's grips rotate the
+				// weapon relative to its parent to point it at the support hand, and
+				// the relation holds perfectly still there - the gate passed it, and
+				// on 2026-09-18 an AIMED capture landed seven seconds into a ROCK
+				// grip at 14.2 deg, was cached, and tilted every scope-in after it.
+				// A grip counts as motion: the settle restarts from the release.
+				const bool gripping = FrikBridge::OffHandGripping();
+				{
+					static bool s_gripDeferLogged = false;
+					if (gripping && !s_gripDeferLogged) {
+						logger::info("WIDGET ROTATION: capture deferred, off-hand grip active (the relation is the grip's, not the rest pose)"sv);
+						s_gripDeferLogged = true;
+					} else if (!gripping) {
+						s_gripDeferLogged = false;
+					}
+				}
 				{
 					float Rrel[9];
 					for (std::size_t r = 0; r < 3; ++r) {
@@ -975,7 +993,7 @@ namespace TrueScopes::ScopeRender
 					for (std::size_t i = 0; i < 9; ++i) {
 						dot += Rrel[i] * g_rotPrevRw[i];
 					}
-					const bool stable = g_rotHavePrev && dot > 2.9985f;
+					const bool stable = g_rotHavePrev && dot > 2.9985f && !gripping;
 					std::memcpy(g_rotPrevRw, Rrel, sizeof(g_rotPrevRw));
 					g_rotHavePrev = true;
 					const auto now = ::GetTickCount64();
