@@ -1281,6 +1281,11 @@ namespace TrueScopes::Hooks
 		return false;
 	}
 
+	bool VerdictHookInstalled()
+	{
+		return g_verdictHookInstalled;
+	}
+
 	bool BlockingMenuOpen()
 	{
 		return g_blockingMenus.load(std::memory_order_relaxed) != 0;

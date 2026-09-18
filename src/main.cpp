@@ -68,20 +68,27 @@ namespace
 				"ScopeFix.dll is loaded - the January scope prototype, superseded by this plugin. "
 				"Disable it."sv);
 		}
-		// ROCK's native-scope subsystem (rockEnableImmersiveScopes, on by default)
-		// patches the eye-gate verdict call at 0xEF851F - the same five bytes as our
-		// pose-gate hook - and refuses to load unless the housing-show call at
-		// 0xEFAAF2 is still vanilla, which our filter thunks. Whoever loads second
-		// loses: ROCK first = our pose gate is inert (the "byte mismatch" warning
-		// above); us first = ROCK's F4SEPlugin_Load returns false. Its own scope
-		// switch does not avoid it - the validation runs before the switch is read.
+		// ROCK's native-scope subsystem patches the eye-gate verdict call at
+		// 0xEF851F - the same five bytes as our pose-gate hook. ROCK builds from
+		// 7523efa5 (2026-09-18) claim it at kGameLoaded and only with
+		// bEnableImmersiveScopes on; if we are already there they yield, name us
+		// and force the setting off for the session. Older ROCK builds claim it at
+		// plugin load, whoever is second loses, and ROCK first left our pose gate
+		// inert (the "byte mismatch" warning above).
 		if (::GetModuleHandleW(L"ROCK.dll")) {
-			logger::critical(
-				"ROCK.dll is loaded - its native-scope subsystem patches the same eye-gate verdict "
-				"site as True Scopes' pose gate and validates a second site this plugin hooks. One "
-				"of the two loses on load order: if the pose-gate line above says byte mismatch, "
-				"True Scopes lost; otherwise ROCK declined to load. There is no setting on either "
-				"side that avoids it yet."sv);
+			if (TrueScopes::Hooks::VerdictHookInstalled()) {
+				logger::info(
+					"ROCK.dll is loaded and the eye-gate verdict site is ours. ROCK 7523efa5 or later "
+					"leaves it unless bEnableImmersiveScopes is on, and yields it by name when this plugin "
+					"is already there - its button-hold scope activation is then off for the session."sv);
+			} else {
+				logger::critical(
+					"ROCK.dll is loaded and took the eye-gate verdict site first (the byte mismatch "
+					"above): this is a ROCK older than 7523efa5, or one with bEnableImmersiveScopes on "
+					"that loaded ahead of us. The vanilla eye gate decides activation, poseGate* is inert, "
+					"and a scope cannot arm in a left carry. Update ROCK or set bEnableImmersiveScopes "
+					"off; verdictHookEnabled = false makes the vanilla gate deliberate."sv);
+			}
 		}
 		if (!TrueScopes::Hooks::VerifyArmWriteHookIntact() && !upscalerScopeFix) {
 			logger::critical(

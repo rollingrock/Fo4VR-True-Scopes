@@ -32,6 +32,9 @@ namespace TrueScopes::Hooks
 	// edge of exactly these).
 	bool SetBlockingMenuOpen(std::string_view a_name, bool a_open);
 	bool BlockingMenuOpen();
+
+	// Whether the pose-gate verdict hook took the eye-gate call site at load.
+	bool VerdictHookInstalled();
 	void OnGameLoaded();
 
 

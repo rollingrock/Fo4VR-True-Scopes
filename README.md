@@ -18,10 +18,14 @@ scopes finally work at arm's length), and bullet-hole decals render in the lens.
   same scope pipeline. If `FO4VR_better_scopes.dll` is present the log names the
   conflict. Disable one.
 - ⚠️ **ROCK** (the physics/two-hand plugin built on FRIK) has its own native-scope
-  subsystem that patches the same eye-gate site as this plugin's pose gate and
-  validates a second site this plugin hooks. Whichever loads second loses: either
-  ROCK declines to load or True Scopes' pose gate goes inert (the log names it either
-  way). Not resolvable by settings yet; coordination with ROCK's author is in progress.
+  subsystem that patches the same eye-gate site as this plugin's pose gate. ROCK builds
+  from 2026-09-18 (`7523efa5`) coexist: with `bEnableImmersiveScopes` off ROCK leaves the
+  site alone and the pose gate works as normal — including scoping in a left carry with
+  FRIK 0.79.1+ — and with it on, ROCK yields the site by name when True Scopes is already
+  loaded (its button-hold scope activation is then off for that session). Older ROCK
+  builds fight for the site by load order; if the log says "byte mismatch" at the
+  eye-gate site, update ROCK, or set `verdictHookEnabled = false` to make the vanilla
+  gate deliberate.
 - ⚠️ **Remove `UpscalerScopeFix.dll`** (Nexus 102526, the companion to PureDark's
   upscaler) if you run it. It patches the same scope-arm call site this plugin does,
   with a writer that checks nothing first, and it loads after us — so it silently
