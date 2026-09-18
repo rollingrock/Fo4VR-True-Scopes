@@ -231,6 +231,7 @@ namespace DevBench
 				{ "fillEveryNFrames", Kind::Int, &fillEveryNFrames },
 				{ "fillEveryNFramesInMenu", Kind::Int, &fillEveryNFramesInMenu },
 				{ "widgetRotSettleMs", Kind::Int, &widgetRotSettleMs },
+				{ "poseSampleAtFrameEnd", Kind::Bool, &poseSampleAtFrameEnd },
 				{ "scopeOffHoldMs", Kind::Int, &scopeOffHoldMs },
 				{ "lensMode", Kind::Int, &lensMode },
 				{ "scopeFovDegrees", Kind::Float, &scopeFovDegrees },

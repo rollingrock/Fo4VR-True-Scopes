@@ -746,6 +746,11 @@ namespace TrueScopes::Hooks
 						logger::info(FMT_STRING("fill hook runs on thread {}"), ::GetCurrentThreadId());
 					}
 				}
+				// The frame-end pose sample: every mod has placed the weapon by now.
+				if (g_verdictHookInstalled) {
+					PoseGate::SampleAtFrameEnd(*reinterpret_cast<std::uintptr_t*>(
+						REL::Module::get().base() + Addr::kPlayerGlobal));
+				}
 				// hysteresis poll: honor a gate-off only after it persisted
 				// scopeOffHoldMs; an on in between cancels it. When the pose gate
 				// owns the verdict its enter/exit thresholds are the hysteresis,

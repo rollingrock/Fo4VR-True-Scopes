@@ -554,6 +554,15 @@ namespace Settings
 	// it sat at the wrong angle (2026-09-17, twice). The relation is what K
 	// encodes, so the relation is what has to be still.
 	MAKE_SETTING(iSetting, "TrueScopesVR", widgetRotSettleMs, std::int64_t(300));
+	// Judge the pose from the previous frame's END (the fill hook, after every
+	// mod's frame update) instead of at the engine's eye-gate site, which runs
+	// right after the engine's first-person arm pass and before FRIK/ROCK move
+	// the weapon. 2026-09-18 18:05: during a ROCK left carry that pass landed
+	// the rifle on FRIK's secondary offset - the primary turned 180 deg - so at
+	// the site the tube pointed back at the head for the whole carry and the
+	// scope never armed, while the rendered rifle was fine. One frame of
+	// latency, no dependence on anyone's write order.
+	MAKE_SETTING(bSetting, "TrueScopesVR", poseSampleAtFrameEnd, false);
 	// Put the disc on the optic's ocular face automatically instead of relying on
 	// a hand-tuned offset per scope. Aims at the census-measured face where the
 	// scope has a row, and falls back to the rear of the optic's world bounding
@@ -902,6 +911,7 @@ namespace Settings
 		LOAD(widgetAutoPlace);
 		LOAD(widgetTrackRotation);
 		LOAD(widgetRotSettleMs);
+		LOAD(poseSampleAtFrameEnd);
 		LOAD(widgetPlaceMaxEyeDist);
 		LOAD(retryAfterFault);
 		LOAD(sunExecEnabled);

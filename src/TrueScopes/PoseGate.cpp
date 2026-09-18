@@ -48,6 +48,9 @@ namespace TrueScopes::PoseGate
 			bool  valid;
 			float ocular[3];  // the ocular point the gate judged (ScopeParent world)
 			float head[3];    // HMD centre it judged from
+			float axis[3];    // tube axis, unit, down-range
+			float axial[2];   // per eye (left, right): (ocular - eye) . axis; <= 0 = eye ahead of the eyepiece
+			bool  sentinel;   // both eyes ahead of the eyepiece: "not looking through", whatever the distances
 		};
 
 		// Where the gate's ocular sits against the scope's real glass: the census
@@ -175,12 +178,18 @@ namespace TrueScopes::PoseGate
 			const float halfIpd = 0.5f * static_cast<float>(*Settings::eyeBoxIpdUnits);
 			float       bestLat = -1.0f, bestDist = 0.0f;
 			float       sideLat[2] = { -1.0f, -1.0f }, sideDist[2] = {};
+			for (std::size_t k = 0; k < 3; ++k) {
+				s.ocular[k] = D[k];
+				s.head[k] = camPos[k];
+				s.axis[k] = axis[k];
+			}
 			for (const float side : { -1.0f, 1.0f }) {
 				const float e[3] = { camPos[0] + side * halfIpd * headX[0],
 					                 camPos[1] + side * halfIpd * headX[1],
 					                 camPos[2] + side * halfIpd * headX[2] };
 				const float v[3] = { D[0] - e[0], D[1] - e[1], D[2] - e[2] };
 				const float axial = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+				s.axial[side > 0.0f ? 1 : 0] = axial;
 				if (!(axial > 0.0f)) {
 					// The eye must be behind the ocular, looking down-range - an
 					// eye in front of the eyepiece is never "looking through".
@@ -210,6 +219,7 @@ namespace TrueScopes::PoseGate
 				// Pose sources are fine - the answer is simply "not looking
 				// through" (both eyes in front of, or level with, the ocular).
 				s.valid = true;
+				s.sentinel = true;
 				s.dist = 1.0e9f;
 				s.lateral = 1.0e9f;
 				s.lookDeg = 180.0f;
@@ -240,6 +250,24 @@ namespace TrueScopes::PoseGate
 		}
 	}
 
+	namespace
+	{
+		// The fill hook's sample of the same pose, taken after every mod's frame
+		// update; the site and the fill hook share the game thread (measured
+		// 2026-09-17), so a plain copy is enough.
+		Sample        g_frameEnd{};
+		std::uint64_t g_frameEndFrame = 0;
+	}
+
+	void SampleAtFrameEnd(std::uintptr_t a_player)
+	{
+		if (!*Settings::poseGateEnabled || !a_player) {
+			return;
+		}
+		g_frameEnd = Compute(a_player);
+		g_frameEndFrame = Hooks::FrameCount();
+	}
+
 	bool OnGateVerdict(std::uintptr_t a_player, bool a_vanillaVerdict)
 	{
 		g_siteFrame.store(Hooks::FrameCount(), std::memory_order_relaxed);
@@ -249,7 +277,28 @@ namespace TrueScopes::PoseGate
 			g_fillLive.store(true, std::memory_order_relaxed);
 			return a_vanillaVerdict;
 		}
-		const auto s = Compute(a_player);
+		const Sample site = Compute(a_player);
+		// The frame-end sample is the previous frame's; stale after a hitch.
+		const bool frameEndFresh = g_frameEnd.valid && Hooks::FrameCount() - g_frameEndFrame <= 2;
+		if (site.valid && frameEndFresh && site.sentinel != g_frameEnd.sentinel) {
+			// The two reads of one pose disagree on whether the eyes are behind
+			// the eyepiece: something moved the weapon between the engine's arm
+			// pass and the end of the frame. Once per second.
+			static std::uint64_t s_tick = 0;
+			const auto           now = ::GetTickCount64();
+			if (now - s_tick >= 1000) {
+				s_tick = now;
+				logger::info(FMT_STRING("pose gate: site and frame-end samples disagree - site axial L/R {:.1f}/{:.1f} axis ({:.2f},{:.2f},{:.2f}) "
+				                        "ocular ({:.1f},{:.1f},{:.1f}); frame-end axial L/R {:.1f}/{:.1f} axis ({:.2f},{:.2f},{:.2f}) ocular ({:.1f},{:.1f},{:.1f}) "
+				                        "dist {:.1f} lat {:.2f} look {:.1f}; head ({:.1f},{:.1f},{:.1f}); judging the {}"),
+					site.axial[0], site.axial[1], site.axis[0], site.axis[1], site.axis[2], site.ocular[0], site.ocular[1], site.ocular[2],
+					g_frameEnd.axial[0], g_frameEnd.axial[1], g_frameEnd.axis[0], g_frameEnd.axis[1], g_frameEnd.axis[2],
+					g_frameEnd.ocular[0], g_frameEnd.ocular[1], g_frameEnd.ocular[2],
+					g_frameEnd.dist, g_frameEnd.lateral, g_frameEnd.lookDeg, site.head[0], site.head[1], site.head[2],
+					*Settings::poseSampleAtFrameEnd ? "frame-end sample"sv : "site sample (poseSampleAtFrameEnd off)"sv);
+			}
+		}
+		const Sample s = (*Settings::poseSampleAtFrameEnd && frameEndFresh) ? g_frameEnd : site;
 		g_evals.fetch_add(1, std::memory_order_relaxed);
 		g_evalFrame.store(Hooks::FrameCount(), std::memory_order_relaxed);
 		if (!s.valid) {
@@ -325,9 +374,15 @@ namespace TrueScopes::PoseGate
 		if (live != was) {
 			char face[64];
 			FaceCheck(s, face);
-			logger::info(
-				FMT_STRING("pose gate live -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg{})"),
-				live, s.dist, s.lateral, s.lookDeg, face);
+			if (s.sentinel) {
+				logger::info(
+					FMT_STRING("pose gate live -> {} (both eyes ahead of the eyepiece: axial L/R {:.1f}/{:.1f}, axis ({:.2f},{:.2f},{:.2f}){})"),
+					live, s.axial[0], s.axial[1], s.axis[0], s.axis[1], s.axis[2], face);
+			} else {
+				logger::info(
+					FMT_STRING("pose gate live -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg{})"),
+					live, s.dist, s.lateral, s.lookDeg, face);
+			}
 		}
 		g_liveState = live;
 

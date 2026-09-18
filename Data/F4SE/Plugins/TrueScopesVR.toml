@@ -34,6 +34,13 @@ fillEveryNFramesInMenu = 2
 # mid-transit, leaving the picture at an angle until the next re-grip.
 widgetRotSettleMs = 300
 
+# Judge the eye-on-scope pose from the end of the previous frame (after every
+# mod has placed the weapon) instead of at the engine's own eye-gate site,
+# which runs before FRIK and ROCK move the weapon each frame. One frame of
+# latency. Off by default; turn on if a carry or hand-off leaves the scope
+# refusing to arm while the rifle is plainly at your eye.
+poseSampleAtFrameEnd = false
+
 # What fills the lens: 0 = off, 1 = copy of the main frame, 2 = real magnified
 # world render from the scope camera (falls back to 1 on failure). Values above 2
 # were removed diagnostics and are clamped to 2.

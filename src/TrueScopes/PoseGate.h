@@ -33,6 +33,12 @@ namespace TrueScopes::PoseGate
 	// passthrough of the vanilla verdict.
 	bool OnGateVerdict(std::uintptr_t a_player, bool a_vanillaVerdict);
 
+	// Take the frame-end pose sample (the fill hook, same thread as the site).
+	// Logged against the site's sample when the two disagree on whether the
+	// eyes are behind the eyepiece; used as the verdict's sample when
+	// poseSampleAtFrameEnd is on.
+	void SampleAtFrameEnd(std::uintptr_t a_player);
+
 	// Render thread (fill hook): true when the lens fill should run. While the
 	// widget is active but this is false, the lens is frozen - RT 0x62 persists,
 	// so freeze = don't fill. Always true when the pose gate is not in charge.
