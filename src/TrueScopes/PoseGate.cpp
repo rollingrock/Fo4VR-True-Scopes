@@ -4,6 +4,7 @@
 #include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/ScopeIdent.h"
 
 namespace TrueScopes::PoseGate
 {
@@ -45,7 +46,31 @@ namespace TrueScopes::PoseGate
 			float lateral;  // eye's perpendicular distance from the tube axis line
 			float lookDeg;  // HMD forward vs direction to ocular
 			bool  valid;
+			float ocular[3];  // the ocular point the gate judged (ScopeParent world)
+			float head[3];    // HMD centre it judged from
 		};
+
+		// Where the gate's ocular sits against the scope's real glass: the census
+		// face of the live scope shape (ScopeIdent re-reads that node each call).
+		// A left carry on 2026-09-18 read dist 53-60 with the eyepiece supposedly
+		// at the eye, where a right-hand raise reads 17-22. Either the rifle was
+		// not at the eye or ScopeParent was not on the rifle; this number is the
+		// difference. Two distances: HMD to the glass, and the gate's point to
+		// the glass. Log lines only, never per frame.
+		void FaceCheck(const Sample& a_s, char (&a_out)[64]) noexcept
+		{
+			float face[3] = {};
+			if (!ScopeIdent::OcularFaceWorld(face)) {
+				std::snprintf(a_out, sizeof(a_out), " face=n/a");
+				return;
+			}
+			const auto d = [](const float (&a)[3], const float (&b)[3]) {
+				const float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+				return std::sqrt(x * x + y * y + z * z);
+			};
+			std::snprintf(a_out, sizeof(a_out), " hmd-to-glass=%.1f gate-point-to-glass=%.1f",
+				d(a_s.head, face), d(a_s.ocular, face));
+		}
 
 		// The raw reads behind Compute, and nothing else: POD frame only so it can
 		// sit under SEH. This is a per-frame game-thread path with no other guard,
@@ -207,6 +232,10 @@ namespace TrueScopes::PoseGate
 			s.lateral = bestLat;
 			s.lookDeg = lookDeg;
 			s.valid = std::isfinite(s.dist) && std::isfinite(s.lateral) && std::isfinite(s.lookDeg);
+			for (std::size_t k = 0; k < 3; ++k) {
+				s.ocular[k] = D[k];
+				s.head[k] = camPos[k];
+			}
 			return s;
 		}
 	}
@@ -294,9 +323,11 @@ namespace TrueScopes::PoseGate
 			g_armPendingSince = 0;
 		}
 		if (live != was) {
+			char face[64];
+			FaceCheck(s, face);
 			logger::info(
-				FMT_STRING("pose gate live -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg)"),
-				live, s.dist, s.lateral, s.lookDeg);
+				FMT_STRING("pose gate live -> {} (dist={:.1f} lat={:.2f} look={:.1f}deg{})"),
+				live, s.dist, s.lateral, s.lookDeg, face);
 		}
 		g_liveState = live;
 
@@ -318,11 +349,13 @@ namespace TrueScopes::PoseGate
 				s_warned = false;
 			} else if (!s_warned && ++s_sinceLive >= 450) {
 				s_warned = true;
+				char face[64];
+				FaceCheck(s, face);
 				logger::info(
 					FMT_STRING("pose gate: {} evals this draw without going live (last dist={:.1f} "
-					           "lat={:.2f} look={:.1f}deg vs enter {:.0f}/{:.1f}/{:.0f}) - tune "
+					           "lat={:.2f} look={:.1f}deg vs enter {:.0f}/{:.1f}/{:.0f}{}) - tune "
 					           "poseMax*/poseLookCone* if this weapon should activate"),
-					s_sinceLive, s.dist, s.lateral, s.lookDeg, dMax, latMax, lookMax);
+					s_sinceLive, s.dist, s.lateral, s.lookDeg, dMax, latMax, lookMax, face);
 			}
 		}
 
