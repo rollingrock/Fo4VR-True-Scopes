@@ -47,22 +47,69 @@ namespace TrueScopes::PoseGate
 			bool  valid;
 		};
 
+		// The raw reads behind Compute, and nothing else: POD frame only so it can
+		// sit under SEH. This is a per-frame game-thread path with no other guard,
+		// and the nodes it reads are the ones a FRIK camera-rig rebuild - and,
+		// since 2026-09-18, a carry re-parenting ScopeParent at frame start and
+		// restoring it on skeleton release - replaces under it. A freed node that
+		// still reads as memory yields garbage the finite checks reject; one that
+		// no longer does faulted the game. Now it reads as "no sample".
+		struct RawPose
+		{
+			float axis[3];    // ScopeParent world rotate, local Y (floats 4..6)
+			float ocular[3];  // ScopeParent world translate
+			float camPos[3];  // camera root world translate
+			float headX[3];   // camera root world rotate, floats 0..2
+			float headFwd[3]; // camera root world rotate, floats 4..6
+		};
+
+		static bool ReadRawPose(std::uintptr_t a_player, RawPose& a_out) noexcept
+		{
+			__try {
+				const auto scopeParent = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
+				if (!scopeParent) {
+					return false;
+				}
+				const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraGlobal);
+				if (!playerCam) {
+					return false;
+				}
+				const auto camRoot = *reinterpret_cast<std::uintptr_t*>(playerCam + kCameraRoot);
+				if (!camRoot) {
+					return false;
+				}
+				const auto* rot = reinterpret_cast<const float*>(scopeParent + kWorldRotate);
+				const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
+				const auto* camPos = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
+				const auto* camRot = reinterpret_cast<const float*>(camRoot + kWorldRotate);
+				for (std::size_t k = 0; k < 3; ++k) {
+					a_out.axis[k] = rot[4 + k];
+					a_out.ocular[k] = t[k];
+					a_out.camPos[k] = camPos[k];
+					a_out.headX[k] = camRot[k];
+					a_out.headFwd[k] = camRot[4 + k];
+				}
+				for (const float* v : { a_out.axis, a_out.ocular, a_out.camPos, a_out.headX, a_out.headFwd }) {
+					for (std::size_t k = 0; k < 3; ++k) {
+						if (!std::isfinite(v[k])) {
+							return false;
+						}
+					}
+				}
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		[[nodiscard]] Sample Compute(std::uintptr_t a_player) noexcept
 		{
 			Sample s{};
 			if (!a_player) {
 				return s;
 			}
-			const auto scopeParent = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
-			if (!scopeParent) {
-				return s;
-			}
-			const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraGlobal);
-			if (!playerCam) {
-				return s;
-			}
-			const auto camRoot = *reinterpret_cast<std::uintptr_t*>(playerCam + kCameraRoot);
-			if (!camRoot) {
+			RawPose raw{};
+			if (!ReadRawPose(a_player, raw)) {
 				return s;
 			}
 
@@ -70,8 +117,7 @@ namespace TrueScopes::PoseGate
 			// With the transposed-on-read convention, world_dir(local Y)[r] =
 			// R[r][1] = m[1*4 + r] — raw floats 4..6. (This is also exactly the
 			// +0x80/+0x84/+0x88 triple the vanilla gate dots against.)
-			const auto* rot = reinterpret_cast<const float*>(scopeParent + kWorldRotate);
-			float       axis[3] = { rot[4], rot[5], rot[6] };
+			float axis[3] = { raw.axis[0], raw.axis[1], raw.axis[2] };
 			const float axisLen = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
 			if (!(axisLen > 1.0e-4f) || !std::isfinite(axisLen)) {
 				return s;
@@ -89,18 +135,12 @@ namespace TrueScopes::PoseGate
 			// are all inside RenderGuarded's __try). The two points differ by at
 			// most a couple of units on the same eyepiece - noise against the
 			// lateral and distance thresholds.
-			float       D[3];
-			const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
-			D[0] = t[0];
-			D[1] = t[1];
-			D[2] = t[2];
-
-			const auto* camPos = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
-			const auto* camRot = reinterpret_cast<const float*>(camRoot + kWorldRotate);
+			const float D[3] = { raw.ocular[0], raw.ocular[1], raw.ocular[2] };
+			const float* camPos = raw.camPos;
 			// Head axes, same convention: world X = m[0..2], world forward (local
 			// Y) = m[4..6].
-			const float headX[3] = { camRot[0], camRot[1], camRot[2] };
-			const float headFwd[3] = { camRot[4], camRot[5], camRot[6] };
+			const float headX[3] = { raw.headX[0], raw.headX[1], raw.headX[2] };
+			const float headFwd[3] = { raw.headFwd[0], raw.headFwd[1], raw.headFwd[2] };
 
 			// Both real eyes (camera root is the HMD centre). The eye the lens has
 			// latched for this scope episode wins (LensComposite::AimingEyeSide,
