@@ -820,6 +820,78 @@ namespace TrueScopes::ScopeRender
 			return true;
 		}
 
+		// Which way the disc faces and where it sits against the glass, from the
+		// same reads the fit uses. Jason's question after the 2026-09-18 09:37 carry
+		// ("no disc at all, only the scope mesh"): a disc inside the tube, or one
+		// facing away and back-face culled, is drawn nowhere, which the placement
+		// and gate numbers (both translate-only) cannot see. Determinants tell a
+		// mirrored frame (-1) from a rotated one (+1): a left carry that mirrors
+		// the weapon flips the disc's winding. Logged at every re-parent edge and
+		// once per second while any of it is abnormal.
+		float Det3(const float (&a_m)[9]) noexcept
+		{
+			return a_m[0] * (a_m[4] * a_m[8] - a_m[5] * a_m[7]) -
+			       a_m[1] * (a_m[3] * a_m[8] - a_m[5] * a_m[6]) +
+			       a_m[2] * (a_m[3] * a_m[7] - a_m[4] * a_m[6]);
+		}
+
+		void LogWidgetFacing(std::uintptr_t a_sp, const char* a_why, bool a_onlyIfAbnormal)
+		{
+			if (!a_sp) {
+				return;
+			}
+			float Rw[9], Rp[9], Rd[9];
+			if (!ScopeIdent::OcularShapeRotation(Rw) || !ReadParentTrueRot(a_sp, Rp)) {
+				return;
+			}
+			const auto* dm = reinterpret_cast<const float*>(a_sp + 0x70);
+			for (std::size_t r = 0; r < 3; ++r) {
+				for (std::size_t c = 0; c < 3; ++c) {
+					Rd[r * 3 + c] = dm[c * kMatrixRowStride + r];
+				}
+			}
+			// disc normal toward the eye = -(world direction of local Y) = -(m[4..6])
+			const float n[3] = { -dm[4], -dm[5], -dm[6] };
+			const float axis[3] = { dm[4], dm[5], dm[6] };
+			const auto* D = reinterpret_cast<const float*>(a_sp + kWorldTranslate);
+			const auto  playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraPtr);
+			const auto  camRoot = playerCam ? *reinterpret_cast<std::uintptr_t*>(playerCam + kCameraRootInCamera) : 0;
+			if (!camRoot) {
+				return;
+			}
+			const auto* H = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
+			float       toEye[3] = { H[0] - D[0], H[1] - D[1], H[2] - D[2] };
+			const float len = std::sqrt(toEye[0] * toEye[0] + toEye[1] * toEye[1] + toEye[2] * toEye[2]);
+			if (!(len > 1.0e-3f) || !std::isfinite(len)) {
+				return;
+			}
+			const float facing = (n[0] * toEye[0] + n[1] * toEye[1] + n[2] * toEye[2]) / len;
+			float       face[3] = {};
+			float       axial = 0.0f;
+			const bool  haveFace = ScopeIdent::OcularFaceWorld(face);
+			if (haveFace) {
+				axial = (D[0] - face[0]) * axis[0] + (D[1] - face[1]) * axis[1] + (D[2] - face[2]) * axis[2];
+			}
+			const float dw = Det3(Rw), dp = Det3(Rp), dd = Det3(Rd);
+			const bool  abnormal = dw < 0.5f || dp < 0.5f || dd < 0.5f || facing < 0.0f || (haveFace && std::fabs(axial) > 2.0f);
+			for (const float v : { dw, dp, dd, facing, axial }) {
+				if (!std::isfinite(v)) {
+					return;
+				}
+			}
+			static std::uint64_t s_tick = 0;
+			const auto           now = ::GetTickCount64();
+			if (a_onlyIfAbnormal && (!abnormal || now - s_tick < 1000)) {
+				return;
+			}
+			s_tick = now;
+			logger::info(FMT_STRING("WIDGET FACING ({}): det shape {:.2f} parent {:.2f} disc {:.2f}; disc normal to HMD {:.2f} ({}); "
+			                        "disc {:.1f} units {} the glass along the tube{}"),
+				a_why, dw, dp, dd, facing, facing >= 0.0f ? "front-facing"sv : "FACING AWAY"sv,
+				std::fabs(axial), axial > 0.0f ? "down-range of"sv : "behind"sv,
+				haveFace ? ""sv : " (no face read)"sv);
+		}
+
 		// Rotation-capture settle gate. The calibration K is taken once per widget
 		// lifecycle from the scope shape's world rotation, and the first fit after a
 		// rebaseline lands within tens of milliseconds of FRIK's skeleton init and
@@ -1931,6 +2003,7 @@ namespace TrueScopes::ScopeRender
 						// rest of the carry - the right eye 4.5 units off a 2.6-unit
 						// eyebox with residual 0 is a black disc. Jason saw "no lens".
 						LensComposite::ResetAimingEye();
+						LogWidgetFacing(a_player ? *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer) : 0, "re-parent", false);
 						logger::info(FMT_STRING("WIDGET: weapon node re-parented (0x{:X} -> 0x{:X}) - adopting: "
 						                        "rotation calibration dropped, placement re-latched, settle gate restarted, aiming eye unlatched"),
 							s_weaponParent, parent);
@@ -2012,6 +2085,7 @@ namespace TrueScopes::ScopeRender
 			const bool rotChanged = haveRot &&
 			                        std::memcmp(trackRot, g_widget.lastRot, sizeof(trackRot)) != 0;
 
+			LogWidgetFacing(sp, "fit", true);
 			// Only touch the node when something actually changed — NiAVObject::Update walks
 			// the subtree, and the engine itself only does this at equip.
 			if (g_widget.applied && g_widget.lastScale == scale && g_widget.lastOx == ox &&
