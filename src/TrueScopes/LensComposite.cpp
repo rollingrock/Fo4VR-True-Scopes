@@ -1077,6 +1077,24 @@ float4 PSMain(VSOut i) : SV_Target
 				g_diag.eyeLateralMiss = miss;
 				g_diag.eyeShiftX = p.eyebox[0];
 				g_diag.eyeShiftY = p.eyebox[1];
+				// Say so when the eyebox is shading the whole disc: with residual 0
+				// that is a black lens on the rifle, which a tester describes as
+				// "no lens" (2026-09-18 09:37, left carry, right eye latched). One
+				// line per ~second of shading, and one when it clears.
+				{
+					static std::uint32_t s_shadedFills = 0;
+					if (miss >= 1.0f) {
+						if (s_shadedFills++ % 60 == 0) {
+							logger::info(FMT_STRING("eyebox: the {} eye is {:.2f} eyebox radii off the tube ({:.1f} units) - lens shaded{}"),
+								AimingEyeSide() < 0 ? "left"sv : "right"sv, miss, lateralUnits,
+								p.eyebox[3] <= 0.0f ? " to black (eyeBoxResidual 0)"sv : ""sv);
+						}
+					} else if (s_shadedFills) {
+						logger::info(FMT_STRING("eyebox: lens clear again ({} eye, {:.2f} radii)"),
+							AimingEyeSide() < 0 ? "left"sv : "right"sv, miss);
+						s_shadedFills = 0;
+					}
+				}
 			}
 			if (havePose) {
 				p.pose[0] = ex;
