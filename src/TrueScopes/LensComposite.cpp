@@ -731,6 +731,11 @@ float4 PSMain(VSOut i) : SV_Target
 		g_diag.quadHidden = false;
 	}
 
+	void ResetAimingEye() noexcept
+	{
+		g_eyeSide.store(0, std::memory_order_relaxed);
+	}
+
 	int AimingEyeSide() noexcept
 	{
 		const auto forced = *Settings::eyeBoxEye;

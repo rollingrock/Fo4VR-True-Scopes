@@ -1924,8 +1924,15 @@ namespace TrueScopes::ScopeRender
 						g_rotAdoptTick = ::GetTickCount64();
 						g_placeHold = PlacementHold{};
 						g_placeDirty.store(true, std::memory_order_relaxed);
+						// The aiming eye too. The latch is per scope episode, and a
+						// carry does not end the episode: 2026-09-18 09:37, right eye
+						// latched during the hand-off transit (left 3.00 / right 3.25,
+						// neither clearly nearer), rifle then at the LEFT eye for the
+						// rest of the carry - the right eye 4.5 units off a 2.6-unit
+						// eyebox with residual 0 is a black disc. Jason saw "no lens".
+						LensComposite::ResetAimingEye();
 						logger::info(FMT_STRING("WIDGET: weapon node re-parented (0x{:X} -> 0x{:X}) - adopting: "
-						                        "rotation calibration dropped, placement re-latched, settle gate restarted"),
+						                        "rotation calibration dropped, placement re-latched, settle gate restarted, aiming eye unlatched"),
 							s_weaponParent, parent);
 					}
 					s_weaponNode = node;

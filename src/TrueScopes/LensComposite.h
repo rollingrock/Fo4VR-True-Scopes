@@ -70,4 +70,9 @@ namespace TrueScopes::LensComposite
 	// scope episode. eyeBoxEye forces it; otherwise the render thread latches the
 	// nearer eye on the episode's first fill. Safe from any thread.
 	int AimingEyeSide() noexcept;
+
+	// Drop the episode's latch so the next fill chooses again. For the carry
+	// edges: a hand-off moves the rifle to the other shoulder, and with the
+	// eyebox residual at 0 a latch made for the wrong eye is a black disc.
+	void ResetAimingEye() noexcept;
 }
