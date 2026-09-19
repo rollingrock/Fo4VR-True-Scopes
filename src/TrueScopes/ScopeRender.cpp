@@ -857,6 +857,11 @@ namespace TrueScopes::ScopeRender
 		// rotation, so a later capture reading the node would learn K from that.
 		// The aimed capture uses this instead.
 		float g_authoredRotRaw[12] = {};
+
+		// True while the weapon node hangs somewhere other than where it hung when
+		// it first appeared (its equip hand): a carry, whoever performs it. Written
+		// by the fit's re-parent watch, read by the facing capture.
+		std::atomic_bool g_weaponCarried{ false };
 		bool  g_authoredRotValid = false;
 
 		bool RotationCacheHit()
@@ -937,13 +942,35 @@ namespace TrueScopes::ScopeRender
 			// A rifle being aimed through is seated in the hand by definition -
 			// stillness alone is not that: the post-load pose is still and unseated,
 			// and so is a dropped weapon under a menu.
-			const bool aimedNow = Hooks::ScopeActive() && (!PoseGate::Owns() || PoseGate::LookingThrough());
+			// K = Rw^T * R_disc is a property of the scope and, once learned, serves
+			// under any parent (the write is L = Rp^T * Rw * K with the live parent).
+			// It can only be LEARNED where the engine authored the widget: under
+			// PrimaryUIAttachNode (player+0x700), with the rifle in the hand it was
+			// equipped to. During a carry the widget rides another node (FRIK: the
+			// off-hand wand) or, left on the primary chain, turns with a hand that no
+			// longer holds the rifle. 2026-09-19 07:54:58 a provisional capture 1 s
+			// into a left carry learned 41.4 deg, and 07:55:16 an aimed one under the
+			// off-hand wand learned 59.2 deg from the AUTHORED local - meaningless in
+			// that frame - and cached it: tilted from the carry on, and after the
+			// hand-back, for the session (Jason). A carry never teaches K; without a
+			// K the rotation is simply not written and the carrier's world-preserving
+			// re-parent keeps the facing the disc had.
+			bool mayLearn = false;
+			{
+				const auto player = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerGlobal);
+				const auto parent = *reinterpret_cast<std::uintptr_t*>(a_sp + 0x28);
+				mayLearn = player && parent &&
+				           parent == *reinterpret_cast<std::uintptr_t*>(player + 0x700) &&
+				           !g_weaponCarried.load(std::memory_order_relaxed);
+			}
+			const bool aimedNow = mayLearn && Hooks::ScopeActive() &&
+			                      (!PoseGate::Owns() || PoseGate::LookingThrough());
 			if (!g_widget.rotation.Captured() && RotationCacheHit()) {
 				g_widget.rotation.Restore(g_rotCache.K);
 				logger::info(FMT_STRING("WIDGET ROTATION: calibration restored from cache (weapon {:08X}, {}), no capture"),
 					g_rotCache.weapon, g_rotCache.matched);
 			}
-			if (!g_widget.rotation.Captured() || (!g_widget.rotation.Aimed() && aimedNow)) {
+			if (mayLearn && (!g_widget.rotation.Captured() || (!g_widget.rotation.Aimed() && aimedNow))) {
 				// K persists until the next rebaseline, so a torn cross-thread read
 				// here would stick: require near-unit rows on the weapon rotation
 				// before trusting the capture (a declined frame just retries).
@@ -1294,7 +1321,12 @@ namespace TrueScopes::ScopeRender
 		{
 			const auto now = ::GetTickCount64();
 			if (g_place.valid) {
-				if (g_placeHold.valid && Dist3(g_place.offset, g_placeHold.offset) > 3.0f) {
+				// Census placements are never held: the target is a point on the live
+				// scope shape, sanity-bounded against the scope's own bound, and under
+				// continuous motion every frame is a "jump" from the last held offset,
+				// so 0.3.60's one-fit hold alternated hold and accept. The hold stays
+				// for the eye-dependent heuristic, where a jump can be a bad frame.
+				if (!g_place.eyeIndependent && g_placeHold.valid && Dist3(g_place.offset, g_placeHold.offset) > 3.0f) {
 					// A jump is held for ONE fit, then taken. The hold exists against
 					// a single torn or one-update-stale read; it used to demand three
 					// consecutive candidates within a unit of each other, which real
@@ -2005,6 +2037,7 @@ namespace TrueScopes::ScopeRender
 			{
 				static std::uintptr_t s_weaponNode = 0;
 				static std::uintptr_t s_weaponParent = 0;
+				static std::uintptr_t s_weaponRestParent = 0;  // where the node hung when it first appeared
 				std::uintptr_t        node = 0, parent = 0;
 				if (ScopeIdent::WeaponParent(node, parent)) {
 					if (node == s_weaponNode && parent != s_weaponParent && s_weaponParent != 0) {
@@ -2025,6 +2058,10 @@ namespace TrueScopes::ScopeRender
 						                        "rotation calibration dropped, placement re-latched, settle gate restarted, aiming eye unlatched"),
 							s_weaponParent, parent);
 					}
+					if (node != s_weaponNode) {
+						s_weaponRestParent = parent;
+					}
+					g_weaponCarried.store(parent != s_weaponRestParent, std::memory_order_relaxed);
 					s_weaponNode = node;
 					s_weaponParent = parent;
 				}
