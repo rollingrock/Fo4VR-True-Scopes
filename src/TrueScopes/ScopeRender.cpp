@@ -1674,9 +1674,22 @@ namespace TrueScopes::ScopeRender
 			// A scope is centimetres from the mount. An offset the size of a room
 			// means a transform this code misread, and applying it would shove the
 			// disc somewhere it can never be seen — which reads as "the render broke".
+			// Unless the target sits on the scope itself: with the widget kept on
+			// the wand chain while the rifle is carried in the other hand (FRIK
+			// PlacesScopeWidget, 2026-09-19), the census face is a whole arm away
+			// from the wand-chain baseline and the offset is legitimately 40-80
+			// units. A census target is a point on the scope's own bound by
+			// construction (OcularFaceWorld checks it against the live radius), so
+			// a target within the bound is never a misread, whatever the offset;
+			// the flat bound stays for the eye-dependent heuristic. Declining here
+			// left the disc at its last offset in the right hand's frame: "floaty,
+			// pulled off the lens and orbiting the right hand" (Jason, 07:43).
 			const float mag = std::sqrt(p.offset[0] * p.offset[0] + p.offset[1] * p.offset[1] +
 			                            p.offset[2] * p.offset[2]);
-			if (mag > 40.0f) {
+			const float tcx = target[0] - center[0], tcy = target[1] - center[1], tcz = target[2] - center[2];
+			const bool  onScope = haveExact && haveBound &&
+			                     std::sqrt(tcx * tcx + tcy * tcy + tcz * tcz) <= radius * 1.5f + 5.0f;
+			if (mag > 40.0f && !onScope) {
 				PlaceDecline("offset implausibly large; refusing");
 				return;
 			}
