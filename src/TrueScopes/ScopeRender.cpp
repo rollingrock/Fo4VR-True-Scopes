@@ -1295,14 +1295,18 @@ namespace TrueScopes::ScopeRender
 			const auto now = ::GetTickCount64();
 			if (g_place.valid) {
 				if (g_placeHold.valid && Dist3(g_place.offset, g_placeHold.offset) > 3.0f) {
-					if (g_placeHold.pendingFits > 0 && Dist3(g_place.offset, g_placeHold.pending) < 1.0f) {
-						++g_placeHold.pendingFits;
-					} else {
-						std::memcpy(g_placeHold.pending, g_place.offset, sizeof(g_placeHold.pending));
-						g_placeHold.pendingFits = 1;
-					}
-					if (g_placeHold.pendingFits < 3) {
-						// jumped: keep what is applied until the jump proves itself
+					// A jump is held for ONE fit, then taken. The hold exists against
+					// a single torn or one-update-stale read; it used to demand three
+					// consecutive candidates within a unit of each other, which real
+					// motion never delivers: with the widget on the wand chain and the
+					// rifle carried in the other hand (2026-09-19, PlacesScopeWidget),
+					// the census target moves in the parent frame every frame, the
+					// candidates never agreed, and the disc stayed at the last held
+					// offset - riding the right hand, orbiting it when it moved far
+					// from the rifle. Two consecutive candidates that both disagree
+					// with the held offset are motion, whatever they say to each other.
+					++g_placeHold.pendingFits;
+					if (g_placeHold.pendingFits < 2) {
 						std::memcpy(g_place.offset, g_placeHold.offset, sizeof(g_place.offset));
 						std::memcpy(g_place.target, g_placeHold.target, sizeof(g_place.target));
 						std::snprintf(g_place.reason, sizeof(g_place.reason), "held (candidate jumped)");
