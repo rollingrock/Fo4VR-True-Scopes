@@ -401,6 +401,10 @@ namespace frik::api
             PublishesLookingThrough = 1u << 2,
             // FRIK does not dampen hands or recoil while scoped; the provider smooths its own view.
             OwnsDamping = 1u << 3,
+            // The provider places the scope widget itself: during an external carry FRIK still re-parents
+            // the scope camera under the weapon but leaves ScopeParent on the wand chain. The engine does
+            // not draw the widget under the first-person skeleton (2026-09-19). Since v2.4.
+            PlacesScopeWidget = 1u << 4,
         };
 
         /**
