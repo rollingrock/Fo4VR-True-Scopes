@@ -96,23 +96,40 @@ namespace TrueScopes::FrikBridge
 		// Not OwnsScopeCamera: FRIK still writes the scope camera rotation and
 		// our per-render translate overwrite sits on top, as it always has.
 		// Not OwnsDamping: the damping decision is still open on FRIK's side.
-		// PlacesScopeWidget: the disc is re-targeted to the live glass every render
-		// from the wand chain, so a carry must not move ScopeParent under the
-		// weapon - the engine does not draw the widget under the first-person
-		// skeleton (proven 2026-09-19 07:23: moved under Weapon, gone; back on the
-		// wand, back). A FRIK that predates the bit refuses the registration, so
-		// register again without it rather than lose the provider.
+		// PlacesScopeWidget: during a carry the widget must ride the wand of the
+		// hand holding the rifle. Under the weapon the engine does not draw it at
+		// all, and on the other hand's wand it hangs off a 50-80 unit lever arm
+		// that turns every frame of timing slack into a floating disc (both seen
+		// in the headset 2026-09-19). Ours to ask for, because the fit re-targets
+		// the disc to the live glass every render under whatever parent it has.
+		//
+		// setScopeProvider validates the WHOLE mask - an unknown bit fails the
+		// registration outright, losing the other capabilities with it - so the
+		// bit is only sent to a FRIK whose contract carries it. The retry below is
+		// the net for a build that reports the version but validates an older mask.
+		constexpr std::uint32_t kPlacesScopeWidgetVersion = 4;
 		const auto baseCaps = static_cast<std::uint32_t>(ScopeCapability::KeepsBodyVisible) |
 		                      static_cast<std::uint32_t>(ScopeCapability::PublishesLookingThrough);
-		auto caps = baseCaps | static_cast<std::uint32_t>(ScopeCapability::PlacesScopeWidget);
+		const bool carryAware = inst->getVersion() >= kPlacesScopeWidgetVersion;
+		auto       caps = carryAware
+		                      ? baseCaps | static_cast<std::uint32_t>(ScopeCapability::PlacesScopeWidget)
+		                      : baseCaps;
 		if (!inst->setScopeProvider(kTag, caps)) {
+			if (caps == baseCaps) {
+				logger::warn("FRIK scope provider: setScopeProvider refused the registration"sv);
+				return;
+			}
 			caps = baseCaps;
 			if (!inst->setScopeProvider(kTag, caps)) {
 				logger::warn("FRIK scope provider: setScopeProvider refused the registration"sv);
 				return;
 			}
-			logger::warn("FRIK scope provider: this FRIK predates PlacesScopeWidget (API v2.4) - registered without it. "
-			             "A left carry re-parents the scope widget under the weapon, where the engine does not draw it: no lens while carried left"sv);
+		}
+		if (caps == baseCaps) {
+			logger::warn(FMT_STRING("FRIK scope provider: this FRIK (API contract {}) predates PlacesScopeWidget, which arrived in contract {}. "
+			                        "A carry will re-parent the scope widget under the weapon, where the engine does not draw it: no lens while the "
+			                        "weapon is carried in the other hand. Everything else is unaffected."),
+				inst->getVersion(), kPlacesScopeWidgetVersion);
 		}
 		g_registered = true;
 		g_lastLooking.store(false);
