@@ -126,9 +126,10 @@ namespace TrueScopes::FrikBridge
 			}
 		}
 		if (caps == baseCaps) {
-			logger::warn(FMT_STRING("FRIK scope provider: this FRIK (API contract {}) predates PlacesScopeWidget, which arrived in contract {}. "
-			                        "A carry will re-parent the scope widget under the weapon, where the engine does not draw it: no lens while the "
-			                        "weapon is carried in the other hand. Everything else is unaffected."),
+			logger::warn(FMT_STRING("FRIK scope provider: this FRIK (API contract {}) predates PlacesScopeWidget, which arrived in contract {} "
+			                        "(FRIK 0.79.1). It has no carry handling for the scope rig, so while another mod carries the weapon in the "
+			                        "off hand the widget and the scope camera stay with the primary hand: the scope will not arm there, and if it "
+			                        "does the picture is not the one down the tube. Everything else is unaffected."),
 				inst->getVersion(), kPlacesScopeWidgetVersion);
 		}
 		g_registered = true;

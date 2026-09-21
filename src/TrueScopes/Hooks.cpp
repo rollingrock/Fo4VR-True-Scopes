@@ -53,6 +53,20 @@ namespace TrueScopes::Hooks
 		// last arm-write edge said; the fill hook publishes it once it has held.
 		std::atomic_bool                g_fallbackCandidate{ false };
 		std::atomic<std::uint64_t>      g_fallbackSince{ 0 };
+
+		// A stand-down told to FRIK out of band - a blocking menu, an unequip, a
+		// save load - must not be undone by the next fill frame. The candidate only
+		// moves on arm-write edges, so after a stand-down it still says "armed" with
+		// its dwell long expired, and the fill hook would re-publish that instantly.
+		// Forgetting it makes the deliberate false the last word until the vanilla
+		// gate genuinely arms again.
+		void ForgetFallbackCandidate() noexcept
+		{
+			if (g_fallbackCandidate.exchange(false)) {
+				g_fallbackSince.store(static_cast<std::uint64_t>(::GetTickCount64()),
+					std::memory_order_relaxed);
+			}
+		}
 		// Frame the latch was last armed on. The verdict site is what clears the
 		// latch; when that site is not ours (another plugin owns the call, or the
 		// user left it alone) nothing would ever clear it, so a frame count does.
@@ -485,6 +499,7 @@ namespace TrueScopes::Hooks
 				g_gateRaw.store(false);
 				// The verdict site stops running with the weapon gone, so this is
 				// the last game-thread chance to tell FRIK the scope is down.
+				ForgetFallbackCandidate();
 				FrikBridge::PublishLookingThrough(false);
 				if (SetScopeActive(false)) {
 					LensComposite::RestoreReticleQuad();
@@ -798,7 +813,14 @@ namespace TrueScopes::Hooks
 				// cannot leave this stuck. Not the game thread - the publish queues.
 				if (g_installed && !(g_verdictHookInstalled && *Settings::poseGateEnabled)) {
 					const bool candidate = g_fallbackCandidate.load(std::memory_order_relaxed);
-					if (candidate != FrikBridge::LastLooking()) {
+					// The holster path re-arms the candidate through the enable switch
+					// on its way out (an equip-path caller writes verdict=1 while the
+					// weapon is going away), so clearing at the stand-down is not
+					// enough on its own: never re-assert "looking through" while a
+					// blocking menu is up or the verdict site has stopped running.
+					const bool standingDown = candidate &&
+					                          (BlockingMenuOpen() || PoseGate::SiteStale(90));
+					if (!standingDown && candidate != FrikBridge::LastLooking()) {
 						const auto dwellMs = static_cast<std::uint64_t>(
 							(std::max)(std::int64_t(0), *Settings::frikLookingDwellMs));
 						const auto since = g_fallbackSince.load(std::memory_order_relaxed);
@@ -1246,6 +1268,7 @@ namespace TrueScopes::Hooks
 		// clears the teardown latch.
 		ArmTeardownLatch();
 		g_gateRaw.store(false, std::memory_order_relaxed);
+		ForgetFallbackCandidate();
 		FrikBridge::PublishLookingThrough(false);
 		if (SetScopeActive(false)) {
 			LensComposite::RestoreReticleQuad();
@@ -1277,6 +1300,9 @@ namespace TrueScopes::Hooks
 				const auto bit = std::uint32_t(1) << i;
 				if (a_open) {
 					g_blockingMenus.fetch_or(bit, std::memory_order_relaxed);
+					// the caller publishes the stand-down; keep the fallback from
+					// arguing with it on the next fill frame
+					ForgetFallbackCandidate();
 				} else {
 					g_blockingMenus.fetch_and(~bit, std::memory_order_relaxed);
 				}

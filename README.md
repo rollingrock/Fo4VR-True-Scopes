@@ -76,8 +76,9 @@ FRIK versions work as before. `frikProvider = false` opts out.
 weapon in your off hand — ROCK's left-firing carry, for one. FRIK then keeps the scope
 widget on the wand of the hand actually holding the weapon; under the weapon node itself
 the game does not draw the widget at all, and on the other hand's wand it swings on an
-arm's-length lever. On an older FRIK everything else works and the log says so at load:
-the lens is simply absent while the weapon is carried in the other hand.
+arm's-length lever. An older FRIK has no carry handling for the scope rig at all, so the
+widget and the scope camera stay with your primary hand: the scope will not arm in the
+carrying hand, and everything else works as before. The log says which you have at load.
 
 ## Settings
 
