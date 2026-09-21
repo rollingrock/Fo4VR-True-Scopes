@@ -72,6 +72,13 @@ body stays visible while scoped and FRIK's hand/recoil damping, Pip-Boy use and
 two-hand grip release follow this plugin's pose gate instead of the ScopeMenu. Older
 FRIK versions work as before. `frikProvider = false` opts out.
 
+**FRIK 0.79.1 or later** (API v2.4) is needed for the lens while another mod carries the
+weapon in your off hand — ROCK's left-firing carry, for one. FRIK then keeps the scope
+widget on the wand of the hand actually holding the weapon; under the weapon node itself
+the game does not draw the widget at all, and on the other hand's wand it swings on an
+arm's-length lever. On an older FRIK everything else works and the log says so at load:
+the lens is simply absent while the weapon is carried in the other hand.
+
 ## Settings
 
 `TrueScopesVR.toml` ships with every field-tuned default and **re-loads on each
