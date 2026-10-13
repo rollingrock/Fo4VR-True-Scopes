@@ -1082,6 +1082,29 @@ namespace TrueScopes::ScopeIdent
 		return a_obj != 0 && IsNode(a_obj);
 	}
 
+	std::uintptr_t FirstPersonWeaponNode(std::uintptr_t a_player)
+	{
+		if (!a_player) {
+			return 0;
+		}
+		__try {
+			const auto process = *reinterpret_cast<std::uintptr_t*>(a_player + kProcessInActor);
+			if (!process) {
+				return 0;
+			}
+			const auto vtbl = *reinterpret_cast<std::uintptr_t*>(a_player);
+			const auto getBiped = *reinterpret_cast<void* (**)(std::uintptr_t, char)>(vtbl + kGetBipedVFunc);
+			void*      biped = getBiped(a_player, 1);
+			if (!biped) {
+				return 0;
+			}
+			const auto equipIndex = *reinterpret_cast<std::uint32_t*>(REL::Module::get().base() + kEquipIndexGlobal);
+			return Fn<GetWeaponBone_t>(kGetWeaponBone)(process, a_player, biped, equipIndex);
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return 0;
+		}
+	}
+
 	void Request()
 	{
 		g_request.store(true);

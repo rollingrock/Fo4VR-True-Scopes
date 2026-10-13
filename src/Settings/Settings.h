@@ -481,6 +481,10 @@ namespace Settings
 	// both directions - one flap at the threshold is a damping switch on FRIK's
 	// side. 0 = immediate.
 	MAKE_SETTING(iSetting, "TrueScopesVR", frikLookingDwellMs, std::int64_t(150));
+	// Experimental: reflex sight glass reflects its env map in the sight's own
+	// axes, so what the map shows along +Y sits on the bore at infinity for both
+	// eyes. Vanilla ReflexGlass materials only. Off until proven in the headset.
+	MAKE_SETTING(bSetting, "TrueScopesVR", reflexCollimatorEnabled, false);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -897,6 +901,7 @@ namespace Settings
 		LOAD(frikLookingLateral);
 		LOAD(frikLookingConeDegrees);
 		LOAD(frikLookingDwellMs);
+		LOAD(reflexCollimatorEnabled);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

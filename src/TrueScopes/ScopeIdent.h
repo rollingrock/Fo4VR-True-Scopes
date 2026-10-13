@@ -207,6 +207,10 @@ namespace TrueScopes::ScopeIdent
 	// unequip event sink filters on it.
 	std::uint32_t CurrentWeaponFormID();
 
+	// The equipped weapon's first-person bone, the node its mods attach under, or
+	// 0. Game thread. Same lookup the probe uses.
+	std::uintptr_t FirstPersonWeaponNode(std::uintptr_t a_player);
+
 	// Drop every cached scene pointer (weapon node, shape nodes, census face,
 	// bounds) without touching the resolved aperture/offsets. Called from the
 	// unequip event: the pointers are about to dangle, and a name that still

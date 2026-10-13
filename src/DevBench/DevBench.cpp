@@ -342,6 +342,7 @@ namespace DevBench
 				{ "frikLookingLateral", Kind::Float, &frikLookingLateral },
 				{ "frikLookingConeDegrees", Kind::Float, &frikLookingConeDegrees },
 				{ "frikLookingDwellMs", Kind::Int, &frikLookingDwellMs },
+				{ "reflexCollimatorEnabled", Kind::Bool, &reflexCollimatorEnabled },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },

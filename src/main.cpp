@@ -215,9 +215,9 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 		return true;
 	}
 
-	// One allocation for all hook stubs (14 bytes each) - never per-hook, see the
-	// write_thunk_call note in PCH.h.
-	F4SE::AllocTrampoline(256);
+	// One allocation for all hook stubs (14 bytes each, plus the collimator's
+	// register-passing stub) - never per-hook, see the write_thunk_call note in PCH.h.
+	F4SE::AllocTrampoline(512);
 
 	g_hooksInstalled = TrueScopes::Hooks::Install();
 	// Listen either way. With the hooks in we do the work; without them the only

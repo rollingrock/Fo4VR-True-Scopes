@@ -68,6 +68,22 @@ namespace TrueScopes::Addr
 	// [LIVE] original bytes: E8 87 70 AC 01
 	inline constexpr std::uintptr_t kRenderFillCallSite = 0xd87ca4;
 
+	// Main::OnIdle's call to FUN_140ef19f0 (which runs the eye gate), right after
+	// the arm update at 0x140d83f0f and behind the same three gates, so it runs on
+	// the game thread every frame the arm pose updates. rcx = player, xmm1 = a
+	// scaled frame float. The eye gate itself only runs for has-scope weapons; this
+	// site sees every weapon.
+	// [EXE] original bytes: E8 AF DA 16 00
+	inline constexpr std::uintptr_t kIdleEyeGateCallSite = 0xd83f3c;
+
+	// Inside the effect shader's per-geometry setup (FUN_1428cf8c0): the call just
+	// after the slot-6 lens bind and before the VS constant group is unmapped at
+	// 0x1428d1593. rbx = the drawn shape's shader property, r12 = the mapped VS
+	// constant group ([+8] data); World rows are VS c8..c13.
+	// [EXE] original bytes: E8 A3 2D 4D FF
+	inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
+	inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
+
 	// The three vanilla scope imagespace-modifier trigger sites (all call
 	// ImageSpaceModifierInstanceForm::Trigger @ +0x37cf50). A and B fire the weapon
 	// zoomData imod at full strength on scope-in - the vanilla world blackout. C ramps

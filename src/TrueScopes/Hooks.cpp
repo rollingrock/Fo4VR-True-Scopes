@@ -3,6 +3,7 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
+#include "TrueScopes/Collimator.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/PoseGate.h"
@@ -640,6 +641,19 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
 
+		// Our own per-frame slot (Addresses.h kIdleEyeGateCallSite): game thread,
+		// after the arm update, for every weapon - the eye gate inside only runs for
+		// has-scope weapons, so optics without the flag are driven from here.
+		struct IdleEyeGateHook
+		{
+			static void thunk(std::uintptr_t a_player, float a_frame)
+			{
+				func(a_player, a_frame);
+				Collimator::Tick(a_player);
+			}
+			static inline REL::Relocation<void (*)(std::uintptr_t, float)> func;
+		};
+
 		// Housing show filter: the one engine site that un-hides the widget
 		// housing (Addresses.h kHousingShowCallSite: the arm switch's edge-gated
 		// call into WSScopeModel's show-active-housing-and-fade). Passthrough
@@ -1149,6 +1163,23 @@ namespace TrueScopes::Hooks
 			} else {
 				logger::warn("housing-show filter NOT installed (byte mismatch) — arm edges may re-show housing flags (zero-scale still holds)"sv);
 			}
+		}
+
+		// per-frame driver and the reflex collimator. Experimental, so both are
+		// only installed when the TOML asks at load; the switch then works live.
+		// Non-fatal: without them non-has-scope optics are left to vanilla.
+		if (*Settings::reflexCollimatorEnabled) {
+			REL::Relocation<std::uintptr_t> idleSite{ REL::Offset(Addr::kIdleEyeGateCallSite) };
+			static constexpr std::uint8_t   kIdleOrig[] = { 0xE8, 0xAF, 0xDA, 0x16, 0x00 };
+			if (VerifyBytes(idleSite, { kIdleOrig, 5 }, "idle eye-gate call site"sv)) {
+				pstl::write_thunk_call<IdleEyeGateHook>(idleSite.address());
+				logger::info("idle driver installed (every weapon, after the arm update)"sv);
+				Collimator::Install();
+			} else {
+				logger::warn("idle driver NOT installed (byte mismatch) - reflex collimator off"sv);
+			}
+		} else {
+			logger::info("reflex collimator off at load (reflexCollimatorEnabled=false) - its hooks are not installed"sv);
 		}
 
 		// decal group-order hooks (see the structs). Non-fatal: without them
