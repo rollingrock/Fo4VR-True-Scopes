@@ -16,6 +16,10 @@ namespace TrueScopes::FrikBridge
 		std::atomic_bool g_lastLooking{ false };
 		bool g_attempted = false;
 
+		// Successful publishes from any path, so a caller with its own edge state
+		// can tell when somebody else changed what FRIK was told.
+		std::atomic<std::uint64_t> g_publishes{ 0 };
+
 		using frik::api::FRIKApiV2;
 		using ScopeCapability = FRIKApiV2::ScopeCapability;
 
@@ -154,6 +158,7 @@ namespace TrueScopes::FrikBridge
 				return false;
 			}
 			g_lastLooking.store(a_looking);
+			g_publishes.fetch_add(1);
 			return true;
 		}
 	}
@@ -176,6 +181,11 @@ namespace TrueScopes::FrikBridge
 	bool LastLooking()
 	{
 		return g_lastLooking.load();
+	}
+
+	std::uint64_t PublishCount()
+	{
+		return g_publishes.load();
 	}
 
 	void QueuePublish(bool a_looking, const char* a_why)

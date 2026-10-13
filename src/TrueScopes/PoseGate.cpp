@@ -427,7 +427,16 @@ namespace TrueScopes::PoseGate
 		// threshold does not become a damping switch per frame. 0 on either knob
 		// = publish the render gate as-is.
 		{
-			static bool s_frikLooking = false;
+			static bool          s_frikLooking = false;
+			static std::uint64_t s_frikPublishes = 0;
+			// Stand-downs (load, skeleton rebuild, menu, unequip) publish false
+			// without coming through here. Adopt what FRIK was actually told, or a
+			// held aim never wins the flag back.
+			if (const auto n = FrikBridge::PublishCount(); n != s_frikPublishes) {
+				s_frikPublishes = n;
+				s_frikLooking = FrikBridge::LastLooking();
+				g_looking.store(s_frikLooking, std::memory_order_relaxed);
+			}
 			const auto  latMax = static_cast<float>(*Settings::frikLookingLateral);
 			const auto  coneMax = static_cast<float>(*Settings::frikLookingConeDegrees);
 			bool        looking = live;
@@ -456,6 +465,7 @@ namespace TrueScopes::PoseGate
 					g_looking.store(looking, std::memory_order_relaxed);
 					s_pendingSince = 0;
 					FrikBridge::PublishLookingThrough(looking, s.dist, s.lateral, s.lookDeg);
+					s_frikPublishes = FrikBridge::PublishCount();
 				}
 			}
 		}

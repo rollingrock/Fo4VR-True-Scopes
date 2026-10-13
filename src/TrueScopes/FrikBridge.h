@@ -29,6 +29,10 @@ namespace TrueScopes::FrikBridge
 	// vanilla-gate fallback publish without keeping a second mirror of it.
 	bool LastLooking();
 
+	// Successful publishes this session, from every path. Compare it to spot a
+	// publish you did not make (stand-downs publish false out of band).
+	std::uint64_t PublishCount();
+
 	// Publish from a thread that is not the game thread, with a reason for the
 	// log. Queued through the F4SE task interface like QueueStandDown.
 	void QueuePublish(bool a_looking, const char* a_why);
