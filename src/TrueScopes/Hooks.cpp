@@ -641,18 +641,6 @@ namespace TrueScopes::Hooks
 			static inline REL::Relocation<void (*)(void*, char)> func;
 		};
 
-		// Our own per-frame slot (Addresses.h kIdleEyeGateCallSite): game thread,
-		// after the arm update, for every weapon - the eye gate inside only runs for
-		// has-scope weapons, so optics without the flag are driven from here.
-		struct IdleEyeGateHook
-		{
-			static void thunk(std::uintptr_t a_player, float a_frame)
-			{
-				func(a_player, a_frame);
-				Collimator::Tick(a_player);
-			}
-			static inline REL::Relocation<void (*)(std::uintptr_t, float)> func;
-		};
 
 		// Housing show filter: the one engine site that un-hides the widget
 		// housing (Addresses.h kHousingShowCallSite: the arm switch's edge-gated
@@ -846,6 +834,11 @@ namespace TrueScopes::Hooks
 				// controller verdict chords, polled per frame
 				if (g_installed) {
 					VerdictInput::Poll();
+				}
+				// the reflex collimator's glass registry; returns at once while it is off
+				if (g_installed) {
+					Collimator::Tick(*reinterpret_cast<std::uintptr_t*>(
+						REL::Module::get().base() + Addr::kPlayerGlobal));
 				}
 				// Fallback probe site for the no-weapon-drawn case (DevBench asks
 				// with the weapon holstered; the verdict site is dead then and
@@ -1165,19 +1158,11 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// per-frame driver and the reflex collimator. Experimental, so both are
-		// only installed when the TOML asks at load; the switch then works live.
-		// Non-fatal: without them non-has-scope optics are left to vanilla.
+		// the reflex collimator. Experimental, so only installed when the TOML asks
+		// at load; the switch then works live. Its glass registry ticks from the
+		// fill hook. Non-fatal: without it reflex sights are left to vanilla.
 		if (*Settings::reflexCollimatorEnabled) {
-			REL::Relocation<std::uintptr_t> idleSite{ REL::Offset(Addr::kIdleEyeGateCallSite) };
-			static constexpr std::uint8_t   kIdleOrig[] = { 0xE8, 0xAF, 0xDA, 0x16, 0x00 };
-			if (VerifyBytes(idleSite, { kIdleOrig, 5 }, "idle eye-gate call site"sv)) {
-				pstl::write_thunk_call<IdleEyeGateHook>(idleSite.address());
-				logger::info("idle driver installed (every weapon, after the arm update)"sv);
-				Collimator::Install();
-			} else {
-				logger::warn("idle driver NOT installed (byte mismatch) - reflex collimator off"sv);
-			}
+			Collimator::Install();
 		} else {
 			logger::info("reflex collimator off at load (reflexCollimatorEnabled=false) - its hooks are not installed"sv);
 		}

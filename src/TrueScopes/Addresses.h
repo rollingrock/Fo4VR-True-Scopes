@@ -73,6 +73,10 @@ namespace TrueScopes::Addr
 	// the game thread every frame the arm pose updates. rcx = player, xmm1 = a
 	// scaled frame float. The eye gate itself only runs for has-scope weapons; this
 	// site sees every weapon.
+	// [LIVE 10-14] NOT per frame in VR: driving the collimator's registry from here
+	// (v0.3.66-0.3.68), the weapon showed up 26 s after the switch in one run and
+	// never in 2.5 min in the next (two gates read open, Main+0x1d0 unread).
+	// Unused since 0.3.69.
 	// [EXE] original bytes: E8 AF DA 16 00
 	inline constexpr std::uintptr_t kIdleEyeGateCallSite = 0xd83f3c;
 
@@ -85,6 +89,16 @@ namespace TrueScopes::Addr
 	// [EXE] original bytes: E8 A3 2D 4D FF
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
+
+	// BSEffectShader's vtable; slot 10 is RestoreGeometry (FUN_1428d1650), which
+	// only resets the cull mode for rain/snow techniques.
+	inline constexpr std::uintptr_t kBSEffectShaderVtbl = 0x30bc738;
+	inline constexpr std::uintptr_t kEffectRestoreGeometry = 0x28d1650;
+
+	// The render context the shaders write state into: [0x146235ac8], else
+	// [0x146235ac0]; its cached-state block is at +0x1ee0.
+	inline constexpr std::uintptr_t kRenderCtxSlot = 0x6235ac8;
+	inline constexpr std::uintptr_t kRenderCtxSlotAlt = 0x6235ac0;
 
 	// The three vanilla scope imagespace-modifier trigger sites (all call
 	// ImageSpaceModifierInstanceForm::Trigger @ +0x37cf50). A and B fire the weapon

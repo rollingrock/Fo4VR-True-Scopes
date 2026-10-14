@@ -34,6 +34,14 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kWorldSlot = 0x69;
 		constexpr std::uintptr_t kEyePositionSlot = 0x6c;
 
+		// render context cached-state block: dirty mask at +0, cull mode at +0xbc
+		// (0 none, 1 back). The effect shader turns culling off only for rain and
+		// snow, so effect shapes are one-sided whatever their material says - and
+		// vanilla reflex panes face the muzzle, invisible from behind.
+		constexpr std::uintptr_t kStateBlock = 0x1ee0;
+		constexpr std::uintptr_t kCullMode = 0xbc;
+		constexpr std::uint32_t  kRasterDirty = 0x8;
+
 		// Fallout4VR.exe spans about 0x6c00000; a vtable or locator outside the
 		// image is not one.
 		constexpr std::uintptr_t kImageSpan = 0x8000000;
@@ -57,6 +65,9 @@ namespace TrueScopes::Collimator
 		std::uintptr_t g_lastWeapon = 0;
 		std::uint32_t  g_frames = 0;
 		std::atomic_bool g_loggedApply{ false };
+
+		// cull mode a glass draw replaced, put back after that draw; -1 = none pending
+		thread_local std::int32_t t_cullBefore = -1;
 
 		// Render-thread outcomes while on, logged from Tick. 10-14's first run found
 		// the glass but never rewrote a draw; these say which check turned it away.
@@ -199,6 +210,49 @@ namespace TrueScopes::Collimator
 			return false;
 		}
 
+		std::uintptr_t RenderState()
+		{
+			const auto base = REL::Module::get().base();
+			auto       ctx = *reinterpret_cast<std::uintptr_t*>(base + Addr::kRenderCtxSlot);
+			if (!ctx) {
+				ctx = *reinterpret_cast<std::uintptr_t*>(base + Addr::kRenderCtxSlotAlt);
+			}
+			return ctx ? ctx + kStateBlock : 0;
+		}
+
+		// the engine's own rain/snow write (0x1428d0fcd), for this draw only
+		void ForceTwoSided()
+		{
+			const auto st = RenderState();
+			if (!st) {
+				return;
+			}
+			auto& cull = *reinterpret_cast<std::uint32_t*>(st + kCullMode);
+			if (cull != 0) {
+				t_cullBefore = static_cast<std::int32_t>(cull);
+				*reinterpret_cast<std::uint32_t*>(st) |= kRasterDirty;
+				cull = 0;
+			}
+		}
+
+		void RestoreCull()
+		{
+			if (t_cullBefore < 0) {
+				return;
+			}
+			__try {
+				if (const auto st = RenderState()) {
+					auto& cull = *reinterpret_cast<std::uint32_t*>(st + kCullMode);
+					if (cull != static_cast<std::uint32_t>(t_cullBefore)) {
+						*reinterpret_cast<std::uint32_t*>(st) |= kRasterDirty;
+						cull = static_cast<std::uint32_t>(t_cullBefore);
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			t_cullBefore = -1;
+		}
+
 		// The engine writes World as the transpose of the geometry's stored world
 		// rotate (times scale), and the shader takes dp3 against each row, so a
 		// stored rotate's rows are its axes in world. World -> frame is then M_f
@@ -233,6 +287,7 @@ namespace TrueScopes::Collimator
 					}
 					return false;
 				}
+				ForceTwoSided();
 				const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
 				auto*       data = *reinterpret_cast<float**>(a_group + kMappedData);
 				if (!data) {
@@ -311,6 +366,17 @@ namespace TrueScopes::Collimator
 				dq(a_original);
 			}
 		};
+
+		// RestoreGeometry runs after the draw; put back what ForceTwoSided changed.
+		struct RestoreGeometryHook
+		{
+			static void thunk(void* a_shader, std::uintptr_t a_pass)
+			{
+				func(a_shader, a_pass);
+				RestoreCull();
+			}
+			static inline REL::Relocation<void (*)(void*, std::uintptr_t)> func;
+		};
 	}
 
 	void Install()
@@ -321,12 +387,21 @@ namespace TrueScopes::Collimator
 			logger::warn("collimator NOT installed (byte mismatch at the effect setup site)"sv);
 			return;
 		}
+		// without the restore the cull change would outlive the glass draw
+		REL::Relocation<std::uintptr_t> vtbl{ REL::Offset(Addr::kBSEffectShaderVtbl) };
+		const auto restoreSlot = reinterpret_cast<std::uintptr_t*>(vtbl.address()) + 10;
+		if (*restoreSlot != REL::Module::get().base() + Addr::kEffectRestoreGeometry) {
+			logger::warn("collimator NOT installed (BSEffectShader::RestoreGeometry is not the vanilla one)"sv);
+			return;
+		}
+		RestoreGeometryHook::func = vtbl.write_vfunc(10, RestoreGeometryHook::thunk);
+
 		SetupStub stub(reinterpret_cast<std::uintptr_t>(&OnEffectSetup),
 			REL::Module::get().base() + Addr::kEffectSetupPreUnmapTarget);
 		auto& trampoline = F4SE::GetTrampoline();
 		const auto code = trampoline.allocate(stub);
 		trampoline.write_call<5>(site.address(), reinterpret_cast<std::uintptr_t>(code));
-		logger::info("collimator hook installed (effect setup, off until reflexCollimatorEnabled)"sv);
+		logger::info("collimator hooks installed (effect setup + restore, off until reflexCollimatorEnabled)"sv);
 	}
 
 	void Tick(std::uintptr_t a_player)
