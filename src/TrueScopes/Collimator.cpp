@@ -50,13 +50,50 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kImageSpan = 0x8000000;
 
 		constexpr std::size_t kMaxGlass = 8;
+		constexpr std::size_t kMaxCards = 16;
 		constexpr std::uint32_t kRescanFrames = 30;
+
+		// NiAVObject flags byte, bit 0 = hidden; effect material fields
+		constexpr std::uintptr_t kObjFlags = 0x108;
+		constexpr std::uintptr_t kMaterialInProperty = 0x58;
+		constexpr std::uintptr_t kBaseColorInMaterial = 0x38;
+		constexpr std::uintptr_t kBaseTextureInMaterial = 0x48;
 
 		struct Glass
 		{
 			std::uintptr_t geometry;
 			std::uintptr_t frame;  // the attach node the sight's shapes hang under
+			float          lookup[9];  // frame axes -> cube axes: reticle face and zero
 		};
+
+		// The reticle cube (tools/r2-reticle/make_reticle_mod.py) holds one reticle at
+		// each face centre. Q takes the bore (+Y in sight axes) to that face.
+		enum Reticle : std::uint32_t
+		{
+			kDot,
+			kCircle,
+			kHex,
+		};
+		constexpr float kFaceQ[6][9] = {
+			{ 0, 1, 0, -1, 0, 0, 0, 0, 1 },   // +X green circle
+			{ 0, -1, 0, 1, 0, 0, 0, 0, 1 },   // -X green hex
+			{ 1, 0, 0, 0, 1, 0, 0, 0, 1 },    // +Y green dot
+			{ -1, 0, 0, 0, -1, 0, 0, 0, 1 },  // -Y red dot
+			{ 1, 0, 0, 0, 0, -1, 0, 1, 0 },   // +Z red circle
+			{ 1, 0, 0, 0, 0, 1, 0, -1, 0 },   // -Z red hex
+		};
+		constexpr int kFaceOf[3][2] = { { 2, 3 }, { 0, 4 }, { 1, 5 } };  // [reticle][red]
+
+		// The sight's own reticle cards (TritiumDot*), hidden while ours shows.
+		struct Card
+		{
+			std::uintptr_t geometry;
+			bool           hid;  // we set its hidden bit, so we clear it
+		};
+		Card          g_cards[kMaxCards]{};
+		std::uint32_t g_cardCount = 0;
+		std::uintptr_t g_cardFrame = 0;
+		int           g_face = 2;
 
 		// Written by Tick, read on the render and job threads under a seqlock.
 		Glass                      g_glass[kMaxGlass]{};
@@ -198,7 +235,7 @@ namespace TrueScopes::Collimator
 			g_seq.fetch_add(1, std::memory_order_acq_rel);
 		}
 
-		bool FindFrame(std::uintptr_t a_geometry, std::uintptr_t& a_frame)
+		bool FindGlass(std::uintptr_t a_geometry, Glass& a_out)
 		{
 			for (int attempt = 0; attempt < 3; ++attempt) {
 				const auto s1 = g_seq.load(std::memory_order_acquire);
@@ -209,7 +246,7 @@ namespace TrueScopes::Collimator
 				bool       hit = false;
 				for (std::uint32_t i = 0; i < n && i < kMaxGlass; ++i) {
 					if (g_glass[i].geometry == a_geometry) {
-						a_frame = g_glass[i].frame;
+						a_out = g_glass[i];
 						hit = true;
 						break;
 					}
@@ -296,6 +333,127 @@ namespace TrueScopes::Collimator
 			g_flipCount = 0;
 		}
 
+		// The sight's reticle cards: TritiumDot* effect shapes under the glass's
+		// frame (or one node up). Their texture names the reticle, their base colour
+		// its colour; vanilla's are all green (tools/r2-reticle/glass_census.py).
+		void FindCards(std::uintptr_t a_obj, int a_depth, std::uintptr_t (&a_out)[kMaxCards], std::uint32_t& a_n)
+		{
+			if (!a_obj || a_depth > 8 || a_n >= kMaxCards) {
+				return;
+			}
+			if (ScopeIdent::IsNiNode(a_obj)) {
+				const auto kids = *reinterpret_cast<std::uintptr_t*>(a_obj + kChildren);
+				const auto count = *reinterpret_cast<std::uint16_t*>(a_obj + kChildCount);
+				for (std::uint16_t i = 0; kids && i < count; ++i) {
+					FindCards(*reinterpret_cast<std::uintptr_t*>(kids + i * 8ull), a_depth + 1, a_out, a_n);
+				}
+				return;
+			}
+			char name[64];
+			if (EffectProperty(a_obj) && ReadName(a_obj + kNameInObject, name, sizeof(name)) && _strnicmp(name, "tritiumdot", 10) == 0) {
+				a_out[a_n++] = a_obj;
+			}
+		}
+
+		int ClassifyCards(const std::uintptr_t (&a_cards)[kMaxCards], std::uint32_t a_n, char (&a_tex)[64])
+		{
+			auto shape = kDot;
+			bool red = false;
+			a_tex[0] = '\0';
+			for (std::uint32_t i = 0; i < a_n; ++i) {
+				const auto property = EffectProperty(a_cards[i]);
+				const auto material = property ? *reinterpret_cast<std::uintptr_t*>(property + kMaterialInProperty) : 0;
+				if (!material) {
+					continue;
+				}
+				const auto* color = reinterpret_cast<const float*>(material + kBaseColorInMaterial);
+				red = red || color[0] > color[1];
+				const auto tex = *reinterpret_cast<std::uintptr_t*>(material + kBaseTextureInMaterial);
+				char       path[260];
+				if (!tex || !ReadName(tex + kNameInObject, path, sizeof(path))) {
+					continue;
+				}
+				const char* file = (std::max)(std::strrchr(path, '\\'), std::strrchr(path, '/'));
+				strncpy_s(a_tex, file ? file + 1 : path, _TRUNCATE);
+				for (auto* c = path; *c; ++c) {
+					*c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+				}
+				if (std::strstr(path, "hexagon")) {
+					shape = kHex;
+				} else if (std::strstr(path, "circle") && shape == kDot) {
+					shape = kCircle;
+				}
+			}
+			return kFaceOf[shape][red ? 1 : 0];
+		}
+
+		std::uint32_t HideCardsGuarded(std::uintptr_t a_frame, char (&a_tex)[64])
+		{
+			std::uintptr_t found[kMaxCards]{};
+			std::uint32_t  n = 0;
+			a_tex[0] = '\0';
+			__try {
+				FindCards(a_frame, 0, found, n);
+				if (!n) {
+					FindCards(*reinterpret_cast<std::uintptr_t*>(a_frame + kParentInAVObject), 0, found, n);
+				}
+				g_face = ClassifyCards(found, n, a_tex);
+				for (std::uint32_t i = 0; i < n && g_cardCount < kMaxCards; ++i) {
+					auto& flags = *reinterpret_cast<std::uint8_t*>(found[i] + kObjFlags);
+					g_cards[g_cardCount++] = { found[i], (flags & 1u) == 0 };
+					flags |= 1u;
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			return n;
+		}
+
+		void HideCards(std::uintptr_t a_frame)
+		{
+			char       tex[64];
+			const auto n = HideCardsGuarded(a_frame, tex);
+			g_cardFrame = a_frame;
+			logger::info(FMT_STRING("collimator: {} reticle card(s) hidden; texture '{}' -> cube face {}"), n, tex, g_face);
+		}
+
+		void UnhideCards()
+		{
+			__try {
+				for (std::uint32_t i = 0; i < g_cardCount; ++i) {
+					if (g_cards[i].hid) {
+						*reinterpret_cast<std::uint8_t*>(g_cards[i].geometry + kObjFlags) &= static_cast<std::uint8_t>(~1u);
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			g_cardCount = 0;
+			g_cardFrame = 0;
+		}
+
+		// lookup = Q(face) * R_x(-up) * R_z(right): a reticle direction raised by up
+		// and turned right by right (sight axes, Z up, X right) lands on the face centre.
+		void BuildLookup(int a_face, float (&a_out)[9])
+		{
+			constexpr float kMoa = 3.14159265f / (180.0f * 60.0f);
+			const float     up = static_cast<float>(*Settings::reflexZeroUpMoa) * kMoa;
+			const float     right = static_cast<float>(*Settings::reflexZeroRightMoa) * kMoa;
+			const float     cu = std::cos(-up), su = std::sin(-up), cr = std::cos(right), sr = std::sin(right);
+			const float     rx[9] = { 1, 0, 0, 0, cu, -su, 0, su, cu };
+			const float     rz[9] = { cr, -sr, 0, sr, cr, 0, 0, 0, 1 };
+			float           zero[9];
+			for (int i = 0; i < 3; ++i) {
+				for (int k = 0; k < 3; ++k) {
+					zero[i * 3 + k] = rx[i * 3 + 0] * rz[0 * 3 + k] + rx[i * 3 + 1] * rz[1 * 3 + k] + rx[i * 3 + 2] * rz[2 * 3 + k];
+				}
+			}
+			const auto* q = kFaceQ[a_face];
+			for (int i = 0; i < 3; ++i) {
+				for (int k = 0; k < 3; ++k) {
+					a_out[i * 3 + k] = q[i * 3 + 0] * zero[0 * 3 + k] + q[i * 3 + 1] * zero[1 * 3 + k] + q[i * 3 + 2] * zero[2 * 3 + k];
+				}
+			}
+		}
+
 		// The engine writes World as the transpose of the geometry's stored world
 		// rotate (times scale), and the shader takes dp3 against each row, so a
 		// stored rotate's rows are its axes in world. World -> frame is then M_f
@@ -312,8 +470,8 @@ namespace TrueScopes::Collimator
 				g_diag.notEnv.fetch_add(1, std::memory_order_relaxed);
 				return false;  // not an env-mapped draw
 			}
-			std::uintptr_t frame = 0;
-			if (!FindFrame(a_geometry, frame) || !frame) {
+			Glass glass;
+			if (!FindGlass(a_geometry, glass) || !glass.frame) {
 				g_diag.miss.fetch_add(1, std::memory_order_relaxed);
 				return false;
 			}
@@ -321,14 +479,22 @@ namespace TrueScopes::Collimator
 				g_diag.noData.fetch_add(1, std::memory_order_relaxed);
 				return false;
 			}
-			const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
+			// a = lookup * M_f: world -> sight axes, then onto the reticle's face
+			const auto* r = reinterpret_cast<const float*>(glass.frame + kWorldRotate);
+			const auto* q = glass.lookup;
+			float       a[3][3];
+			for (int i = 0; i < 3; ++i) {
+				for (int k = 0; k < 3; ++k) {
+					a[i][k] = q[i * 3 + 0] * r[0 * 4 + k] + q[i * 3 + 1] * r[1 * 4 + k] + q[i * 3 + 2] * r[2 * 4 + k];
+				}
+			}
 			for (int eye = 0; eye < 2; ++eye) {
 				float* w = a_data + world + eye * 12;
 				float  rows[3][4];
 				std::memcpy(rows, w, sizeof(rows));
 				for (int i = 0; i < 3; ++i) {
 					for (int j = 0; j < 4; ++j) {
-						w[i * 4 + j] = r[i * 4 + 0] * rows[0][j] + r[i * 4 + 1] * rows[1][j] + r[i * 4 + 2] * rows[2][j];
+						w[i * 4 + j] = a[i][0] * rows[0][j] + a[i][1] * rows[1][j] + a[i][2] * rows[2][j];
 					}
 				}
 			}
@@ -464,8 +630,11 @@ namespace TrueScopes::Collimator
 			if (g_count.load(std::memory_order_relaxed)) {
 				if (ScopeIdent::FirstPersonWeaponNode(a_player) == g_lastWeapon) {
 					Unflip();
+					UnhideCards();
 				}
 				g_flipCount = 0;
+				g_cardCount = 0;
+				g_cardFrame = 0;
 				Publish(kNone, 0);
 				g_lastWeapon = 0;
 			}
@@ -489,7 +658,9 @@ namespace TrueScopes::Collimator
 		const bool changed = weapon != g_lastWeapon;
 		g_lastWeapon = weapon;
 		if (changed) {
-			g_flipCount = 0;  // the old weapon's panes are not ours to touch any more
+			g_flipCount = 0;  // the old weapon's panes and cards are not ours to touch any more
+			g_cardCount = 0;
+			g_cardFrame = 0;
 		}
 
 		Glass      found[kMaxGlass]{};
@@ -507,6 +678,15 @@ namespace TrueScopes::Collimator
 		}
 		if (n) {
 			FlipToEye(&found[rear], 1);
+			if (found[rear].frame != g_cardFrame) {
+				g_cardCount = 0;  // another sight: its cards, not the last one's
+				HideCards(found[rear].frame);
+			}
+		}
+		float lookup[9];
+		BuildLookup(g_face, lookup);
+		for (std::uint32_t i = 0; i < n; ++i) {
+			std::memcpy(found[i].lookup, lookup, sizeof(lookup));
 		}
 		Publish(found, n);
 		if (changed || n != g_lastCount) {

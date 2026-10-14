@@ -483,8 +483,13 @@ namespace Settings
 	MAKE_SETTING(iSetting, "TrueScopesVR", frikLookingDwellMs, std::int64_t(150));
 	// Experimental: reflex sight glass reflects its env map in the sight's own
 	// axes, so what the map shows along +Y sits on the bore at infinity for both
-	// eyes. Vanilla ReflexGlass materials only. Off until proven in the headset.
+	// eyes. Vanilla ReflexGlass materials only. Experimental; proven in the
+	// headset 10-14 but needs the R2 reticle materials.
 	MAKE_SETTING(bSetting, "TrueScopesVR", reflexCollimatorEnabled, false);
+	// Reflex reticle zero, in MOA (1/60 degree): + moves the reticle up / right.
+	// Live; picked up within half a second.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroUpMoa, 0.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroRightMoa, 0.0);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -902,6 +907,8 @@ namespace Settings
 		LOAD(frikLookingConeDegrees);
 		LOAD(frikLookingDwellMs);
 		LOAD(reflexCollimatorEnabled);
+		LOAD(reflexZeroUpMoa);
+		LOAD(reflexZeroRightMoa);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);
