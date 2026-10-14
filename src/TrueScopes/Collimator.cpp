@@ -17,15 +17,22 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kChildren = 0x168;
 		constexpr std::uintptr_t kChildCount = 0x172;  // u16 loop bound, null holes legal
 
-		// BSGeometry's effect property sits somewhere past NiAVObject; the VR layout
-		// is not pinned, so it is found once by RTTI and remembered.
-		constexpr std::uintptr_t kPropertyScanBegin = 0x120;
-		constexpr std::uintptr_t kPropertyScanEnd = 0x160;
+		// VR BSGeometry; the effect shader's setup reads it here (0x1428cf90e)
+		constexpr std::uintptr_t kShaderPropertyInGeometry = 0x178;
+		constexpr std::uintptr_t kIsGeometryVFunc = 0x40;
+		constexpr std::uintptr_t kBSGeometryIsGeometry = 0x1c31c50;  // mov rax, rcx; ret
 
 		// constant group (r12 at the hook): [+0] ID3D11Buffer, [+8] mapped data.
-		// World rows go to data + constantTable[1]*4; c8 for every ENVMAP vertex shader.
 		constexpr std::uintptr_t kMappedData = 0x8;
-		constexpr std::uint32_t  kWorldRegister = 8;
+
+		// the setup's third argument (rdi at the hook)
+		constexpr std::uintptr_t kVertexShader = 0x08;
+		constexpr std::uintptr_t kTechnique = 0x40;
+		constexpr std::uint32_t  kSkinned = 0x2;  // World is identity, positions come pre-skinned
+
+		// vertex shader constant table, a float offset per engine constant, 0xFF unused
+		constexpr std::uintptr_t kWorldSlot = 0x69;
+		constexpr std::uintptr_t kEyePositionSlot = 0x6c;
 
 		// Fallout4VR.exe spans about 0x6c00000; a vtable or locator outside the
 		// image is not one.
@@ -36,7 +43,7 @@ namespace TrueScopes::Collimator
 
 		struct Glass
 		{
-			std::uintptr_t property;
+			std::uintptr_t geometry;
 			std::uintptr_t frame;  // the attach node the sight's shapes hang under
 		};
 
@@ -49,7 +56,6 @@ namespace TrueScopes::Collimator
 
 		std::uintptr_t g_lastWeapon = 0;
 		std::uint32_t  g_frames = 0;
-		std::ptrdiff_t g_propertyOffset = -1;
 		std::atomic_bool g_loggedApply{ false };
 
 		bool ReadName(std::uintptr_t a_field, char* a_out, std::size_t a_size)
@@ -93,20 +99,12 @@ namespace TrueScopes::Collimator
 
 		std::uintptr_t EffectProperty(std::uintptr_t a_geom)
 		{
-			static constexpr const char* kEffect = ".?AVBSEffectShaderProperty@@";
-			if (g_propertyOffset >= 0) {
-				const auto p = *reinterpret_cast<std::uintptr_t*>(a_geom + g_propertyOffset);
-				return HasTypeName(p, kEffect) ? p : 0;
+			const auto vtbl = *reinterpret_cast<std::uintptr_t*>(a_geom);
+			if (!vtbl || *reinterpret_cast<std::uintptr_t*>(vtbl + kIsGeometryVFunc) != REL::Module::get().base() + kBSGeometryIsGeometry) {
+				return 0;
 			}
-			for (auto off = kPropertyScanBegin; off < kPropertyScanEnd; off += 8) {
-				const auto p = *reinterpret_cast<std::uintptr_t*>(a_geom + off);
-				if (HasTypeName(p, kEffect)) {
-					g_propertyOffset = static_cast<std::ptrdiff_t>(off);
-					logger::info(FMT_STRING("collimator: BSGeometry keeps its effect property at +0x{:x}"), off);
-					return p;
-				}
-			}
-			return 0;
+			const auto p = *reinterpret_cast<std::uintptr_t*>(a_geom + kShaderPropertyInGeometry);
+			return HasTypeName(p, ".?AVBSEffectShaderProperty@@") ? p : 0;
 		}
 
 		bool IsReflexGlass(std::uintptr_t a_property)
@@ -136,7 +134,7 @@ namespace TrueScopes::Collimator
 			}
 			const auto property = EffectProperty(a_obj);
 			if (property && IsReflexGlass(property)) {
-				a_out[a_n++] = { property, *reinterpret_cast<std::uintptr_t*>(a_obj + kParentInAVObject) };
+				a_out[a_n++] = { a_obj, *reinterpret_cast<std::uintptr_t*>(a_obj + kParentInAVObject) };
 			}
 		}
 
@@ -161,7 +159,7 @@ namespace TrueScopes::Collimator
 			g_seq.fetch_add(1, std::memory_order_acq_rel);
 		}
 
-		bool FindFrame(std::uintptr_t a_property, std::uintptr_t& a_frame)
+		bool FindFrame(std::uintptr_t a_geometry, std::uintptr_t& a_frame)
 		{
 			for (int attempt = 0; attempt < 3; ++attempt) {
 				const auto s1 = g_seq.load(std::memory_order_acquire);
@@ -171,7 +169,7 @@ namespace TrueScopes::Collimator
 				const auto n = g_count.load(std::memory_order_relaxed);
 				bool       hit = false;
 				for (std::uint32_t i = 0; i < n && i < kMaxGlass; ++i) {
-					if (g_glass[i].property == a_property) {
+					if (g_glass[i].geometry == a_geometry) {
 						a_frame = g_glass[i].frame;
 						hit = true;
 						break;
@@ -184,14 +182,24 @@ namespace TrueScopes::Collimator
 			return false;
 		}
 
-		// rows <- R^T * rows for both eyes, R = the frame's world rotation (local ->
-		// world). The w column is the row's translation; rotating it too keeps every
-		// dp4 against World (distances, falloff) consistent with the new axes.
-		bool Rewrite(std::uintptr_t a_property, std::uintptr_t a_group)
+		// The engine writes World as the transpose of the geometry's stored world
+		// rotate (times scale), and the shader takes dp3 against each row, so a
+		// stored rotate's rows are its axes in world. World -> frame is then M_f
+		// itself: rows <- M_f * rows for both eyes. The w column is the row's
+		// translation; rotating it too keeps any dp4 against World consistent.
+		bool Rewrite(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
 		{
 			__try {
+				if (*reinterpret_cast<const std::uint32_t*>(a_setup + kTechnique) & kSkinned) {
+					return false;
+				}
+				const auto vs = *reinterpret_cast<const std::uintptr_t*>(a_setup + kVertexShader);
+				const auto world = *reinterpret_cast<const std::uint8_t*>(vs + kWorldSlot);
+				if (world == 0xFF || *reinterpret_cast<const std::uint8_t*>(vs + kEyePositionSlot) == 0xFF) {
+					return false;  // not an env-mapped draw
+				}
 				std::uintptr_t frame = 0;
-				if (!FindFrame(a_property, frame) || !frame) {
+				if (!FindFrame(a_geometry, frame) || !frame) {
 					return false;
 				}
 				const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
@@ -200,12 +208,12 @@ namespace TrueScopes::Collimator
 					return false;
 				}
 				for (int eye = 0; eye < 2; ++eye) {
-					float* w = data + (kWorldRegister + eye * 3) * 4;
+					float* w = data + world + eye * 12;
 					float  rows[3][4];
 					std::memcpy(rows, w, sizeof(rows));
 					for (int i = 0; i < 3; ++i) {
 						for (int j = 0; j < 4; ++j) {
-							w[i * 4 + j] = r[0 * 4 + i] * rows[0][j] + r[1 * 4 + i] * rows[1][j] + r[2 * 4 + i] * rows[2][j];
+							w[i * 4 + j] = r[i * 4 + 0] * rows[0][j] + r[i * 4 + 1] * rows[1][j] + r[i * 4 + 2] * rows[2][j];
 						}
 					}
 				}
@@ -216,19 +224,20 @@ namespace TrueScopes::Collimator
 		}
 
 		// Render thread, every effect-shader draw.
-		void OnEffectSetup(std::uintptr_t a_property, std::uintptr_t a_group)
+		void OnEffectSetup(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
 		{
 			if (!*Settings::reflexCollimatorEnabled || g_count.load(std::memory_order_relaxed) == 0) {
 				return;
 			}
-			if (Rewrite(a_property, a_group) && !g_loggedApply.exchange(true)) {
+			if (Rewrite(a_geometry, a_group, a_setup) && !g_loggedApply.exchange(true)) {
 				logger::info("collimator: first glass draw rewritten into sight axes"sv);
 			}
 		}
 
-		// At the site rbx holds the drawn shape's shader property (just compared
-		// against the slot-6 cache) and r12 the mapped VS constant group; both are
-		// callee-saved. Hand them over, then run the original call.
+		// At the site rbx holds the drawn geometry (just compared against the
+		// slot-6 cache), r12 the mapped VS constant group and rdi the setup's third
+		// argument; all callee-saved and the same on every path in. Hand them over,
+		// then run the original call.
 		struct SetupStub : Xbyak::CodeGenerator
 		{
 			SetupStub(std::uintptr_t a_fn, std::uintptr_t a_original)
@@ -248,6 +257,7 @@ namespace TrueScopes::Collimator
 				}
 				mov(rcx, rbx);
 				mov(rdx, r12);
+				mov(r8, rdi);
 				mov(rax, a_fn);
 				call(rax);
 				for (int i = 0; i < 6; ++i) {

@@ -78,8 +78,10 @@ namespace TrueScopes::Addr
 
 	// Inside the effect shader's per-geometry setup (FUN_1428cf8c0): the call just
 	// after the slot-6 lens bind and before the VS constant group is unmapped at
-	// 0x1428d1593. rbx = the drawn shape's shader property, r12 = the mapped VS
-	// constant group ([+8] data); World rows are VS c8..c13.
+	// 0x1428d1593. On every path in: rbx = the drawn geometry (the slot-6 cache
+	// it was just compared with holds a geometry), r12 = the mapped VS constant
+	// group ([+8] data), rdi = the setup's third argument (+0x08 vertex shader,
+	// +0x40 technique, +0x60 camera).
 	// [EXE] original bytes: E8 A3 2D 4D FF
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
