@@ -13,7 +13,8 @@ namespace TrueScopes::Collimator
 		// VR NiAVObject / NiNode
 		constexpr std::uintptr_t kNameInObject = 0x10;  // BSFixedString
 		constexpr std::uintptr_t kParentInAVObject = 0x28;
-		constexpr std::uintptr_t kWorldRotate = 0x70;  // NiMatrix3, three rows of 4 floats
+		constexpr std::uintptr_t kLocalRotate = 0x30;  // NiMatrix3, three rows of 4 floats
+		constexpr std::uintptr_t kWorldRotate = 0x70;
 		constexpr std::uintptr_t kChildren = 0x168;
 		constexpr std::uintptr_t kChildCount = 0x172;  // u16 loop bound, null holes legal
 
@@ -22,25 +23,26 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kIsGeometryVFunc = 0x40;
 		constexpr std::uintptr_t kBSGeometryIsGeometry = 0x1c31c50;  // mov rax, rcx; ret
 
-		// constant group (r12 at the hook): [+0] ID3D11Buffer, [+8] mapped data.
-		constexpr std::uintptr_t kMappedData = 0x8;
+		// immediate setup (slot 9, the call-site stub): rdi = its third argument,
+		// r12 = the mapped VS constant group, [+8] data
+		constexpr std::uintptr_t kSetupVertexShader = 0x08;
+		constexpr std::uintptr_t kSetupTechnique = 0x40;
+		constexpr std::uintptr_t kMappedData = 0x08;
 
-		// the setup's third argument (rdi at the hook)
-		constexpr std::uintptr_t kVertexShader = 0x08;
-		constexpr std::uintptr_t kTechnique = 0x40;
-		constexpr std::uint32_t  kSkinned = 0x2;  // World is identity, positions come pre-skinned
+		// record setup (slot 3, 0x1428d31f0): the per-pass job FUN_1428aae20 gets a
+		// draw record from slot 2 and has slot 3 fill its per-geometry constants.
+		// Scene effect shapes, reflex glass included, are drawn this way.
+		constexpr std::uintptr_t kPassGeometry = 0x18;
+		constexpr std::uintptr_t kPassTechnique = 0x48;
+		constexpr std::uintptr_t kRecordVertexShader = 0x60;
+		constexpr std::uintptr_t kRecordVSGeometryGroup = 0xe0;  // VS constant group 2
+		constexpr std::uintptr_t kRecordGroupData = 0x10;
+
+		constexpr std::uint32_t kSkinned = 0x2;  // World is identity, positions come pre-skinned
 
 		// vertex shader constant table, a float offset per engine constant, 0xFF unused
 		constexpr std::uintptr_t kWorldSlot = 0x69;
 		constexpr std::uintptr_t kEyePositionSlot = 0x6c;
-
-		// render context cached-state block: dirty mask at +0, cull mode at +0xbc
-		// (0 none, 1 back). The effect shader turns culling off only for rain and
-		// snow, so effect shapes are one-sided whatever their material says - and
-		// vanilla reflex panes face the muzzle, invisible from behind.
-		constexpr std::uintptr_t kStateBlock = 0x1ee0;
-		constexpr std::uintptr_t kCullMode = 0xbc;
-		constexpr std::uint32_t  kRasterDirty = 0x8;
 
 		// Fallout4VR.exe spans about 0x6c00000; a vtable or locator outside the
 		// image is not one.
@@ -55,25 +57,34 @@ namespace TrueScopes::Collimator
 			std::uintptr_t frame;  // the attach node the sight's shapes hang under
 		};
 
-		// Written on the game thread, read on the render thread under a seqlock.
+		// Written by Tick, read on the render and job threads under a seqlock.
 		Glass                      g_glass[kMaxGlass]{};
 		std::atomic<std::uint32_t> g_count{ 0 };
 		std::atomic<std::uint32_t> g_seq{ 0 };
 
 		constexpr Glass kNone[kMaxGlass]{};
 
+		// The effect shader culls back faces for every technique but rain and snow,
+		// whatever the material says, and vanilla reflex panes face the muzzle: the
+		// shooter never sees them. Turning a pane 180 degrees about its model Z
+		// (rows 0 and 1 negated) points it at the eye. Tick's own state.
+		struct Flip
+		{
+			std::uintptr_t geometry;
+			float          rows[2][4];  // the local rows it had
+		};
+		Flip          g_flip[kMaxGlass]{};
+		std::uint32_t g_flipCount = 0;
+
 		std::uintptr_t g_lastWeapon = 0;
 		std::uint32_t  g_frames = 0;
 		std::atomic_bool g_loggedApply{ false };
 
-		// cull mode a glass draw replaced, put back after that draw; -1 = none pending
-		thread_local std::int32_t t_cullBefore = -1;
-
-		// Render-thread outcomes while on, logged from Tick. 10-14's first run found
-		// the glass but never rewrote a draw; these say which check turned it away.
+		// Render-side outcomes while on, logged from Tick.
 		struct Diag
 		{
-			std::atomic<std::uint32_t> calls{ 0 };
+			std::atomic<std::uint32_t> immediate{ 0 };
+			std::atomic<std::uint32_t> record{ 0 };
 			std::atomic<std::uint32_t> skinned{ 0 };
 			std::atomic<std::uint32_t> notEnv{ 0 };
 			std::atomic<std::uint32_t> miss{ 0 };
@@ -81,10 +92,8 @@ namespace TrueScopes::Collimator
 			std::atomic<std::uint32_t> fault{ 0 };
 			std::atomic<std::uint32_t> applied{ 0 };
 		};
-		Diag                        g_diag;
-		std::atomic<std::uintptr_t> g_drawnGlass[4]{};  // reflex glass seen at the hook but not registered
-		std::uint32_t               g_diagFrames = 0;
-		std::uint32_t               g_diagLastCalls = 0;
+		Diag          g_diag;
+		std::uint32_t g_diagFrames = 0;
 
 		bool ReadName(std::uintptr_t a_field, char* a_out, std::size_t a_size)
 		{
@@ -210,47 +219,56 @@ namespace TrueScopes::Collimator
 			return false;
 		}
 
-		std::uintptr_t RenderState()
+		// Point each glass pane at the eye, once per pane; a pane whose rows came
+		// back unflipped (a re-attach rewrites them) is flipped again.
+		void FlipToEye(const Glass (&a_list)[kMaxGlass], std::uint32_t a_n)
 		{
-			const auto base = REL::Module::get().base();
-			auto       ctx = *reinterpret_cast<std::uintptr_t*>(base + Addr::kRenderCtxSlot);
-			if (!ctx) {
-				ctx = *reinterpret_cast<std::uintptr_t*>(base + Addr::kRenderCtxSlotAlt);
-			}
-			return ctx ? ctx + kStateBlock : 0;
-		}
-
-		// the engine's own rain/snow write (0x1428d0fcd), for this draw only
-		void ForceTwoSided()
-		{
-			const auto st = RenderState();
-			if (!st) {
-				return;
-			}
-			auto& cull = *reinterpret_cast<std::uint32_t*>(st + kCullMode);
-			if (cull != 0) {
-				t_cullBefore = static_cast<std::int32_t>(cull);
-				*reinterpret_cast<std::uint32_t*>(st) |= kRasterDirty;
-				cull = 0;
-			}
-		}
-
-		void RestoreCull()
-		{
-			if (t_cullBefore < 0) {
-				return;
-			}
 			__try {
-				if (const auto st = RenderState()) {
-					auto& cull = *reinterpret_cast<std::uint32_t*>(st + kCullMode);
-					if (cull != static_cast<std::uint32_t>(t_cullBefore)) {
-						*reinterpret_cast<std::uint32_t*>(st) |= kRasterDirty;
-						cull = static_cast<std::uint32_t>(t_cullBefore);
+				for (std::uint32_t i = 0; i < a_n; ++i) {
+					auto* rows = reinterpret_cast<float*>(a_list[i].geometry + kLocalRotate);
+					Flip* known = nullptr;
+					for (std::uint32_t k = 0; k < g_flipCount; ++k) {
+						if (g_flip[k].geometry == a_list[i].geometry) {
+							known = &g_flip[k];
+						}
+					}
+					if (known && std::memcmp(rows, known->rows, sizeof(known->rows)) != 0) {
+						continue;  // still flipped
+					}
+					if (!known) {
+						if (g_flipCount >= kMaxGlass) {
+							continue;
+						}
+						known = &g_flip[g_flipCount++];
+						known->geometry = a_list[i].geometry;
+					}
+					std::memcpy(known->rows, rows, sizeof(known->rows));
+					for (int j = 0; j < 8; ++j) {
+						rows[j] = -rows[j];
 					}
 				}
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 			}
-			t_cullBefore = -1;
+		}
+
+		// Only while the weapon that owns them is still the one drawn; a pane of
+		// a replaced weapon may be freed, so it is forgotten, not restored.
+		void Unflip()
+		{
+			__try {
+				for (std::uint32_t k = 0; k < g_flipCount; ++k) {
+					auto* rows = reinterpret_cast<float*>(g_flip[k].geometry + kLocalRotate);
+					bool  flipped = true;
+					for (int j = 0; j < 8; ++j) {
+						flipped = flipped && rows[j] == -(&g_flip[k].rows[0][0])[j];
+					}
+					if (flipped) {
+						std::memcpy(rows, g_flip[k].rows, sizeof(g_flip[k].rows));
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			g_flipCount = 0;
 		}
 
 		// The engine writes World as the transpose of the geometry's stored world
@@ -258,68 +276,81 @@ namespace TrueScopes::Collimator
 		// stored rotate's rows are its axes in world. World -> frame is then M_f
 		// itself: rows <- M_f * rows for both eyes. The w column is the row's
 		// translation; rotating it too keeps any dp4 against World consistent.
-		bool Rewrite(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
+		bool Rewrite(std::uintptr_t a_geometry, std::uint32_t a_technique, std::uintptr_t a_vs, float* a_data)
 		{
+			if (a_technique & kSkinned) {
+				g_diag.skinned.fetch_add(1, std::memory_order_relaxed);
+				return false;
+			}
+			const auto world = *reinterpret_cast<const std::uint8_t*>(a_vs + kWorldSlot);
+			if (world == 0xFF || *reinterpret_cast<const std::uint8_t*>(a_vs + kEyePositionSlot) == 0xFF) {
+				g_diag.notEnv.fetch_add(1, std::memory_order_relaxed);
+				return false;  // not an env-mapped draw
+			}
+			std::uintptr_t frame = 0;
+			if (!FindFrame(a_geometry, frame) || !frame) {
+				g_diag.miss.fetch_add(1, std::memory_order_relaxed);
+				return false;
+			}
+			if (!a_data) {
+				g_diag.noData.fetch_add(1, std::memory_order_relaxed);
+				return false;
+			}
+			const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
+			for (int eye = 0; eye < 2; ++eye) {
+				float* w = a_data + world + eye * 12;
+				float  rows[3][4];
+				std::memcpy(rows, w, sizeof(rows));
+				for (int i = 0; i < 3; ++i) {
+					for (int j = 0; j < 4; ++j) {
+						w[i * 4 + j] = r[i * 4 + 0] * rows[0][j] + r[i * 4 + 1] * rows[1][j] + r[i * 4 + 2] * rows[2][j];
+					}
+				}
+			}
+			g_diag.applied.fetch_add(1, std::memory_order_relaxed);
+			if (!g_loggedApply.exchange(true)) {
+				logger::info("collimator: first glass draw rewritten into sight axes"sv);
+			}
+			return true;
+		}
+
+		bool Active()
+		{
+			return *Settings::reflexCollimatorEnabled && g_count.load(std::memory_order_relaxed) != 0;
+		}
+
+		// Render thread, every immediate effect-shader draw.
+		void OnEffectSetup(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
+		{
+			if (!Active()) {
+				return;
+			}
+			g_diag.immediate.fetch_add(1, std::memory_order_relaxed);
 			__try {
-				g_diag.calls.fetch_add(1, std::memory_order_relaxed);
-				if (*reinterpret_cast<const std::uint32_t*>(a_setup + kTechnique) & kSkinned) {
-					g_diag.skinned.fetch_add(1, std::memory_order_relaxed);
-					return false;
-				}
-				const auto vs = *reinterpret_cast<const std::uintptr_t*>(a_setup + kVertexShader);
-				const auto world = *reinterpret_cast<const std::uint8_t*>(vs + kWorldSlot);
-				if (world == 0xFF || *reinterpret_cast<const std::uint8_t*>(vs + kEyePositionSlot) == 0xFF) {
-					g_diag.notEnv.fetch_add(1, std::memory_order_relaxed);
-					return false;  // not an env-mapped draw
-				}
-				std::uintptr_t frame = 0;
-				if (!FindFrame(a_geometry, frame) || !frame) {
-					g_diag.miss.fetch_add(1, std::memory_order_relaxed);
-					const auto property = EffectProperty(a_geometry);
-					if (property && IsReflexGlass(property)) {
-						for (auto& slot : g_drawnGlass) {
-							std::uintptr_t expected = 0;
-							if (slot.load(std::memory_order_relaxed) == a_geometry ||
-								slot.compare_exchange_strong(expected, a_geometry)) {
-								break;
-							}
-						}
-					}
-					return false;
-				}
-				ForceTwoSided();
-				const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
-				auto*       data = *reinterpret_cast<float**>(a_group + kMappedData);
-				if (!data) {
-					g_diag.noData.fetch_add(1, std::memory_order_relaxed);
-					return false;
-				}
-				for (int eye = 0; eye < 2; ++eye) {
-					float* w = data + world + eye * 12;
-					float  rows[3][4];
-					std::memcpy(rows, w, sizeof(rows));
-					for (int i = 0; i < 3; ++i) {
-						for (int j = 0; j < 4; ++j) {
-							w[i * 4 + j] = r[i * 4 + 0] * rows[0][j] + r[i * 4 + 1] * rows[1][j] + r[i * 4 + 2] * rows[2][j];
-						}
-					}
-				}
-				g_diag.applied.fetch_add(1, std::memory_order_relaxed);
-				return true;
+				Rewrite(a_geometry,
+					*reinterpret_cast<const std::uint32_t*>(a_setup + kSetupTechnique),
+					*reinterpret_cast<const std::uintptr_t*>(a_setup + kSetupVertexShader),
+					*reinterpret_cast<float**>(a_group + kMappedData));
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				g_diag.fault.fetch_add(1, std::memory_order_relaxed);
-				return false;  // a dangling frame or group pointer: leave this draw alone
 			}
 		}
 
-		// Render thread, every effect-shader draw.
-		void OnEffectSetup(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
+		// Job threads, every recorded effect-shader draw, after slot 3 filled it.
+		void OnRecordSetup(std::uintptr_t a_pass, std::uintptr_t a_record)
 		{
-			if (!*Settings::reflexCollimatorEnabled || g_count.load(std::memory_order_relaxed) == 0) {
+			if (!Active()) {
 				return;
 			}
-			if (Rewrite(a_geometry, a_group, a_setup) && !g_loggedApply.exchange(true)) {
-				logger::info("collimator: first glass draw rewritten into sight axes"sv);
+			g_diag.record.fetch_add(1, std::memory_order_relaxed);
+			__try {
+				const auto group = *reinterpret_cast<const std::uintptr_t*>(a_record + kRecordVSGeometryGroup);
+				Rewrite(*reinterpret_cast<const std::uintptr_t*>(a_pass + kPassGeometry),
+					*reinterpret_cast<const std::uint32_t*>(a_pass + kPassTechnique),
+					*reinterpret_cast<const std::uintptr_t*>(a_record + kRecordVertexShader),
+					group ? *reinterpret_cast<float**>(group + kRecordGroupData) : nullptr);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				g_diag.fault.fetch_add(1, std::memory_order_relaxed);
 			}
 		}
 
@@ -367,15 +398,14 @@ namespace TrueScopes::Collimator
 			}
 		};
 
-		// RestoreGeometry runs after the draw; put back what ForceTwoSided changed.
-		struct RestoreGeometryHook
+		struct SetupRecordHook
 		{
-			static void thunk(void* a_shader, std::uintptr_t a_pass)
+			static void thunk(void* a_shader, std::uintptr_t a_pass, std::uintptr_t a_record, std::uintptr_t a_job)
 			{
-				func(a_shader, a_pass);
-				RestoreCull();
+				func(a_shader, a_pass, a_record, a_job);
+				OnRecordSetup(a_pass, a_record);
 			}
-			static inline REL::Relocation<void (*)(void*, std::uintptr_t)> func;
+			static inline REL::Relocation<void (*)(void*, std::uintptr_t, std::uintptr_t, std::uintptr_t)> func;
 		};
 	}
 
@@ -387,27 +417,30 @@ namespace TrueScopes::Collimator
 			logger::warn("collimator NOT installed (byte mismatch at the effect setup site)"sv);
 			return;
 		}
-		// without the restore the cull change would outlive the glass draw
 		REL::Relocation<std::uintptr_t> vtbl{ REL::Offset(Addr::kBSEffectShaderVtbl) };
-		const auto restoreSlot = reinterpret_cast<std::uintptr_t*>(vtbl.address()) + 10;
-		if (*restoreSlot != REL::Module::get().base() + Addr::kEffectRestoreGeometry) {
-			logger::warn("collimator NOT installed (BSEffectShader::RestoreGeometry is not the vanilla one)"sv);
+		const auto recordSlot = reinterpret_cast<std::uintptr_t*>(vtbl.address()) + 3;
+		if (*recordSlot != REL::Module::get().base() + Addr::kEffectSetupGeometryRecord) {
+			logger::warn("collimator NOT installed (BSEffectShader slot 3 is not the vanilla record setup)"sv);
 			return;
 		}
-		RestoreGeometryHook::func = vtbl.write_vfunc(10, RestoreGeometryHook::thunk);
+		SetupRecordHook::func = vtbl.write_vfunc(3, SetupRecordHook::thunk);
 
 		SetupStub stub(reinterpret_cast<std::uintptr_t>(&OnEffectSetup),
 			REL::Module::get().base() + Addr::kEffectSetupPreUnmapTarget);
 		auto& trampoline = F4SE::GetTrampoline();
 		const auto code = trampoline.allocate(stub);
 		trampoline.write_call<5>(site.address(), reinterpret_cast<std::uintptr_t>(code));
-		logger::info("collimator hooks installed (effect setup + restore, off until reflexCollimatorEnabled)"sv);
+		logger::info("collimator hooks installed (immediate + record setup, off until reflexCollimatorEnabled)"sv);
 	}
 
 	void Tick(std::uintptr_t a_player)
 	{
 		if (!*Settings::reflexCollimatorEnabled) {
 			if (g_count.load(std::memory_order_relaxed)) {
+				if (ScopeIdent::FirstPersonWeaponNode(a_player) == g_lastWeapon) {
+					Unflip();
+				}
+				g_flipCount = 0;
 				Publish(kNone, 0);
 				g_lastWeapon = 0;
 			}
@@ -415,14 +448,12 @@ namespace TrueScopes::Collimator
 		}
 		if (++g_diagFrames >= 270) {
 			g_diagFrames = 0;
-			const auto calls = g_diag.calls.load(std::memory_order_relaxed);
-			if (calls != g_diagLastCalls || g_count.load(std::memory_order_relaxed)) {
-				g_diagLastCalls = calls;
-				logger::info(FMT_STRING("collimator diag: calls={} skinned={} notEnv={} miss={} noData={} fault={} applied={} "
-										"registered={:x},{:x} drawnGlass={:x},{:x},{:x},{:x}"),
-					calls, g_diag.skinned.load(), g_diag.notEnv.load(), g_diag.miss.load(), g_diag.noData.load(),
-					g_diag.fault.load(), g_diag.applied.load(), g_glass[0].geometry, g_glass[1].geometry,
-					g_drawnGlass[0].load(), g_drawnGlass[1].load(), g_drawnGlass[2].load(), g_drawnGlass[3].load());
+			if (g_count.load(std::memory_order_relaxed)) {
+				logger::info(FMT_STRING("collimator diag: immediate={} record={} skinned={} notEnv={} miss={} noData={} fault={} applied={} "
+										"registered={:x},{:x} flipped={}"),
+					g_diag.immediate.load(), g_diag.record.load(), g_diag.skinned.load(), g_diag.notEnv.load(),
+					g_diag.miss.load(), g_diag.noData.load(), g_diag.fault.load(), g_diag.applied.load(),
+					g_glass[0].geometry, g_glass[1].geometry, g_flipCount);
 			}
 		}
 		const auto weapon = ScopeIdent::FirstPersonWeaponNode(a_player);
@@ -432,13 +463,18 @@ namespace TrueScopes::Collimator
 		g_frames = 0;
 		const bool changed = weapon != g_lastWeapon;
 		g_lastWeapon = weapon;
+		if (changed) {
+			g_flipCount = 0;  // the old weapon's panes are not ours to touch any more
+		}
 
 		Glass      found[kMaxGlass]{};
 		const auto n = WalkGuarded(weapon, found);
+		FlipToEye(found, n);
 		Publish(found, n);
 		if (changed) {
-			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon (weapon {:x}; {:x} under {:x}, {:x} under {:x})"),
-				n, weapon, found[0].geometry, found[0].frame, found[1].geometry, found[1].frame);
+			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon, {} turned to face the eye "
+									"(weapon {:x}; {:x} under {:x}, {:x} under {:x})"),
+				n, g_flipCount, weapon, found[0].geometry, found[0].frame, found[1].geometry, found[1].frame);
 		}
 	}
 }

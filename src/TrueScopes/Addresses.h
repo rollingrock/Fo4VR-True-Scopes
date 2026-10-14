@@ -90,15 +90,14 @@ namespace TrueScopes::Addr
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
 	inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
 
-	// BSEffectShader's vtable; slot 10 is RestoreGeometry (FUN_1428d1650), which
-	// only resets the cull mode for rain/snow techniques.
+	// BSEffectShader's vtable. Slot 3 (FUN_1428d31f0) is the record-path
+	// SetupGeometry: the per-pass job FUN_1428aae20 calls slot 2 for a draw
+	// record, then slot 3(shader, pass, record, job) to fill its per-geometry
+	// constants - VS at record+0x60, VS group 2 at record+0xe0 (data +0x10).
+	// Scene effect shapes, reflex glass included, go this way, not through
+	// slot 9 (live 10-14: 100k slot-9 draws, none env-mapped).
 	inline constexpr std::uintptr_t kBSEffectShaderVtbl = 0x30bc738;
-	inline constexpr std::uintptr_t kEffectRestoreGeometry = 0x28d1650;
-
-	// The render context the shaders write state into: [0x146235ac8], else
-	// [0x146235ac0]; its cached-state block is at +0x1ee0.
-	inline constexpr std::uintptr_t kRenderCtxSlot = 0x6235ac8;
-	inline constexpr std::uintptr_t kRenderCtxSlotAlt = 0x6235ac0;
+	inline constexpr std::uintptr_t kEffectSetupGeometryRecord = 0x28d31f0;
 
 	// The three vanilla scope imagespace-modifier trigger sites (all call
 	// ImageSpaceModifierInstanceForm::Trigger @ +0x37cf50). A and B fire the weapon
