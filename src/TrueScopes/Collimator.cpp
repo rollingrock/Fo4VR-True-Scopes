@@ -15,6 +15,7 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kParentInAVObject = 0x28;
 		constexpr std::uintptr_t kLocalRotate = 0x30;  // NiMatrix3, three rows of 4 floats
 		constexpr std::uintptr_t kWorldRotate = 0x70;
+		constexpr std::uintptr_t kWorldTranslate = 0xa0;
 		constexpr std::uintptr_t kChildren = 0x168;
 		constexpr std::uintptr_t kChildCount = 0x172;  // u16 loop bound, null holes legal
 
@@ -77,6 +78,7 @@ namespace TrueScopes::Collimator
 		std::uint32_t g_flipCount = 0;
 
 		std::uintptr_t g_lastWeapon = 0;
+		std::uint32_t  g_lastCount = 0;
 		std::uint32_t  g_frames = 0;
 		std::atomic_bool g_loggedApply{ false };
 
@@ -219,9 +221,32 @@ namespace TrueScopes::Collimator
 			return false;
 		}
 
-		// Point each glass pane at the eye, once per pane; a pane whose rows came
-		// back unflipped (a re-attach rewrites them) is flipped again.
-		void FlipToEye(const Glass (&a_list)[kMaxGlass], std::uint32_t a_n)
+		// The pane nearest the eye: least far along its frame's +Y (the bore), from
+		// world positions. Two panes reflecting the reticle give two dots a dot apart
+		// (10-14: their normals differ a little); a real reflex sight has one
+		// reflector, and an unturned pane stays culled for the shooter.
+		std::uint32_t RearmostPane(const Glass (&a_list)[kMaxGlass], std::uint32_t a_n)
+		{
+			std::uint32_t best = 0;
+			__try {
+				float bestY = 0.0f;
+				for (std::uint32_t i = 0; i < a_n; ++i) {
+					const auto* axisY = reinterpret_cast<const float*>(a_list[i].frame + kWorldRotate + 0x10);
+					const auto* pos = reinterpret_cast<const float*>(a_list[i].geometry + kWorldTranslate);
+					const float y = pos[0] * axisY[0] + pos[1] * axisY[1] + pos[2] * axisY[2];
+					if (i == 0 || y < bestY) {
+						best = i;
+						bestY = y;
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			return best;
+		}
+
+		// Point the chosen pane at the eye, once; a pane whose rows came back
+		// unflipped (a re-attach rewrites them) is flipped again.
+		void FlipToEye(const Glass* a_list, std::uint32_t a_n)
 		{
 			__try {
 				for (std::uint32_t i = 0; i < a_n; ++i) {
@@ -469,12 +494,26 @@ namespace TrueScopes::Collimator
 
 		Glass      found[kMaxGlass]{};
 		const auto n = WalkGuarded(weapon, found);
-		FlipToEye(found, n);
+		// keep the pane already turned while it is still there; choose only once
+		std::uint32_t rear = kMaxGlass;
+		for (std::uint32_t i = 0; g_flipCount && i < n; ++i) {
+			if (found[i].geometry == g_flip[0].geometry) {
+				rear = i;
+			}
+		}
+		if (rear == kMaxGlass && n) {
+			g_flipCount = 0;  // the turned pane left this weapon (an attachment swap): not ours now
+			rear = RearmostPane(found, n);
+		}
+		if (n) {
+			FlipToEye(&found[rear], 1);
+		}
 		Publish(found, n);
-		if (changed) {
-			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon, {} turned to face the eye "
+		if (changed || n != g_lastCount) {
+			g_lastCount = n;
+			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon, pane {:x} turned to face the eye "
 									"(weapon {:x}; {:x} under {:x}, {:x} under {:x})"),
-				n, g_flipCount, weapon, found[0].geometry, found[0].frame, found[1].geometry, found[1].frame);
+				n, n ? found[rear].geometry : 0, weapon, found[0].geometry, found[0].frame, found[1].geometry, found[1].frame);
 		}
 	}
 }

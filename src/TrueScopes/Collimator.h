@@ -8,8 +8,9 @@ namespace TrueScopes::Collimator
 	// For the registered sight glass we rewrite the per-geometry World rows (VS
 	// c8..c13, eye*3+8) into the sight's own axes, so the cube is looked up in
 	// bore space and its +Y direction stays on the bore. Vanilla panes face the
-	// muzzle and the effect shader culls back faces, so each pane is also turned
-	// to face the eye.
+	// muzzle and the effect shader culls back faces, so the pane nearest the eye
+	// is turned to face it; the others stay culled, one reflector like the real
+	// thing.
 
 	// Patch both of the effect shader's per-geometry setups: the immediate one
 	// just before it unmaps the VS constants, and the record one (vtable slot 3).
@@ -17,6 +18,6 @@ namespace TrueScopes::Collimator
 	void Install();
 
 	// Every frame (the fill hook): find the equipped weapon's reflex glass and the
-	// node its sight hangs under, and turn the panes. Cheap when nothing changed.
+	// node its sight hangs under, and turn the pane. Cheap when nothing changed.
 	void Tick(std::uintptr_t a_player);
 }
