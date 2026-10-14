@@ -58,6 +58,23 @@ namespace TrueScopes::Collimator
 		std::uint32_t  g_frames = 0;
 		std::atomic_bool g_loggedApply{ false };
 
+		// Render-thread outcomes while on, logged from Tick. 10-14's first run found
+		// the glass but never rewrote a draw; these say which check turned it away.
+		struct Diag
+		{
+			std::atomic<std::uint32_t> calls{ 0 };
+			std::atomic<std::uint32_t> skinned{ 0 };
+			std::atomic<std::uint32_t> notEnv{ 0 };
+			std::atomic<std::uint32_t> miss{ 0 };
+			std::atomic<std::uint32_t> noData{ 0 };
+			std::atomic<std::uint32_t> fault{ 0 };
+			std::atomic<std::uint32_t> applied{ 0 };
+		};
+		Diag                        g_diag;
+		std::atomic<std::uintptr_t> g_drawnGlass[4]{};  // reflex glass seen at the hook but not registered
+		std::uint32_t               g_diagFrames = 0;
+		std::uint32_t               g_diagLastCalls = 0;
+
 		bool ReadName(std::uintptr_t a_field, char* a_out, std::size_t a_size)
 		{
 			a_out[0] = '\0';
@@ -190,21 +207,36 @@ namespace TrueScopes::Collimator
 		bool Rewrite(std::uintptr_t a_geometry, std::uintptr_t a_group, std::uintptr_t a_setup)
 		{
 			__try {
+				g_diag.calls.fetch_add(1, std::memory_order_relaxed);
 				if (*reinterpret_cast<const std::uint32_t*>(a_setup + kTechnique) & kSkinned) {
+					g_diag.skinned.fetch_add(1, std::memory_order_relaxed);
 					return false;
 				}
 				const auto vs = *reinterpret_cast<const std::uintptr_t*>(a_setup + kVertexShader);
 				const auto world = *reinterpret_cast<const std::uint8_t*>(vs + kWorldSlot);
 				if (world == 0xFF || *reinterpret_cast<const std::uint8_t*>(vs + kEyePositionSlot) == 0xFF) {
+					g_diag.notEnv.fetch_add(1, std::memory_order_relaxed);
 					return false;  // not an env-mapped draw
 				}
 				std::uintptr_t frame = 0;
 				if (!FindFrame(a_geometry, frame) || !frame) {
+					g_diag.miss.fetch_add(1, std::memory_order_relaxed);
+					const auto property = EffectProperty(a_geometry);
+					if (property && IsReflexGlass(property)) {
+						for (auto& slot : g_drawnGlass) {
+							std::uintptr_t expected = 0;
+							if (slot.load(std::memory_order_relaxed) == a_geometry ||
+								slot.compare_exchange_strong(expected, a_geometry)) {
+								break;
+							}
+						}
+					}
 					return false;
 				}
 				const auto* r = reinterpret_cast<const float*>(frame + kWorldRotate);
 				auto*       data = *reinterpret_cast<float**>(a_group + kMappedData);
 				if (!data) {
+					g_diag.noData.fetch_add(1, std::memory_order_relaxed);
 					return false;
 				}
 				for (int eye = 0; eye < 2; ++eye) {
@@ -217,8 +249,10 @@ namespace TrueScopes::Collimator
 						}
 					}
 				}
+				g_diag.applied.fetch_add(1, std::memory_order_relaxed);
 				return true;
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				g_diag.fault.fetch_add(1, std::memory_order_relaxed);
 				return false;  // a dangling frame or group pointer: leave this draw alone
 			}
 		}
@@ -304,6 +338,18 @@ namespace TrueScopes::Collimator
 			}
 			return;
 		}
+		if (++g_diagFrames >= 270) {
+			g_diagFrames = 0;
+			const auto calls = g_diag.calls.load(std::memory_order_relaxed);
+			if (calls != g_diagLastCalls || g_count.load(std::memory_order_relaxed)) {
+				g_diagLastCalls = calls;
+				logger::info(FMT_STRING("collimator diag: calls={} skinned={} notEnv={} miss={} noData={} fault={} applied={} "
+										"registered={:x},{:x} drawnGlass={:x},{:x},{:x},{:x}"),
+					calls, g_diag.skinned.load(), g_diag.notEnv.load(), g_diag.miss.load(), g_diag.noData.load(),
+					g_diag.fault.load(), g_diag.applied.load(), g_glass[0].geometry, g_glass[1].geometry,
+					g_drawnGlass[0].load(), g_drawnGlass[1].load(), g_drawnGlass[2].load(), g_drawnGlass[3].load());
+			}
+		}
 		const auto weapon = ScopeIdent::FirstPersonWeaponNode(a_player);
 		if (weapon == g_lastWeapon && ++g_frames < kRescanFrames) {
 			return;
@@ -316,7 +362,8 @@ namespace TrueScopes::Collimator
 		const auto n = WalkGuarded(weapon, found);
 		Publish(found, n);
 		if (changed) {
-			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon"), n);
+			logger::info(FMT_STRING("collimator: {} reflex glass shape(s) on the equipped weapon (weapon {:x}; {:x} under {:x}, {:x} under {:x})"),
+				n, weapon, found[0].geometry, found[0].frame, found[1].geometry, found[1].frame);
 		}
 	}
 }
