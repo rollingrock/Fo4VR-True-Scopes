@@ -11,4 +11,5 @@ set(sources ${sources}
 	src/TrueScopes/ScopeRender.cpp
 	src/TrueScopes/FrikBridge.cpp
 	src/TrueScopes/Collimator.cpp
+	src/TrueScopes/Optic.cpp
 )

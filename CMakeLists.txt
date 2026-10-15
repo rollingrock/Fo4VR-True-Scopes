@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "truescopes_vr")
-set(VERSION 0.3.74)
+set(VERSION 0.3.75)
 
 # ---- Options ----
 option(COPY_BUILD "Copy the build output to the Fallout directory." FALSE)
@@ -85,6 +85,16 @@ if(TRUESCOPES_BUILD_TESTS)
 		target_compile_options(widget_rotation_tests PRIVATE /W4 /WX /permissive- /utf-8)
 	endif()
 	add_test(NAME widget_rotation COMMAND widget_rotation_tests)
+	add_executable(
+		optic_class_tests
+		tests/OpticClassTests.cpp
+	)
+	target_compile_features(optic_class_tests PRIVATE cxx_std_23)
+	target_include_directories(optic_class_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+	if(MSVC)
+		target_compile_options(optic_class_tests PRIVATE /W4 /WX /permissive- /utf-8)
+	endif()
+	add_test(NAME optic_class COMMAND optic_class_tests)
 endif()
 
 configure_file(

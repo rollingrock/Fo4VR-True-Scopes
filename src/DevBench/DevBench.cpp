@@ -9,6 +9,7 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/ScopeIdent.h"
+#include "TrueScopes/Optic.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/PoseGate.h"
 #include "TrueScopes/VerdictInput.h"
@@ -469,6 +470,7 @@ namespace DevBench
 				"{\"path\":\"/scope\",\"desc\":\"?probe=1 - which scope is equipped: weapon formID, zoomData fovMult, the weapon 3D node names, the ATTACHED OMOD model paths, the aperture in use and whether it resolved by path or by node name\"},"
 				"{\"path\":\"/scope/lookup\",\"desc\":\"?path=MODELPATH - resolve a model path against the aperture table; no game state touched\"},"
 				"{\"path\":\"/omods\",\"desc\":\"?filter=scope&limit=400 - every weapon mod (OMOD) in the CURRENT load order with the strings it points at (model path, display name); no equipping needed\"},"
+				"{\"path\":\"/optic\",\"desc\":\"the sight under P-Scope as classified from its shapes (sts-mag, collimated, ...), its anchor and every shape the walk saw\"},"
 				"{\"path\":\"/verdict\",\"desc\":\"?since=SEQ - the tester's last controller chord (grip+A yes, grip+B no, grip+trigger skip); polling arms on the first call\"},"
 				"{\"path\":\"/attach\",\"desc\":\"?omod=HEX&detach=1 - attach (or detach) an OMOD on the equipped weapon, via the game's main thread\"}"
 				"],\"addrExpr\":\"expr := term (('+'|'-') term)* ; term := '[' expr ']' | 'base' | 0xHEX | DEC\"}";
@@ -1214,6 +1216,51 @@ namespace DevBench
 			return out;
 		}
 
+		// the sight under P-Scope as Optic classified it, with every shape it saw
+		std::string HandleOptic()
+		{
+			using namespace TrueScopes;
+			const auto  s = Optic::Get();
+			const auto& r = s.result;
+			const auto  name = [&](int a_i) { return Quote(a_i >= 0 ? s.in.shapes[a_i].name : ""); };
+			std::string out = "{\"ok\":true";
+			out += ",\"weapon\":" + Quote(Hex(s.weapon));
+			out += ",\"pScope\":" + Quote(Hex(s.pScope));
+			out += ",\"walks\":" + std::to_string(s.walks);
+			out += ",\"faulted\":" + std::string(s.faulted ? "true" : "false");
+			out += ",\"kind\":" + Quote(OpticClass::KindName(r.kind));
+			out += ",\"keyNodes\":" + std::to_string(s.in.keyNodes);
+			out += ",\"fade\":" + name(r.fade);
+			out += ",\"glass\":" + name(r.glass);
+			out += ",\"anchor\":" + Vec3(r.centre);
+			out += ",\"radius\":" + std::to_string(r.radius);
+			out += ",\"eyepiece\":" + std::to_string(r.eyepiece);
+			out += ",\"eyepieceFrom\":" + Quote(std::string(1, r.eyepieceFrom));
+			out += ",\"nearCards\":" + std::to_string(r.nearCards);
+			out += ",\"farCards\":" + std::to_string(r.farCards);
+			out += ",\"nearest\":" + std::to_string(r.nearest);
+			out += ",\"farthest\":" + std::to_string(r.farthest);
+			out += ",\"overflow\":" + std::to_string(s.in.overflow);
+			out += ",\"shapes\":[";
+			for (std::uint32_t i = 0; i < s.in.count && i < OpticClass::kMaxShapes; ++i) {
+				const auto& sh = s.in.shapes[i];
+				out += i ? "," : "";
+				out += "{\"name\":" + Quote(sh.name);
+				out += ",\"part\":" + Quote(OpticClass::PartName(OpticClass::Classify(sh)));
+				out += ",\"material\":" + Quote(sh.material);
+				out += ",\"texture\":" + Quote(sh.texture);
+				out += ",\"effect\":" + std::string(sh.effect ? "true" : "false");
+				out += ",\"envMap\":" + std::string(sh.envMap ? "true" : "false");
+				out += ",\"hidden\":" + std::string(sh.hidden ? "true" : "false");
+				out += ",\"under\":\"" + std::string(sh.underAiming ? "A" : "") + (sh.underNormal ? "N" : "") +
+				       (sh.underReticleNode ? "R" : "") + "\"";
+				out += ",\"c\":" + Vec3(sh.centre);
+				out += ",\"r\":" + std::to_string(sh.radius) + "}";
+			}
+			out += "]}";
+			return out;
+		}
+
 		std::string HandleScopeLookup(const Request& a_req)
 		{
 			const auto raw = a_req.GetOr("path", "");
@@ -1254,6 +1301,7 @@ namespace DevBench
 			if (a_req.path == "/log")                           return HandleLog(a_req);
 			if (a_req.path == "/scope")                         return HandleScope(a_req);
 			if (a_req.path == "/omods")                         return HandleOmods(a_req);
+			if (a_req.path == "/optic")                         return HandleOptic();
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}
 

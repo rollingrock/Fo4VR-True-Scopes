@@ -4,6 +4,7 @@
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/Collimator.h"
+#include "TrueScopes/Optic.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/PoseGate.h"
@@ -838,6 +839,11 @@ namespace TrueScopes::Hooks
 				// the reflex collimator's glass registry; returns at once while it is off
 				if (g_installed) {
 					Collimator::Tick(*reinterpret_cast<std::uintptr_t*>(
+						REL::Module::get().base() + Addr::kPlayerGlobal));
+				}
+				// what kind of sight is under P-Scope
+				if (g_installed) {
+					Optic::Tick(*reinterpret_cast<std::uintptr_t*>(
 						REL::Module::get().base() + Addr::kPlayerGlobal));
 				}
 				// Fallback probe site for the no-weapon-drawn case (DevBench asks
