@@ -14,6 +14,7 @@
 #include "TrueScopes/PoseGate.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
+#include "TrueScopes/StsLens.h"
 
 
 namespace DevBench
@@ -347,6 +348,12 @@ namespace DevBench
 				{ "reflexZeroUpMoa", Kind::Float, &reflexZeroUpMoa },
 				{ "reflexZeroRightMoa", Kind::Float, &reflexZeroRightMoa },
 				{ "reflexReticleScale", Kind::Float, &reflexReticleScale },
+				{ "stsLensEnabled", Kind::Bool, &stsLensEnabled },
+				{ "stsLensApertureScale", Kind::Float, &stsLensApertureScale },
+				{ "stsReticleMode", Kind::Int, &stsReticleMode },
+				{ "stsReticleScale", Kind::Float, &stsReticleScale },
+				{ "stsCamForwardUnits", Kind::Float, &stsCamForwardUnits },
+				{ "stsHideEyepieceParts", Kind::Bool, &stsHideEyepieceParts },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },
@@ -1241,6 +1248,37 @@ namespace DevBench
 			out += ",\"nearest\":" + std::to_string(r.nearest);
 			out += ",\"farthest\":" + std::to_string(r.farthest);
 			out += ",\"overflow\":" + std::to_string(s.in.overflow);
+			{
+				const auto& g = s.gate;
+				out += ",\"gate\":{\"evaluating\":" + std::string(g.evaluating ? "true" : "false");
+				out += ",\"live\":" + std::string(g.live ? "true" : "false");
+				out += ",\"sentinel\":" + std::string(g.sentinel ? "true" : "false");
+				out += ",\"drawn\":" + std::to_string(g.drawn);
+				out += ",\"dist\":" + std::to_string(g.dist);
+				out += ",\"lateral\":" + std::to_string(g.lateral);
+				out += ",\"lookDeg\":" + std::to_string(g.lookDeg);
+				out += ",\"ocular\":" + Vec3(g.ocular);
+				out += ",\"axis\":" + Vec3(g.axis);
+				out += ",\"evals\":" + std::to_string(g.evals);
+				out += ",\"edges\":" + std::to_string(g.edges);
+				out += ",\"why\":" + Quote(g.why) + "}";
+			}
+			{
+				const auto l = StsLens::GetDiag();
+				out += ",\"stsLens\":{\"enabled\":" + std::string(*Settings::stsLensEnabled ? "true" : "false");
+				out += ",\"live\":" + std::string(StsLens::Live() ? "true" : "false");
+				out += ",\"engaged\":" + std::string(l.engaged ? "true" : "false");
+				out += ",\"cacheOurs\":" + std::string(l.cacheOurs ? "true" : "false");
+				out += ",\"cardsMoved\":" + std::to_string(l.cardsMoved);
+				out += ",\"cardScale\":" + std::to_string(l.cardScale);
+				out += ",\"partsHidden\":" + std::to_string(l.partsHidden);
+				out += ",\"discRadius\":" + std::to_string(l.discRadius);
+				out += ",\"disc\":" + Vec3(l.disc);
+				out += ",\"camMiss\":" + std::to_string(l.camMiss);
+				out += ",\"camAxis\":" + std::to_string(l.camAxis);
+				out += ",\"engages\":" + std::to_string(l.engages);
+				out += ",\"lastRelease\":" + Quote(l.lastRelease) + "}";
+			}
 			out += ",\"shapes\":[";
 			for (std::uint32_t i = 0; i < s.in.count && i < OpticClass::kMaxShapes; ++i) {
 				const auto& sh = s.in.shapes[i];
@@ -1255,7 +1293,8 @@ namespace DevBench
 				out += ",\"under\":\"" + std::string(sh.underAiming ? "A" : "") + (sh.underNormal ? "N" : "") +
 				       (sh.underReticleNode ? "R" : "") + "\"";
 				out += ",\"c\":" + Vec3(sh.centre);
-				out += ",\"r\":" + std::to_string(sh.radius) + "}";
+				out += ",\"r\":" + std::to_string(sh.radius);
+				out += ",\"node\":" + Quote(Hex(s.nodes[i])) + "}";
 			}
 			out += "]}";
 			return out;

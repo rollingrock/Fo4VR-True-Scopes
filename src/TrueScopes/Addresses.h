@@ -168,6 +168,12 @@ namespace TrueScopes::Addr
 	// transforms post-load, and world_scope.nif ships zero controller blocks -
 	// which is what makes the zero-scale housing hide permanent. [LIVE]
 	inline constexpr std::uintptr_t kWidgetModelSingleton = 0x5acbf58;
+	// The effect shader's lens-bind cache (DAT_14689b440; 0x1428d1558 cmp rbx,
+	// [cache]): the one BSGeometry whose draw binds RT 0x62 to slot 6. The enable
+	// switch sets it, holding a reference, from WSScopeModel+0x38. 0 until a
+	// ScopeMenu has opened (headless 10-15); render_circle:0 carries no
+	// kPipboyScreen flag and no material RT, so this is the widget's only feed.
+	inline constexpr std::uintptr_t kLensBindCache = 0x689b440;
 	// The one call site in the whole binary that un-hides the widget housing:
 	// inside the enable switch FUN_140efaa60 (TS_Player_ScopedModeArmSwitch),
 	// edge-gated on the arm state, calling FUN_140c8e340

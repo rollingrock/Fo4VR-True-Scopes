@@ -7,6 +7,7 @@
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/PoseGate.h"
 #include "TrueScopes/ScopeIdent.h"
+#include "TrueScopes/StsLens.h"
 
 namespace TrueScopes::LensComposite
 {
@@ -960,15 +961,18 @@ float4 PSMain(VSOut i) : SV_Target
 		// NV / recon color from the zoom's imod.
 		bool screenMode = false;
 		{
+			// an STS scope matches the vanilla table only by accident (a node name
+			// it copied), so none of the table's looks apply to it
+			const bool sts = StsLens::Live();
 			const auto ident = ScopeIdent::Get();
-			const bool screen = ident.zoomOverlay == 16 ||
-			                    std::strncmp(ident.faceShape, "Screen", 6) == 0;
+			const bool screen = !sts && (ident.zoomOverlay == 16 ||
+			                                std::strncmp(ident.faceShape, "Screen", 6) == 0);
 			screenMode = screen;
 			p.flags[1] = screen ? 1.0f : 0.0f;
-			p.flags[2] = (ident.zoomImodID & 0xFFFFFF) == 0x94636
+			p.flags[2] = !sts && (ident.zoomImodID & 0xFFFFFF) == 0x94636
 			                 ? static_cast<float>(*Settings::nvEffectStrength)
 			                 : 0.0f;
-			p.flags[3] = (ident.zoomImodID & 0xFFFFFF) == 0x2041b6
+			p.flags[3] = !sts && (ident.zoomImodID & 0xFFFFFF) == 0x2041b6
 			                 ? static_cast<float>(*Settings::reconEffectStrength)
 			                 : 0.0f;
 			p.nvp[0] = static_cast<float>(*Settings::nvGain);
@@ -976,7 +980,7 @@ float4 PSMain(VSOut i) : SV_Target
 			// aperture is the screen's half-width, and the shader crops
 			// the vertical overshoot to aspect = h/w. 1.0 (every circular
 			// optic and square screen) is a no-op.
-			const float aspect = ident.screenAspect;
+			const float aspect = sts ? 1.0f : ident.screenAspect;
 			p.nvp[1] = (aspect > 0.05f && aspect <= 1.0f) ? aspect : 1.0f;
 			p.nvp[2] = static_cast<float>(*Settings::nvScanlines);
 			p.nvp[3] = std::clamp(static_cast<float>(*Settings::reticleEyeBoxFollow), 0.0f, 1.0f);
@@ -1028,7 +1032,7 @@ float4 PSMain(VSOut i) : SV_Target
 				// built for arm's length); the global is the fallback. ly is the
 				// tube-axial eye position; the eye sits behind the ocular, so the
 				// live relief L = -ly.
-				const auto scopeRelief = ScopeIdent::EyeReliefUnits();
+				const auto scopeRelief = StsLens::Live() ? 0.0f : ScopeIdent::EyeReliefUnits();
 				const auto relief = scopeRelief > 0.01f
 				                        ? scopeRelief
 				                        : static_cast<float>(*Settings::eyeBoxReliefUnits);

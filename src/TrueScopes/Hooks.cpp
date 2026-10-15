@@ -10,6 +10,7 @@
 #include "TrueScopes/PoseGate.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
+#include "TrueScopes/StsLens.h"
 
 namespace TrueScopes::Hooks
 {
@@ -492,6 +493,11 @@ namespace TrueScopes::Hooks
 				// everything down (cheap: the next eligible verdict frame re-arms).
 				const auto weap = ScopeIdent::CurrentWeaponFormID();
 				const bool ours = weap != 0 && a_event.baseObject == weap;
+				// an STS scope's lens goes with its weapon (it asks for a probe when it
+				// comes up; until one has run, any unequip)
+				if (ours || weap == 0 || ScopeIdent::ProbePending()) {
+					StsLens::StandDown("weapon unequipped"sv);
+				}
 				if (!ours && !ScopeIdent::ProbePending()) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
@@ -841,10 +847,12 @@ namespace TrueScopes::Hooks
 					Collimator::Tick(*reinterpret_cast<std::uintptr_t*>(
 						REL::Module::get().base() + Addr::kPlayerGlobal));
 				}
-				// what kind of sight is under P-Scope
+				// what kind of sight is under P-Scope, and an STS scope's lens on it
 				if (g_installed) {
-					Optic::Tick(*reinterpret_cast<std::uintptr_t*>(
-						REL::Module::get().base() + Addr::kPlayerGlobal));
+					const auto player = *reinterpret_cast<std::uintptr_t*>(
+						REL::Module::get().base() + Addr::kPlayerGlobal);
+					Optic::Tick(player);
+					StsLens::Frame(player);
 				}
 				// Fallback probe site for the no-weapon-drawn case (DevBench asks
 				// with the weapon holstered; the verdict site is dead then and
@@ -895,7 +903,19 @@ namespace TrueScopes::Hooks
 				}
 
 
-				if (g_installed && *Settings::fillEnabled) {
+				// An STS scope's lens: its own gate and disc (StsLens), rendered at the
+				// live cadence; the first frame up renders at once so the disc never
+				// shows what the lens target held before.
+				static bool s_stsLive = false;
+				const bool  stsLive = g_installed && StsLens::Live();
+				if (stsLive && *Settings::fillEnabled) {
+					static std::uint32_t s_stsFrame = 0;
+					const auto           n = static_cast<std::uint32_t>(std::max<std::int64_t>(1, *Settings::fillEveryNFrames));
+					if ((!s_stsLive || ++s_stsFrame % n == 0) && *Settings::lensMode >= 2 &&
+						!g_teardownLatch.load(std::memory_order_relaxed) && ScopeRender::Available()) {
+						ScopeRender::Render();
+					}
+				} else if (g_installed && *Settings::fillEnabled) {
 					// last time anything filled the lens (live or prime)
 					static std::uint64_t s_lastLensFillTick = 0;
 					// pose freeze: while the widget is up but the pose says the eye
@@ -1037,6 +1057,7 @@ namespace TrueScopes::Hooks
 						// live fill does (see above)
 					}
 				}
+				s_stsLive = stsLive;
 				func();
 			}
 			static inline REL::Relocation<decltype(&thunk)> func;
@@ -1295,6 +1316,7 @@ namespace TrueScopes::Hooks
 		if (SetScopeActive(false)) {
 			LensComposite::RestoreReticleQuad();
 		}
+		StsLens::StandDown(a_reason);
 		ScopeIdent::InvalidateForLifecycle();
 		const auto lifecycle = ScopeRender::InvalidateWidgetLifecycle();
 		const auto player = *reinterpret_cast<std::uintptr_t*>(

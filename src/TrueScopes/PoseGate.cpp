@@ -35,10 +35,7 @@ namespace TrueScopes::PoseGate
 		                                              // "is the site alive" (weapon drawn, eligible)
 		// Hysteresis memory. Game thread only (the verdict site is per-frame from
 		// Main::OnIdle), so no atomicity needed for the read-modify-write.
-		bool g_liveState = false;
-		// Re-arm dwell: tick when the enter conditions first held while the gate
-		// was off. Game thread only.
-		std::uint64_t g_armPendingSince = 0;
+		Hysteresis g_vanillaGate;
 
 		struct Sample
 		{
@@ -91,13 +88,9 @@ namespace TrueScopes::PoseGate
 			float headFwd[3]; // camera root world rotate, floats 4..6
 		};
 
-		static bool ReadRawPose(std::uintptr_t a_player, RawPose& a_out) noexcept
+		static bool ReadHead(RawPose& a_out) noexcept
 		{
 			__try {
-				const auto scopeParent = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
-				if (!scopeParent) {
-					return false;
-				}
 				const auto playerCam = *reinterpret_cast<std::uintptr_t*>(REL::Module::get().base() + kPlayerCameraGlobal);
 				if (!playerCam) {
 					return false;
@@ -106,18 +99,14 @@ namespace TrueScopes::PoseGate
 				if (!camRoot) {
 					return false;
 				}
-				const auto* rot = reinterpret_cast<const float*>(scopeParent + kWorldRotate);
-				const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
 				const auto* camPos = reinterpret_cast<const float*>(camRoot + kWorldTranslate);
 				const auto* camRot = reinterpret_cast<const float*>(camRoot + kWorldRotate);
 				for (std::size_t k = 0; k < 3; ++k) {
-					a_out.axis[k] = rot[4 + k];
-					a_out.ocular[k] = t[k];
 					a_out.camPos[k] = camPos[k];
 					a_out.headX[k] = camRot[k];
 					a_out.headFwd[k] = camRot[4 + k];
 				}
-				for (const float* v : { a_out.axis, a_out.ocular, a_out.camPos, a_out.headX, a_out.headFwd }) {
+				for (const float* v : { a_out.camPos, a_out.headX, a_out.headFwd }) {
 					for (std::size_t k = 0; k < 3; ++k) {
 						if (!std::isfinite(v[k])) {
 							return false;
@@ -130,16 +119,49 @@ namespace TrueScopes::PoseGate
 			}
 		}
 
+		static bool ReadRawPose(std::uintptr_t a_player, RawPose& a_out) noexcept
+		{
+			__try {
+				const auto scopeParent = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
+				if (!scopeParent) {
+					return false;
+				}
+				const auto* rot = reinterpret_cast<const float*>(scopeParent + kWorldRotate);
+				const auto* t = reinterpret_cast<const float*>(scopeParent + kWorldTranslate);
+				for (std::size_t k = 0; k < 3; ++k) {
+					a_out.axis[k] = rot[4 + k];
+					a_out.ocular[k] = t[k];
+				}
+				for (const float* v : { a_out.axis, a_out.ocular }) {
+					for (std::size_t k = 0; k < 3; ++k) {
+						if (!std::isfinite(v[k])) {
+							return false;
+						}
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+			return ReadHead(a_out);
+		}
+
+		[[nodiscard]] Sample ComputeFrom(const RawPose& raw) noexcept;
+
 		[[nodiscard]] Sample Compute(std::uintptr_t a_player) noexcept
 		{
-			Sample s{};
 			if (!a_player) {
-				return s;
+				return {};
 			}
 			RawPose raw{};
 			if (!ReadRawPose(a_player, raw)) {
-				return s;
+				return {};
 			}
+			return ComputeFrom(raw);
+		}
+
+		Sample ComputeFrom(const RawPose& raw) noexcept
+		{
+			Sample s{};
 
 			// Tube axis: world direction of ScopeParent's local Y (down-range).
 			// With the transposed-on-read convention, world_dir(local Y)[r] =
@@ -257,6 +279,81 @@ namespace TrueScopes::PoseGate
 		// 2026-09-17), so a plain copy is enough.
 		Sample        g_frameEnd{};
 		std::uint64_t g_frameEndFrame = 0;
+
+		struct Step
+		{
+			bool  live;
+			bool  was;
+			float dMax;
+			float latMax;
+			float lookMax;
+		};
+
+		// One evaluation against the thresholds, their exit pairs, the exit
+		// debounce and the enter dwell. Updates a_gate.
+		Step Judge(Hysteresis& a_gate, const Sample& s)
+		{
+			const bool was = a_gate.live;
+			// Effective exit = max(exit, enter): the hysteresis invariant. Editing a
+			// pair one knob at a time over DevBench can momentarily invert it
+			// (exit < current < enter), which oscillates live/frozen every eval.
+			// Clamped, any edit order produces at most one clean transition.
+			const auto band = [was](double a_enter, double a_exit) {
+				return static_cast<float>(was ? std::max<double>(a_exit, a_enter) : a_enter);
+			};
+			const float dMax = band(*Settings::poseMaxDistance, *Settings::poseExitDistance);
+			float       latMax = band(*Settings::poseMaxLateral, *Settings::poseExitLateral);
+			const float lookMax = band(*Settings::poseLookConeDegrees, *Settings::poseLookConeExitDegrees);
+			// Constant angular cone beyond the reference distance instead of a
+			// constant lateral offset (see the setting). Never tightens up close.
+			{
+				const auto adapt = static_cast<float>(*Settings::poseLateralDistanceAdapt);
+				const auto refD = static_cast<float>(*Settings::poseLateralRefDist);
+				if (adapt > 0.0f && refD > 1.0f && std::isfinite(s.dist)) {
+					latMax *= (std::max)(1.0f, 1.0f + adapt * (s.dist / refD - 1.0f));
+				}
+			}
+			// An eye on the tube axis is looking through the scope regardless of
+			// what the head-forward angle says - at close range that angle is
+			// dominated by head-translation noise. The waiver keeps a wider bound
+			// while live (its own hysteresis, like every other axis).
+			const auto  lookWaive = static_cast<float>(*Settings::poseLookWaiveLateral);
+			const float waiveEff = was ? lookWaive * 1.25f : lookWaive;
+			const bool  lookOk = (lookWaive > 0.0f && s.lateral < waiveEff) || s.lookDeg < lookMax;
+			bool        rawLive = s.dist < dMax && s.lateral < latMax && lookOk;
+			// Exit debounce: the tests read a ScopeParent transform the render
+			// thread rewrites every tracked frame, so a single out-of-band sample
+			// can be a torn read - and the enter dwell below turns any spurious
+			// exit into a quarter-second frozen lens. Two consecutive misses
+			// (~22 ms) drop the gate; one does not.
+			if (was && !rawLive) {
+				if (++a_gate.exitStreak < 2) {
+					rawLive = true;
+				}
+			} else {
+				a_gate.exitStreak = 0;
+			}
+			bool live = rawLive;
+			// Enter-edge dwell: conditions must hold continuously before re-arming.
+			// The exit edge stays two-sample (above).
+			if (rawLive && !was) {
+				const auto dwellMs = static_cast<std::uint64_t>(
+					(std::max)(std::int64_t(0), *Settings::poseReArmDwellMs));
+				if (dwellMs > 0) {
+					const auto now = static_cast<std::uint64_t>(::GetTickCount64());
+					if (a_gate.armPendingSince == 0) {
+						a_gate.armPendingSince = now;
+					}
+					if (now - a_gate.armPendingSince < dwellMs) {
+						live = false;
+					}
+				}
+			} else {
+				a_gate.armPendingSince = 0;
+			}
+			a_gate.live = live;
+			return { live, was, dMax, latMax, lookMax };
+		}
 	}
 
 	void SampleAtFrameEnd(std::uintptr_t a_player)
@@ -310,67 +407,10 @@ namespace TrueScopes::PoseGate
 			return a_vanillaVerdict;
 		}
 
-		const bool was = g_liveState;
-		// Effective exit = max(exit, enter): the hysteresis invariant. Editing a
-		// pair one knob at a time over DevBench can momentarily invert it
-		// (exit < current < enter), which oscillates live/frozen every eval.
-		// Clamped, any edit order produces at most one clean transition.
-		const auto band = [was](double a_enter, double a_exit) {
-			return static_cast<float>(was ? std::max<double>(a_exit, a_enter) : a_enter);
-		};
-		const float dMax = band(*Settings::poseMaxDistance, *Settings::poseExitDistance);
-		float       latMax = band(*Settings::poseMaxLateral, *Settings::poseExitLateral);
-		const float lookMax = band(*Settings::poseLookConeDegrees, *Settings::poseLookConeExitDegrees);
-		// Constant angular cone beyond the reference distance instead of a
-		// constant lateral offset (see the setting). Never tightens up close.
-		{
-			const auto adapt = static_cast<float>(*Settings::poseLateralDistanceAdapt);
-			const auto refD = static_cast<float>(*Settings::poseLateralRefDist);
-			if (adapt > 0.0f && refD > 1.0f && std::isfinite(s.dist)) {
-				latMax *= (std::max)(1.0f, 1.0f + adapt * (s.dist / refD - 1.0f));
-			}
-		}
-		// An eye on the tube axis is looking through the scope regardless of
-		// what the head-forward angle says - at close range that angle is
-		// dominated by head-translation noise. The waiver keeps a wider bound
-		// while live (its own hysteresis, like every other axis).
-		const auto  lookWaive = static_cast<float>(*Settings::poseLookWaiveLateral);
-		const float waiveEff = was ? lookWaive * 1.25f : lookWaive;
-		const bool  lookOk = (lookWaive > 0.0f && s.lateral < waiveEff) || s.lookDeg < lookMax;
-		bool rawLive = s.dist < dMax && s.lateral < latMax && lookOk;
-		// Exit debounce: the tests read a ScopeParent transform the render
-		// thread rewrites every tracked frame, so a single out-of-band sample
-		// can be a torn read - and the enter dwell below turns any spurious
-		// exit into a quarter-second frozen lens. Two consecutive misses
-		// (~22 ms) drop the gate; one does not.
-		{
-			static std::uint32_t s_exitStreak = 0;
-			if (was && !rawLive) {
-				if (++s_exitStreak < 2) {
-					rawLive = true;
-				}
-			} else {
-				s_exitStreak = 0;
-			}
-		}
-		bool live = rawLive;
-		// Enter-edge dwell: conditions must hold continuously before re-arming.
-		// The exit edge stays two-sample (above).
-		if (rawLive && !was) {
-			const auto dwellMs = static_cast<std::uint64_t>(
-				(std::max)(std::int64_t(0), *Settings::poseReArmDwellMs));
-			if (dwellMs > 0) {
-				const auto now = static_cast<std::uint64_t>(::GetTickCount64());
-				if (g_armPendingSince == 0) {
-					g_armPendingSince = now;
-				}
-				if (now - g_armPendingSince < dwellMs) {
-					live = false;
-				}
-			}
-		} else {
-			g_armPendingSince = 0;
-		}
+		const auto  step = Judge(g_vanillaGate, s);
+		const bool  was = step.was;
+		const bool  live = step.live;
+		const float dMax = step.dMax, latMax = step.latMax, lookMax = step.lookMax;
 		if (live != was) {
 			char face[64];
 			FaceCheck(s, face);
@@ -384,7 +424,6 @@ namespace TrueScopes::PoseGate
 					live, s.dist, s.lateral, s.lookDeg, face);
 			}
 		}
-		g_liveState = live;
 
 		// One line when the gate keeps refusing on a drawn weapon (~5 s of evals
 		// without ever going live this draw) - without it, nothing in the log
@@ -479,6 +518,22 @@ namespace TrueScopes::PoseGate
 		// ScopeMenu; as our provider it no longer does, but the vanilla reasons
 		// stand.)
 		return live;
+	}
+
+	Reading JudgeEyepiece(Hysteresis& a_gate, const float (&a_ocular)[3], const float (&a_axis)[3])
+	{
+		RawPose raw{};
+		for (std::size_t k = 0; k < 3; ++k) {
+			raw.ocular[k] = a_ocular[k];
+			raw.axis[k] = a_axis[k];
+		}
+		const Sample s = ReadHead(raw) ? ComputeFrom(raw) : Sample{};
+		if (!s.valid) {
+			a_gate = {};
+			return {};
+		}
+		const auto step = Judge(a_gate, s);
+		return { true, s.sentinel, step.live, s.dist, s.lateral, s.lookDeg };
 	}
 
 	bool VerdictStale(std::uint64_t a_maxFrames)

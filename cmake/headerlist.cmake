@@ -18,5 +18,6 @@ set(headers ${headers}
 	src/TrueScopes/Collimator.h
 	src/TrueScopes/Optic.h
 	src/TrueScopes/OpticClass.h
+	src/TrueScopes/StsLens.h
 	src/external/FRIKApiV2.h
 )

@@ -71,6 +71,27 @@ namespace TrueScopes::PoseGate
 	// probe site needs the distinction.
 	bool SiteEverRan();
 
+	// The verdict's tests, thresholds and hysteresis against an eyepiece the
+	// caller names instead of ScopeParent. An optic without HasScope (STS, reflex)
+	// never reaches the verdict site, so Optic runs this from the fill hook on the
+	// optic's own anchor. The caller keeps the state. Game thread.
+	struct Hysteresis
+	{
+		bool          live = false;
+		std::uint32_t exitStreak = 0;
+		std::uint64_t armPendingSince = 0;
+	};
+	struct Reading
+	{
+		bool  valid;     // head pose read; false also resets the gate
+		bool  sentinel;  // both eyes ahead of the eyepiece
+		bool  live;
+		float dist;
+		float lateral;
+		float lookDeg;
+	};
+	Reading JudgeEyepiece(Hysteresis& a_gate, const float (&a_ocular)[3], const float (&a_axis)[3]);
+
 	// Diagnostics for DevBench /state.
 	struct Diag
 	{

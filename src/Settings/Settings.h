@@ -493,6 +493,21 @@ namespace Settings
 	// Reflex reticle size, a multiplier on the reticle as drawn in the cube
 	// (dot 0.5 deg, ring 4 deg across at 1.0). 0.1 .. 2.0, live.
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 0.6);
+	// Experimental, R1: See Through Scopes-format scopes (no HasScope; a fade disc
+	// at the eyepiece, the reticle a card in the tube) through our lens. While the
+	// pose gate on the fade disc is live the vanilla widget goes onto the eyepiece.
+	// Live.
+	MAKE_SETTING(bSetting, "TrueScopesVR", stsLensEnabled, false);
+	// disc radius over the fade disc's
+	MAKE_SETTING(fSetting, "TrueScopesVR", stsLensApertureScale, 1.0);
+	// 0 = the STS reticle as authored (behind the disc, so not seen), 1 = moved onto
+	// the disc and scaled to fill it, 2 = hidden. Read when the lens comes up.
+	MAKE_SETTING(iSetting, "TrueScopesVR", stsReticleMode, std::int64_t(1));
+	MAKE_SETTING(fSetting, "TrueScopesVR", stsReticleScale, 1.0);
+	// the scope camera this far down-range of the eyepiece, on the optic's axis
+	MAKE_SETTING(fSetting, "TrueScopesVR", stsCamForwardUnits, 0.0);
+	// hide the fade vignette and the eyepiece glass while the lens is up
+	MAKE_SETTING(bSetting, "TrueScopesVR", stsHideEyepieceParts, true);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -913,6 +928,12 @@ namespace Settings
 		LOAD(reflexZeroUpMoa);
 		LOAD(reflexZeroRightMoa);
 		LOAD(reflexReticleScale);
+		LOAD(stsLensEnabled);
+		LOAD(stsLensApertureScale);
+		LOAD(stsReticleMode);
+		LOAD(stsReticleScale);
+		LOAD(stsCamForwardUnits);
+		LOAD(stsHideEyepieceParts);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

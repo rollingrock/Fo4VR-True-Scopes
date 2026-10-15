@@ -11,6 +11,7 @@
 #include "TrueScopes/Addresses.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
+#include "TrueScopes/StsLens.h"
 #include "TrueScopes/OneEuro.h"
 #include "TrueScopes/WidgetLifecycle.h"
 #include "TrueScopes/WidgetRotation.h"
@@ -1910,6 +1911,10 @@ namespace TrueScopes::ScopeRender
 
 		FitOutcome ApplyWidgetFit(std::uintptr_t a_player, bool a_censusPlacementOnly = false)
 		{
+			// an STS scope's lens has the widget (StsLens); it puts it back after
+			if (StsLens::OwnsWidget()) {
+				return FitOutcome::kNotWritten;
+			}
 			const auto sp = *reinterpret_cast<std::uintptr_t*>(a_player + kScopeParentInPlayer);
 			if (!sp) {
 				return FitOutcome::kNotWritten;
@@ -2223,8 +2228,11 @@ namespace TrueScopes::ScopeRender
 
 			// Place the camera at the objective end of the scope tube (weapon-local
 			// offset; the node is parented under PrimaryWeaponOffsetNode). SetCameraFOV
-			// ends with NiAVObject::Update, which propagates this to world space.
-			{
+			// ends with NiAVObject::Update, which propagates this to world space. An
+			// STS scope's camera goes on its own axis instead.
+			if (StsLens::Live()) {
+				StsLens::PlaceCamera(cam);
+			} else {
 				auto* localTranslate = reinterpret_cast<float*>(cam + 0x60);  // NiAVObject::local(0x30).translate(+0x30)
 				localTranslate[0] = static_cast<float>(*Settings::scopeCamOffsetX);
 				localTranslate[1] = static_cast<float>(*Settings::scopeCamOffsetY);
@@ -2302,6 +2310,9 @@ namespace TrueScopes::ScopeRender
 			// camera-state commits, AccumulateScene) consumes the filtered basis
 			// coherently. See ApplyCamSmooth.
 			ApplyCamSmooth(cam);
+			if (StsLens::Live()) {
+				StsLens::NoteCamera(cam);
+			}
 
 			// This VR camera type is not flatrim NiCamera. From SetCameraFOV's own
 			// code: eye/frustum count @ +0x208, aspect @ +0x210, port @ +0x214..0x220
