@@ -57,7 +57,7 @@ namespace TrueScopes::Collimator
 		constexpr std::uintptr_t kObjFlags = 0x108;
 		constexpr std::uintptr_t kMaterialInProperty = 0x58;
 		constexpr std::uintptr_t kBaseColorInMaterial = 0x38;
-		constexpr std::uintptr_t kBaseTextureInMaterial = 0x48;
+		constexpr std::uintptr_t kBaseTexturePathInMaterial = 0x78;  // BSFixedString; the NiTexture's own name is empty
 
 		struct Glass
 		{
@@ -368,9 +368,8 @@ namespace TrueScopes::Collimator
 				}
 				const auto* color = reinterpret_cast<const float*>(material + kBaseColorInMaterial);
 				red = red || color[0] > color[1];
-				const auto tex = *reinterpret_cast<std::uintptr_t*>(material + kBaseTextureInMaterial);
-				char       path[260];
-				if (!tex || !ReadName(tex + kNameInObject, path, sizeof(path))) {
+				char path[260];
+				if (!ReadName(material + kBaseTexturePathInMaterial, path, sizeof(path))) {
 					continue;
 				}
 				const char* file = (std::max)(std::strrchr(path, '\\'), std::strrchr(path, '/'));
@@ -430,14 +429,15 @@ namespace TrueScopes::Collimator
 			g_cardFrame = 0;
 		}
 
-		// lookup = Q(face) * R_x(-up) * R_z(right): a reticle direction raised by up
-		// and turned right by right (sight axes, Z up, X right) lands on the face centre.
+		// lookup = Q(face) * R_x(up) * R_z(-right) (sight axes, Z up, X right). The
+		// reticle sits where the lookup lands on the face centre, so it moves opposite
+		// to the turn: this raises it by up and moves it right by right.
 		void BuildLookup(int a_face, float (&a_out)[9])
 		{
 			constexpr float kMoa = 3.14159265f / (180.0f * 60.0f);
 			const float     up = static_cast<float>(*Settings::reflexZeroUpMoa) * kMoa;
 			const float     right = static_cast<float>(*Settings::reflexZeroRightMoa) * kMoa;
-			const float     cu = std::cos(-up), su = std::sin(-up), cr = std::cos(right), sr = std::sin(right);
+			const float     cu = std::cos(up), su = std::sin(up), cr = std::cos(-right), sr = std::sin(-right);
 			const float     rx[9] = { 1, 0, 0, 0, cu, -su, 0, su, cu };
 			const float     rz[9] = { cr, -sr, 0, sr, cr, 0, 0, 0, 1 };
 			float           zero[9];
