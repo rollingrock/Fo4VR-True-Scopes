@@ -490,6 +490,9 @@ namespace Settings
 	// Live; picked up within half a second.
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroUpMoa, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroRightMoa, 0.0);
+	// Reflex reticle size, a multiplier on the reticle as drawn in the cube
+	// (dot 0.5 deg, ring 4 deg across at 1.0). 0.1 .. 2.0, live.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 0.6);
 	// One-shot dim applied to the frozen lens picture on the live→frozen edge,
 	// so a stale picture does not read as live. 0..1 multiplier; 1.0 = no dim.
 	MAKE_SETTING(fSetting, "TrueScopesVR", poseFrozenDim, 0.8);
@@ -909,6 +912,7 @@ namespace Settings
 		LOAD(reflexCollimatorEnabled);
 		LOAD(reflexZeroUpMoa);
 		LOAD(reflexZeroRightMoa);
+		LOAD(reflexReticleScale);
 		LOAD(poseFrozenDim);
 		LOAD(poseFrozenFadeSeconds);
 		LOAD(poseFrozenFadeFloor);

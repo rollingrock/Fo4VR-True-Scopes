@@ -429,21 +429,27 @@ namespace TrueScopes::Collimator
 			g_cardFrame = 0;
 		}
 
-		// lookup = Q(face) * R_x(up) * R_z(-right) (sight axes, Z up, X right). The
+		// lookup = Q(face) * S * R_x(up) * R_z(-right) (sight axes, Z up, X right). The
 		// reticle sits where the lookup lands on the face centre, so it moves opposite
 		// to the turn: this raises it by up and moves it right by right.
+		// S = diag(k, 1, k), k = 1 / reflexReticleScale. World feeds only the env
+		// lookup (clip position has its own matrix), and the glass normal is the bore,
+		// which S keeps, so S scales the reflected ray's off-bore part: the reticle
+		// shrinks by 1/k and the cube's texels with it.
 		void BuildLookup(int a_face, float (&a_out)[9])
 		{
 			constexpr float kMoa = 3.14159265f / (180.0f * 60.0f);
 			const float     up = static_cast<float>(*Settings::reflexZeroUpMoa) * kMoa;
 			const float     right = static_cast<float>(*Settings::reflexZeroRightMoa) * kMoa;
+			const float     scale = std::clamp(static_cast<float>(*Settings::reflexReticleScale), 0.1f, 2.0f);
 			const float     cu = std::cos(up), su = std::sin(up), cr = std::cos(-right), sr = std::sin(-right);
 			const float     rx[9] = { 1, 0, 0, 0, cu, -su, 0, su, cu };
 			const float     rz[9] = { cr, -sr, 0, sr, cr, 0, 0, 0, 1 };
+			const float     s[3] = { 1.0f / scale, 1.0f, 1.0f / scale };
 			float           zero[9];
 			for (int i = 0; i < 3; ++i) {
 				for (int k = 0; k < 3; ++k) {
-					zero[i * 3 + k] = rx[i * 3 + 0] * rz[0 * 3 + k] + rx[i * 3 + 1] * rz[1 * 3 + k] + rx[i * 3 + 2] * rz[2 * 3 + k];
+					zero[i * 3 + k] = s[i] * (rx[i * 3 + 0] * rz[0 * 3 + k] + rx[i * 3 + 1] * rz[1 * 3 + k] + rx[i * 3 + 2] * rz[2 * 3 + k]);
 				}
 			}
 			const auto* q = kFaceQ[a_face];

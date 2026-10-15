@@ -345,6 +345,7 @@ namespace DevBench
 				{ "reflexCollimatorEnabled", Kind::Bool, &reflexCollimatorEnabled },
 				{ "reflexZeroUpMoa", Kind::Float, &reflexZeroUpMoa },
 				{ "reflexZeroRightMoa", Kind::Float, &reflexZeroRightMoa },
+				{ "reflexReticleScale", Kind::Float, &reflexReticleScale },
 				{ "poseFrozenDim", Kind::Float, &poseFrozenDim },
 				{ "poseFrozenFadeSeconds", Kind::Float, &poseFrozenFadeSeconds },
 				{ "poseFrozenFadeFloor", Kind::Float, &poseFrozenFadeFloor },
