@@ -480,6 +480,25 @@ widgetAutoPlace = true
 widgetPlaceMaxEyeDist = 100.0
 
 # ---------------------------------------------------------------------------
+# REFLEX AND HOLO SIGHTS
+#
+# The sight's own reticle drawn collimated: on the bore at infinity for either
+# eye, wherever your head is, like a real red dot. Vanilla and modded sights;
+# magnified scopes are left alone. Read at load (it installs two draw hooks);
+# turning it off later works live.
+reflexReticleEnabled = false
+# Zero, in MOA (1/60 degree): + moves the reticle up / right.
+reflexZeroUpMoa = 0.0
+reflexZeroRightMoa = 0.0
+# Size: at 1.0 the reticle art spans about 1.8 degrees top to bottom. 0.1 .. 4.0.
+reflexReticleScale = 1.0
+# Brightness, a multiplier on the art's own colour. 0.25 .. 16.
+reflexReticleBrightness = 2.0
+# Keep faint or tiny reticles visible: weak art is lit up, and a centre dot too
+# small to resolve is drawn at 2.5 pixels.
+reflexReticleAssist = true
+
+# ---------------------------------------------------------------------------
 # PER-SCOPE APERTURE OVERRIDES
 #
 # Key = the scope's MODEL PATH (preferred) or a node name from the equipped

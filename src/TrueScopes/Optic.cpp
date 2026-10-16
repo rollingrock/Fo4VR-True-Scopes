@@ -19,7 +19,7 @@ namespace TrueScopes::Optic
 		constexpr std::uintptr_t kChildren = 0x168;
 		constexpr std::uintptr_t kChildCount = 0x172;  // u16 loop bound, null holes legal
 
-		// VR BSGeometry and its shader property (see Collimator.cpp)
+		// VR BSGeometry and its shader property (flat +0x40; see Reticle.cpp)
 		constexpr std::uintptr_t kShaderPropertyInGeometry = 0x178;
 		constexpr std::uintptr_t kModelBound = 0x160;  // {centre, radius} in the shape's own space
 		constexpr std::uintptr_t kIsGeometryVFunc = 0x40;

@@ -12,6 +12,7 @@
 #include "TrueScopes/Optic.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/PoseGate.h"
+#include "TrueScopes/Reticle.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 #include "TrueScopes/StsLens.h"
@@ -344,10 +345,12 @@ namespace DevBench
 				{ "frikLookingLateral", Kind::Float, &frikLookingLateral },
 				{ "frikLookingConeDegrees", Kind::Float, &frikLookingConeDegrees },
 				{ "frikLookingDwellMs", Kind::Int, &frikLookingDwellMs },
-				{ "reflexCollimatorEnabled", Kind::Bool, &reflexCollimatorEnabled },
+				{ "reflexReticleEnabled", Kind::Bool, &reflexReticleEnabled },
 				{ "reflexZeroUpMoa", Kind::Float, &reflexZeroUpMoa },
 				{ "reflexZeroRightMoa", Kind::Float, &reflexZeroRightMoa },
 				{ "reflexReticleScale", Kind::Float, &reflexReticleScale },
+				{ "reflexReticleBrightness", Kind::Float, &reflexReticleBrightness },
+				{ "reflexReticleAssist", Kind::Bool, &reflexReticleAssist },
 				{ "stsLensEnabled", Kind::Bool, &stsLensEnabled },
 				{ "stsLensApertureScale", Kind::Float, &stsLensApertureScale },
 				{ "stsReticleMode", Kind::Int, &stsReticleMode },
@@ -1300,6 +1303,36 @@ namespace DevBench
 			return out;
 		}
 
+		// the reflex reticle: what it picked, how far its draw got, and counters
+		std::string HandleReticle()
+		{
+			const auto  d = TrueScopes::Reticle::GetDiag();
+			std::string out = "{\"ok\":true";
+			out += ",\"enabled\":" + std::string(*Settings::reflexReticleEnabled ? "true" : "false");
+			out += ",\"installed\":" + std::string(d.installed ? "true" : "false");
+			out += ",\"stage\":" + Quote(d.stage ? d.stage : "");
+			out += ",\"generation\":" + std::to_string(d.generation);
+			out += ",\"candidates\":" + std::to_string(d.candidates);
+			out += ",\"excluded\":" + std::to_string(d.excluded);
+			out += ",\"names\":[";
+			for (std::size_t i = 0; i < std::size(d.names); ++i) {
+				out += (i ? "," : "") + Quote(d.names[i]);
+			}
+			out += "],\"bore\":" + Vec3(d.bore);
+			out += ",\"halfAngle\":" + std::to_string(d.halfAngle);
+			out += ",\"aperture\":" + Quote(d.aperture);
+			out += ",\"lastReject\":" + Quote(d.lastReject);
+			out += ",\"reticlePasses\":" + std::to_string(d.reticlePasses);
+			out += ",\"effectPasses\":" + std::to_string(d.effectPasses);
+			out += ",\"draws\":" + std::to_string(d.draws);
+			out += ",\"packetReroutes\":" + std::to_string(d.packetReroutes);
+			out += ",\"techniqueRecoveries\":" + std::to_string(d.techniqueRecoveries);
+			out += ",\"geometryReloads\":" + std::to_string(d.geometryReloads);
+			out += ",\"poseRefits\":" + std::to_string(d.poseRefits);
+			out += "}";
+			return out;
+		}
+
 		std::string HandleScopeLookup(const Request& a_req)
 		{
 			const auto raw = a_req.GetOr("path", "");
@@ -1341,6 +1374,7 @@ namespace DevBench
 			if (a_req.path == "/scope")                         return HandleScope(a_req);
 			if (a_req.path == "/omods")                         return HandleOmods(a_req);
 			if (a_req.path == "/optic")                         return HandleOptic();
+			if (a_req.path == "/reticle")                       return HandleReticle();
 			return Err("no such endpoint '" + a_req.path + "' (GET / for the list)");
 		}
 

@@ -10,7 +10,7 @@ set(sources ${sources}
 	src/TrueScopes/ScopeIdent.cpp
 	src/TrueScopes/ScopeRender.cpp
 	src/TrueScopes/FrikBridge.cpp
-	src/TrueScopes/Collimator.cpp
+	src/TrueScopes/Reticle.cpp
 	src/TrueScopes/Optic.cpp
 	src/TrueScopes/StsLens.cpp
 )

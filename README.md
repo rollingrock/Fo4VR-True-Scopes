@@ -205,6 +205,10 @@ listed below.
   and [vr_address_tools](https://github.com/alandtse/vr_address_tools) (the
   FO4VR address library leaned on throughout the research), and commonlib
   direction in general
+- [Bruno (brunocatani)](https://github.com/brunocatani) — the collimated reflex
+  and holo sight reticles, from his ROCK_Emitters work: each sight's own reticle
+  projected by angle from each eye onto its glass, for vanilla and modded sights
+  alike
 - [ss7332337](https://github.com/ss7332337/Fake-Through-Scope) — Fake Through
   Scope for flat Fallout 4, the prior art that proved through-scope rendering
   was worth chasing

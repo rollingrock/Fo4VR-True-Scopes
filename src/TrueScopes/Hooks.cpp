@@ -3,11 +3,11 @@
 
 #include "Settings/Settings.h"
 #include "TrueScopes/Addresses.h"
-#include "TrueScopes/Collimator.h"
 #include "TrueScopes/Optic.h"
 #include "TrueScopes/ScopeIdent.h"
 #include "TrueScopes/LensComposite.h"
 #include "TrueScopes/PoseGate.h"
+#include "TrueScopes/Reticle.h"
 #include "TrueScopes/VerdictInput.h"
 #include "TrueScopes/ScopeRender.h"
 #include "TrueScopes/StsLens.h"
@@ -842,17 +842,14 @@ namespace TrueScopes::Hooks
 				if (g_installed) {
 					VerdictInput::Poll();
 				}
-				// the reflex collimator's glass registry; returns at once while it is off
-				if (g_installed) {
-					Collimator::Tick(*reinterpret_cast<std::uintptr_t*>(
-						REL::Module::get().base() + Addr::kPlayerGlobal));
-				}
-				// what kind of sight is under P-Scope, and an STS scope's lens on it
+				// what kind of sight is under P-Scope, an STS scope's lens on it, and
+				// the reflex reticle (which needs Optic's answer to leave scopes alone)
 				if (g_installed) {
 					const auto player = *reinterpret_cast<std::uintptr_t*>(
 						REL::Module::get().base() + Addr::kPlayerGlobal);
 					Optic::Tick(player);
 					StsLens::Frame(player);
+					Reticle::Tick(player);
 				}
 				// Fallback probe site for the no-weapon-drawn case (DevBench asks
 				// with the weapon holstered; the verdict site is dead then and
@@ -1185,13 +1182,12 @@ namespace TrueScopes::Hooks
 			}
 		}
 
-		// the reflex collimator. Experimental, so only installed when the TOML asks
-		// at load; the switch then works live. Its glass registry ticks from the
-		// fill hook. Non-fatal: without it reflex sights are left to vanilla.
-		if (*Settings::reflexCollimatorEnabled) {
-			Collimator::Install();
+		// the reflex reticle. Its draw hooks go in only when the TOML asks at load;
+		// the switch then works live. Non-fatal: without it reticles stay vanilla.
+		if (*Settings::reflexReticleEnabled) {
+			Reticle::Install();
 		} else {
-			logger::info("reflex collimator off at load (reflexCollimatorEnabled=false) - its hooks are not installed"sv);
+			logger::info("reflex reticle off at load (reflexReticleEnabled=false) - its hooks are not installed"sv);
 		}
 
 		// decal group-order hooks (see the structs). Non-fatal: without them
@@ -1317,6 +1313,7 @@ namespace TrueScopes::Hooks
 			LensComposite::RestoreReticleQuad();
 		}
 		StsLens::StandDown(a_reason);
+		Reticle::Clear();
 		ScopeIdent::InvalidateForLifecycle();
 		const auto lifecycle = ScopeRender::InvalidateWidgetLifecycle();
 		const auto player = *reinterpret_cast<std::uintptr_t*>(

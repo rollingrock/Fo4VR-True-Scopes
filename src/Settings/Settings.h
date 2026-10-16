@@ -481,18 +481,24 @@ namespace Settings
 	// both directions - one flap at the threshold is a damping switch on FRIK's
 	// side. 0 = immediate.
 	MAKE_SETTING(iSetting, "TrueScopesVR", frikLookingDwellMs, std::int64_t(150));
-	// Experimental: reflex sight glass reflects its env map in the sight's own
-	// axes, so what the map shows along +Y sits on the bore at infinity for both
-	// eyes. Vanilla ReflexGlass materials only. Experimental; proven in the
-	// headset 10-14 but needs the R2 reticle materials.
-	MAKE_SETTING(bSetting, "TrueScopesVR", reflexCollimatorEnabled, false);
+	// Reflex and holo sights draw their own reticle collimated: on the bore at
+	// infinity for either eye, wherever the head is. Any sight whose reticle card
+	// sits behind glass or in an open frame, vanilla and modded. Read at load
+	// (it installs two draw hooks); turning it off later works live.
+	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleEnabled, false);
 	// Reflex reticle zero, in MOA (1/60 degree): + moves the reticle up / right.
-	// Live; picked up within half a second.
+	// Live.
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroUpMoa, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroRightMoa, 0.0);
-	// Reflex reticle size, a multiplier on the reticle as drawn in the cube
-	// (dot 0.5 deg, ring 4 deg across at 1.0). 0.1 .. 2.0, live.
-	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 0.6);
+	// Reflex reticle size: at 1.0 the reticle art spans about 1.8 degrees top to
+	// bottom. 0.1 .. 4.0, live.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 1.0);
+	// Reflex reticle brightness, a multiplier on the art's own colour. 0.25 .. 16,
+	// live.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleBrightness, 2.0);
+	// Keep faint or tiny reticle art visible: a weak reticle is lit up, and a
+	// centre dot too small to resolve is drawn at 2.5 pixels. Live.
+	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleAssist, true);
 	// Experimental, R1: See Through Scopes-format scopes (no HasScope; a fade disc
 	// at the eyepiece, the reticle a card in the tube) through our lens. While the
 	// pose gate on the fade disc is live the vanilla widget goes onto the eyepiece.
@@ -924,10 +930,12 @@ namespace Settings
 		LOAD(frikLookingLateral);
 		LOAD(frikLookingConeDegrees);
 		LOAD(frikLookingDwellMs);
-		LOAD(reflexCollimatorEnabled);
+		LOAD(reflexReticleEnabled);
 		LOAD(reflexZeroUpMoa);
 		LOAD(reflexZeroRightMoa);
 		LOAD(reflexReticleScale);
+		LOAD(reflexReticleBrightness);
+		LOAD(reflexReticleAssist);
 		LOAD(stsLensEnabled);
 		LOAD(stsLensApertureScale);
 		LOAD(stsReticleMode);

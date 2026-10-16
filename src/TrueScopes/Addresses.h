@@ -73,31 +73,53 @@ namespace TrueScopes::Addr
 	// the game thread every frame the arm pose updates. rcx = player, xmm1 = a
 	// scaled frame float. The eye gate itself only runs for has-scope weapons; this
 	// site sees every weapon.
-	// [LIVE 10-14] NOT per frame in VR: driving the collimator's registry from here
-	// (v0.3.66-0.3.68), the weapon showed up 26 s after the switch in one run and
-	// never in 2.5 min in the next (two gates read open, Main+0x1d0 unread).
-	// Unused since 0.3.69.
+	// Not per frame in VR: a weapon walk driven from here saw the weapon 26 s
+	// after a switch in one run and never in 2.5 min in the next (two gates read
+	// open, Main+0x1d0 unread). Unused.
 	// [EXE] original bytes: E8 AF DA 16 00
 	inline constexpr std::uintptr_t kIdleEyeGateCallSite = 0xd83f3c;
 
-	// Inside the effect shader's per-geometry setup (FUN_1428cf8c0): the call just
-	// after the slot-6 lens bind and before the VS constant group is unmapped at
-	// 0x1428d1593. On every path in: rbx = the drawn geometry (the slot-6 cache
-	// it was just compared with holds a geometry), r12 = the mapped VS constant
-	// group ([+8] data), rdi = the setup's third argument (+0x08 vertex shader,
-	// +0x40 technique, +0x60 camera).
-	// [EXE] original bytes: E8 A3 2D 4D FF
-	inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
-	inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
+	// removed code, left for reference: the effect shader's per-geometry setup.
+	// Immediate path FUN_1428cf8c0, the call after the slot-6 lens bind (bytes
+	// E8 A3 2D 4D FF): rbx = geometry, r12 = mapped VS constant group ([+8] data),
+	// rdi = setup arg 3 (+0x08 VS, +0x40 technique, +0x60 camera). Record path is
+	// BSEffectShader slot 3 (FUN_1428d31f0; VS at record+0x60, VS group 2 at
+	// record+0xe0, data +0x10); scene effect shapes, reflex glass included, go
+	// that way, not through slot 9.
+	// inline constexpr std::uintptr_t kEffectSetupPreUnmapCallSite = 0x28d1578;
+	// inline constexpr std::uintptr_t kEffectSetupPreUnmapTarget = 0x1da4320;
+	// inline constexpr std::uintptr_t kEffectSetupGeometryRecord = 0x28d31f0;
 
-	// BSEffectShader's vtable. Slot 3 (FUN_1428d31f0) is the record-path
-	// SetupGeometry: the per-pass job FUN_1428aae20 calls slot 2 for a draw
-	// record, then slot 3(shader, pass, record, job) to fill its per-geometry
-	// constants - VS at record+0x60, VS group 2 at record+0xe0 (data +0x10).
-	// Scene effect shapes, reflex glass included, go this way, not through
-	// slot 9 (live 10-14: 100k slot-9 draws, none env-mapped).
+	// BSEffectShader's vtable; the reflex reticle checks a pass's shader against it.
 	inline constexpr std::uintptr_t kBSEffectShaderVtbl = 0x30bc738;
-	inline constexpr std::uintptr_t kEffectSetupGeometryRecord = 0x28d31f0;
+
+	// Reflex reticle (Bruno's corrected reticles). Patched: the shared pass draw
+	// (pass, ctx), which every immediate pass reaches, and the cached batch dispatch
+	// (batch, alpha, ctx), which skips it.
+	// [EXE] 40 55 56 57 41 56 48 8D 6C 24 C1 48 81 EC 88 00 00 00
+	inline constexpr std::uintptr_t kReticleDrawPass = 0x28909c0;
+	// [EXE] 48 89 5C 24 20 55 41 54 41 55 41 56 41 57 48 83 EC 30
+	inline constexpr std::uintptr_t kReticleDrawBatches = 0x28aa8d0;
+	// Called, not patched: the batch's worker barrier (job), a run of cached packets
+	// (packets, count, ctx), one pass (pass, alpha, ctx; ScopeRender's
+	// ExecPassConfig), the pass state restore (ctx), and a shape bind (renderer,
+	// rendererData, 0, 0) that sets its buffers and draws nothing.
+	inline constexpr std::uintptr_t kReticleWaitForPackets = 0x28aad50;
+	inline constexpr std::uintptr_t kReticleRunPackets = 0x28aaf00;
+	inline constexpr std::uintptr_t kReticleRunPass = 0x2891040;
+	inline constexpr std::uintptr_t kReticleRestorePass = 0x2891300;
+	inline constexpr std::uintptr_t kReticleDrawShape = 0x1d8e7c0;
+	// RIP-relative operands read at install: the immediate context slot (mov rdx),
+	// the stereo camera records (mov rbx), the renderer (lea rcx, must equal
+	// kRendererInstance), and the effect material and shader vtables, each from
+	// two sites that must agree.
+	inline constexpr std::uintptr_t kReticleContextSlotSite = 0x1d8e859;
+	inline constexpr std::uintptr_t kReticleStereoSlotSite = 0x1d8e7da;
+	inline constexpr std::uintptr_t kReticleRendererSite = 0x2890da6;
+	inline constexpr std::uintptr_t kEffectMaterialVtblSite = 0x289447e;
+	inline constexpr std::uintptr_t kEffectMaterialVtblSite2 = 0x28945df;
+	inline constexpr std::uintptr_t kEffectShaderVtblSite = 0x28ce595;
+	inline constexpr std::uintptr_t kEffectShaderVtblSite2 = 0x28d6bda;
 
 	// The three vanilla scope imagespace-modifier trigger sites (all call
 	// ImageSpaceModifierInstanceForm::Trigger @ +0x37cf50). A and B fire the weapon

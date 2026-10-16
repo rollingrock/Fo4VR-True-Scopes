@@ -15,7 +15,9 @@ set(headers ${headers}
 	src/TrueScopes/WidgetLifecycle.h
 	src/TrueScopes/WidgetRotation.h
 	src/TrueScopes/FrikBridge.h
-	src/TrueScopes/Collimator.h
+	src/TrueScopes/Reticle.h
+	src/TrueScopes/ReticleFit.h
+	src/TrueScopes/ReticleShader.h
 	src/TrueScopes/Optic.h
 	src/TrueScopes/OpticClass.h
 	src/TrueScopes/StsLens.h

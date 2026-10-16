@@ -226,6 +226,8 @@ namespace DevBenchClient
 				path = "/health";
 			} else if (action == "optic") {
 				path = "/optic";
+			} else if (action == "reticle") {
+				path = "/reticle";
 			} else if (action == "verdict") {
 				path = "/verdict";
 				pass("since", "since");
@@ -252,7 +254,7 @@ namespace DevBenchClient
 				params.emplace_back("path", mp);
 			} else {
 				a_write(a_sink, Error("unknown action '" + action +
-									  "' (state|render|config|set|reload|omods|addresses|perfReset|health|optic|verdict|attach|log|lookup)")
+									  "' (state|render|config|set|reload|omods|addresses|perfReset|health|optic|reticle|verdict|attach|log|lookup)")
 									.c_str());
 				return;
 			}
@@ -262,19 +264,20 @@ namespace DevBenchClient
 		}
 
 		constexpr const char* kDescriptor = R"({
-"description":"True Scopes VR: which optic is equipped and how the scope render is behaving. 'state' identifies the equipped scope (model-path key, aperture and where it came from, derived vs used FOV, widget placement and its residuals, attached object mods). 'render' is the per-frame render diagnostics (fault latch, last step, pass totals, light counts, sun and sky state, per-stage GPU/CPU ms). 'config' reads every live setting; 'set' changes one without a rebuild or a scope cycle; 'reload' re-reads the TOML. 'verdict' reads the tester's controller chord (grip+A yes / grip+B no / grip+trigger skip; polling arms on first call). 'attach' attaches a scope OMOD to the equipped weapon (omod=hex formID). 'log' tails the plugin log (tail=N, grep=substr). 'lookup' resolves a model path against the aperture table. 'optic' classifies the sight under P-Scope from its shapes (STS scope, reflex, ...). NOTE state?probe=true MUTATES: it recomputes the widget placement, so use it to force a fresh walk, not to observe one.",
+"description":"True Scopes VR: which optic is equipped and how the scope render is behaving. 'state' identifies the equipped scope (model-path key, aperture and where it came from, derived vs used FOV, widget placement and its residuals, attached object mods). 'render' is the per-frame render diagnostics (fault latch, last step, pass totals, light counts, sun and sky state, per-stage GPU/CPU ms). 'config' reads every live setting; 'set' changes one without a rebuild or a scope cycle; 'reload' re-reads the TOML. 'verdict' reads the tester's controller chord (grip+A yes / grip+B no / grip+trigger skip; polling arms on first call). 'attach' attaches a scope OMOD to the equipped weapon (omod=hex formID). 'log' tails the plugin log (tail=N, grep=substr). 'lookup' resolves a model path against the aperture table. 'optic' classifies the sight under P-Scope from its shapes (STS scope, reflex, ...). 'reticle' reports the reflex reticle: the cards it picked, how far its draw got, counters. NOTE state?probe=true MUTATES: it recomputes the widget placement, so use it to force a fresh walk, not to observe one.",
 "readOnly":false,
 "inputSchema":{
  "type":"object",
  "properties":{
   "action":{"type":"string","default":"state",
-            "enum":["state","render","config","set","reload","omods","addresses","perfReset","health","optic"]},
+            "enum":["state","render","config","set","reload","omods","addresses","perfReset","health","optic","reticle","verdict","attach","log","lookup"]},
   "probe":{"type":"boolean","description":"action=state: force a fresh 3D walk. MUTATES the widget placement."},
   "key":{"type":"string","description":"action=set: setting name."},
   "value":{"type":"string","description":"action=set: new value."},
   "filter":{"type":"string","description":"action=omods: substring filter."},
   "limit":{"type":"integer","description":"action=omods: max rows (default 400)."}
- }
+ },
+ "additionalProperties":true
 }})";
 	}
 
