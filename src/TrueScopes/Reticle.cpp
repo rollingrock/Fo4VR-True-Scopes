@@ -13,6 +13,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
+#include <fstream>
 #include <mutex>
 #include <vector>
 
@@ -1351,6 +1352,75 @@ namespace TrueScopes::Reticle
 			return true;
 		}
 
+		bool BoreGuarded(std::uintptr_t a_reticle, Vec3& a_out);
+
+		// A per-draw trace for frame pacing (FRIK's stepping work, 10-26): the bore
+		// the dot was drawn with against the sight's bore re-read at draw time, so a
+		// sample a frame stale shows as an angle. reflexReticleTrace starts and stops it.
+		struct TraceRow
+		{
+			std::int64_t qpcUs;
+			std::uint64_t draw;
+			std::uint64_t generation;
+			std::uint64_t sampleMs;
+			std::uint64_t drawMs;
+			Vec3 bore;
+			Vec3 liveBore;
+			XMFLOAT4 eye[2];
+			float halfAngle;
+		};
+		std::mutex g_traceLock;
+		std::vector<TraceRow> g_trace;
+		std::atomic<bool> g_tracing{ false };
+
+		std::int64_t QpcMicros()
+		{
+			static const auto freq = [] {
+				LARGE_INTEGER f{};
+				::QueryPerformanceFrequency(&f);
+				return f.QuadPart;
+			}();
+			LARGE_INTEGER c{};
+			::QueryPerformanceCounter(&c);
+			return c.QuadPart / freq * 1000000 + c.QuadPart % freq * 1000000 / freq;
+		}
+
+		void TraceDraw(std::uintptr_t a_reticle, const Sample& a_sample, const Constants& a_c)
+		{
+			TraceRow row{ QpcMicros(), g_draws.load(std::memory_order_relaxed), a_sample.generation, a_sample.ms, ::GetTickCount64(), a_sample.bore, {},
+				{ a_c.eye[0], a_c.eye[1] }, a_c.aimForward[0].w };
+			BoreGuarded(a_reticle, row.liveBore);
+			std::lock_guard l(g_traceLock);
+			if (g_trace.size() < 20000) {
+				g_trace.push_back(row);
+			}
+		}
+
+		void WriteTrace()
+		{
+			std::vector<TraceRow> rows;
+			{
+				std::lock_guard l(g_traceLock);
+				rows.swap(g_trace);
+			}
+			auto path = logger::log_directory();
+			if (!path) {
+				return;
+			}
+			*path /= "TrueScopesReticleTrace.jsonl";
+			std::ofstream out(*path, std::ios::trunc);
+			for (const auto& r : rows) {
+				const float d = r.bore.x * r.liveBore.x + r.bore.y * r.liveBore.y + r.bore.z * r.liveBore.z;
+				const float deg = std::acos(std::clamp(d, -1.0f, 1.0f)) * 57.2957795f;
+				out << fmt::format(
+					"{{\"qpcUs\":{},\"draw\":{},\"gen\":{},\"sampleMs\":{},\"drawMs\":{},\"bore\":[{:.6f},{:.6f},{:.6f}],\"liveBore\":[{:.6f},{:.6f},{:.6f}],"
+					"\"staleDeg\":{:.5f},\"eyeL\":[{:.3f},{:.3f},{:.3f}],\"eyeR\":[{:.3f},{:.3f},{:.3f}],\"halfAngle\":{:.6f}}}\n",
+					r.qpcUs, r.draw, r.generation, r.sampleMs, r.drawMs, r.bore.x, r.bore.y, r.bore.z, r.liveBore.x, r.liveBore.y, r.liveBore.z, deg,
+					r.eye[0].x, r.eye[0].y, r.eye[0].z, r.eye[1].x, r.eye[1].y, r.eye[1].z, r.halfAngle);
+			}
+			logger::info(FMT_STRING("reflex reticle: trace of {} draws written to {}"), rows.size(), path->string());
+		}
+
 		// The selected reticle's pass, inside its own draw: the engine has staged
 		// its material and depth; we draw the lens glass with our shaders instead.
 		bool DrawCorrected(std::uintptr_t a_reticle, const Assembly& a_asm, const Sample& a_sample, std::size_t a_index)
@@ -1402,6 +1472,9 @@ namespace TrueScopes::Reticle
 			c.tint.y *= vt[1];
 			c.tint.z *= vt[2];
 			c.tint.w *= vt[3];
+			if (g_tracing.load(std::memory_order_relaxed)) {
+				TraceDraw(a_reticle, a_sample, c);
+			}
 
 			// commit the staged state with a zero-count bind: the reticle first so
 			// the engine's cache and t0 agree with its setup, then the glass
@@ -2094,6 +2167,17 @@ namespace TrueScopes::Reticle
 	{
 		if (!g_installed) {
 			return;
+		}
+		if (const bool trace = *Settings::reflexReticleTrace; trace != g_tracing.load(std::memory_order_relaxed)) {
+			if (trace) {
+				std::lock_guard l(g_traceLock);
+				g_trace.clear();
+				g_trace.reserve(8192);
+			}
+			g_tracing.store(trace, std::memory_order_relaxed);
+			if (!trace) {
+				WriteTrace();
+			}
 		}
 		const bool on = *Settings::reflexReticleEnabled;
 		const auto weapon = on ? ScopeIdent::FirstPersonWeaponNode(a_player) : 0;

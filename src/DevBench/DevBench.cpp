@@ -358,6 +358,7 @@ namespace DevBench
 				{ "reflexReticleCore", Kind::Float, &reflexReticleCore },
 				{ "reflexReticleHot", Kind::Float, &reflexReticleHot },
 				{ "reflexReticleMask", Kind::Float, &reflexReticleMask },
+				{ "reflexReticleTrace", Kind::Bool, &reflexReticleTrace },
 				{ "stsLensEnabled", Kind::Bool, &stsLensEnabled },
 				{ "stsLensApertureScale", Kind::Float, &stsLensApertureScale },
 				{ "stsReticleMode", Kind::Int, &stsReticleMode },

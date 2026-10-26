@@ -513,6 +513,10 @@ namespace Settings
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleCore, 0.3);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleHot, 0.18);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleMask, 0.95);
+	// Dev: record every corrected draw (the bore it used against the sight's at
+	// draw time) while true; TrueScopesReticleTrace.jsonl is written when it goes
+	// false. Live, not in the TOML.
+	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleTrace, false);
 	// Experimental, R1: See Through Scopes-format scopes (no HasScope; a fade disc
 	// at the eyepiece, the reticle a card in the tube) through our lens. While the
 	// pose gate on the fade disc is live the vanilla widget goes onto the eyepiece.
@@ -957,6 +961,7 @@ namespace Settings
 		LOAD(reflexReticleCore);
 		LOAD(reflexReticleHot);
 		LOAD(reflexReticleMask);
+		LOAD(reflexReticleTrace);
 		LOAD(stsLensEnabled);
 		LOAD(stsLensApertureScale);
 		LOAD(stsReticleMode);
