@@ -54,9 +54,9 @@ namespace TrueScopes::Reticle
 		constexpr std::uintptr_t kPropertyMaterial = 0x58;
 		constexpr std::uintptr_t kMaterialUv = 0x0c;  // offset u, v, scale u, v
 		constexpr std::uintptr_t kMaterialColor = 0x38;
-		constexpr std::uintptr_t kMaterialTexture = 0x48;  // NiTexture*
 		constexpr std::uintptr_t kMaterialEmission = 0x74;
-		constexpr std::uintptr_t kAlphaFlags = 0x28;  // u16, 0x1 blend, 0x200 test
+		constexpr std::uintptr_t kMaterialTexturePath = 0x78;  // BSFixedString; the NiTexture's own name is empty in VR
+		constexpr std::uintptr_t kAlphaFlags = 0x28;           // u16, 0x1 blend, 0x200 test
 		constexpr std::uintptr_t kAlphaRef = 0x2a;
 
 		constexpr std::uint64_t kFalloff = 1ull << 6;
@@ -704,11 +704,11 @@ namespace TrueScopes::Reticle
 			if (named != Role::kOther) {
 				return named;
 			}
-			std::uintptr_t material = 0, texture = 0;
-			if (!EffectMaterial(a_shape, material) || !Read(material + kMaterialTexture, texture) || !Plausible(texture)) {
+			std::uintptr_t material = 0;
+			if (!EffectMaterial(a_shape, material)) {
 				return named;
 			}
-			const auto file = NameAt(texture + kName);
+			const auto file = NameAt(material + kMaterialTexturePath);
 			const auto textured = ReticleFit::RoleOf(node, MaterialName(a_shape), file);
 			if (textured != Role::kOther) {
 				return textured;
@@ -1731,23 +1731,30 @@ namespace TrueScopes::Reticle
 			bool truncated = false;
 		};
 
-		bool Under(std::uintptr_t a_obj, std::uintptr_t a_ancestor)
-		{
-			for (std::size_t i = 0; a_obj && i < kMaxParentDepth; ++i, a_obj = At<std::uintptr_t>(a_obj + kParent)) {
-				if (a_obj == a_ancestor) {
-					return true;
-				}
-			}
-			return false;
-		}
-
 		// A magnified scope's reticle is in its image plane, not at infinity: the
 		// lens kinds' cards stay as they are (the STS lens moves them), and so do
 		// a combo sight's in-tube cards.
+		std::uintptr_t ScopeNodeAbove(std::uintptr_t a_obj)
+		{
+			for (std::size_t i = 0; a_obj && i < kMaxParentDepth; ++i, a_obj = At<std::uintptr_t>(a_obj + kParent)) {
+				const auto name = NameAt(a_obj + kName);
+				if (name.size() == 7 && ReticleFit::detail::Contains(name, "p-scope")) {
+					return a_obj;
+				}
+			}
+			return 0;
+		}
+
 		bool Magnified(std::uintptr_t a_shape, const Optic::Lens& a_lens)
 		{
-			if (!a_lens.pScope || !a_lens.result || !Under(a_shape, a_lens.pScope)) {
+			const auto scope = ScopeNodeAbove(a_shape);
+			if (!scope) {
 				return false;
+			}
+			// Optic rescans every 30 frames and a swap keeps the hand's Weapon node,
+			// so right after one it still describes the last sight: wait for it
+			if (scope != a_lens.pScope || !a_lens.result) {
+				return true;
 			}
 			using OpticClass::Kind;
 			switch (a_lens.result->kind) {
@@ -1821,8 +1828,8 @@ namespace TrueScopes::Reticle
 		// assembly; the zero turns it about that frame's own X and Z.
 		bool Bore(std::uintptr_t a_reticle, Vec3& a_out)
 		{
-			const auto pScope = Optic::Current().pScope;
-			const auto frame = pScope && Under(a_reticle, pScope) ? pScope : At<std::uintptr_t>(a_reticle + kParent);
+			const auto pScope = ScopeNodeAbove(a_reticle);
+			const auto frame = pScope ? pScope : At<std::uintptr_t>(a_reticle + kParent);
 			if (!frame) {
 				return false;
 			}
@@ -1886,6 +1893,44 @@ namespace TrueScopes::Reticle
 			return true;
 		}
 
+		// The DLL behind a patched entry: E9 rel32 or FF 25 [rip], through a
+		// trampoline or two. Empty when it leads nowhere we can name.
+		std::string PatchOwner(std::uintptr_t a_site)
+		{
+			auto at = a_site;
+			for (int hop = 0; hop < 4; ++hop) {
+				std::array<std::uint8_t, 6> b{};
+				if (!ReadBytes(at, b.data(), b.size())) {
+					return {};
+				}
+				std::int32_t rel = 0;
+				if (b[0] == 0xE9) {
+					std::memcpy(&rel, b.data() + 1, sizeof(rel));
+					at = at + 5 + static_cast<std::intptr_t>(rel);
+				} else if (b[0] == 0xFF && b[1] == 0x25) {
+					std::memcpy(&rel, b.data() + 2, sizeof(rel));
+					if (!ReadBytes(at + 6 + static_cast<std::intptr_t>(rel), &at, sizeof(at))) {
+						return {};
+					}
+				} else if (hop == 0) {
+					return {};
+				}
+				HMODULE mod = nullptr;
+				wchar_t path[MAX_PATH]{};
+				if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+						reinterpret_cast<LPCWSTR>(at), &mod) &&
+					mod && ::GetModuleFileNameW(mod, path, MAX_PATH)) {
+					const std::wstring_view w(path);
+					std::string name;
+					for (const auto c : w.substr(w.find_last_of(L"\\/") + 1)) {
+						name.push_back(c < 128 ? static_cast<char>(c) : '?');
+					}
+					return name;
+				}
+			}
+			return {};
+		}
+
 		bool Executable(std::uintptr_t a_address)
 		{
 			MEMORY_BASIC_INFORMATION page{};
@@ -1926,7 +1971,12 @@ namespace TrueScopes::Reticle
 			std::array<std::uint8_t, 32> actual{};
 			if (a_bytes.size() > actual.size() || !ReadBytes(base + a_rva, actual.data(), a_bytes.size()) ||
 				!std::equal(a_bytes.begin(), a_bytes.end(), actual.begin())) {
-				logger::warn(FMT_STRING("reflex reticle: {} does not match at +{:#x}"), a_what, a_rva);
+				if (const auto owner = PatchOwner(base + a_rva); !owner.empty()) {
+					logger::warn(FMT_STRING("reflex reticle: {} at +{:#x} is already patched by {}; that plugin draws the reticles"), a_what, a_rva,
+						owner);
+				} else {
+					logger::warn(FMT_STRING("reflex reticle: {} does not match at +{:#x}"), a_what, a_rva);
+				}
 				ok = false;
 			}
 		};
@@ -2033,6 +2083,9 @@ namespace TrueScopes::Reticle
 			Selection sel;
 			SelectGuarded(weapon, sel);
 			if (sel.picked != g_selected || sel.excluded != g_excluded) {
+				if (sel.picked != g_selected) {
+					++g_generation;  // another sight; the Weapon node is the same one
+				}
 				g_selected = sel.picked;
 				g_excluded = sel.excluded;
 				std::uint32_t n = 0;
