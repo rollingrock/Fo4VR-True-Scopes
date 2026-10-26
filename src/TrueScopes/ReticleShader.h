@@ -23,6 +23,8 @@ cbuffer Optic : register(b0) {
     float4 tint;
     float4 uvTransform;
     float4 visibility;      // brightness (0 = off), mode (0 art, 1 mask, 2 dot), alpha scale
+    float4 look;            // emitter (1) or the art as drawn (0), glow, core size, hot centre
+    float4 look2;           // mask, bloom, glow spot (1), brightness
 };
 Texture2D reticle : register(t0);
 SamplerState reticleSampler : register(s0);
@@ -79,6 +81,29 @@ float centerDistancePixels(float2 uv, float2 dx, float2 dy) {
     float2 pixels = float2(d.x*dy.y-d.y*dy.x, dx.x*d.y-dx.y*d.x) / (abs(determinant)>1e-12 ? determinant : 1e-12);
     return length(pixels);
 }
+float peakOf(float3 c) { return max(c.r, max(c.g, c.b)); }
+float emitterMask(float4 texel) { return saturate(texel.a * peakOf(texel.rgb)); }
+// The reticle as a light: its core hides what is behind it (premultiplied alpha),
+// its glow is the art blurred through the mips and only adds light. A vanilla
+// glow spot is a pre-blurred glow already, so its emitter is the middle of it.
+float4 emitter(float m, float2 artUv) {
+    uint width, height, levels;
+    reticle.GetDimensions(0, width, height, levels);
+    float texels = max(width * abs(uvTransform.z), height * abs(uvTransform.w));
+    float top = float(levels) - 1;
+    float close = emitterMask(reticle.SampleLevel(reticleSampler, artUv, clamp(log2(texels * 0.10), 0, top)));
+    float mid = emitterMask(reticle.SampleLevel(reticleSampler, artUv, clamp(log2(texels * 0.32), 0, top)));
+    float wide = emitterMask(reticle.SampleLevel(reticleSampler, artUv, clamp(log2(texels * 0.90), 0, top)));
+    float halo = (0.65 * close + 0.35 * mid) * look.y + wide * look2.y;
+    bool spot = look2.z > 0.5;
+    float lo = 1 - look.z;
+    float core = spot ? smoothstep(lo, lo + 0.25, m) : m;
+    float pin = spot ? pow(smoothstep(0.7, 1, m), 2) : 0;
+    float3 hue = tint.rgb / max(peakOf(tint.rgb), 0.0001);
+    float gain = look2.w * peakOf(tint.rgb);
+    float3 light = (hue * gain * (core + halo) + look.w * gain * pin * (1 - hue)) * tint.a;
+    return float4(light, look2.x * core * tint.a);
+}
 PixelOutput PSMain(PixelInput input) {
     uint e = input.eyeIndex;
     clip(eye[e].w - 0.5);
@@ -97,7 +122,13 @@ PixelOutput PSMain(PixelInput input) {
     float4 texel = reticle.SampleGrad(reticleSampler, uvTransform.xy+uv*uvTransform.zw, dx*uvTransform.zw, dy*uvTransform.zw);
     float4 color = texel * tint;
     color.a *= inside ? 1 : 0;
-    if (visibility.x > 0) {
+    if (look.x > 0.5 && visibility.y < 1.5) {
+        if (!inside) clip(-1);
+        float m = emitterMask(texel);
+        if (visibility.y > 0.5) m = saturate(m * visibility.z);  // faint art, lit up
+        color = emitter(m, uvTransform.xy + uv * uvTransform.zw);
+        clip(max(peakOf(color.rgb), color.a) - 0.002);
+    } else if (visibility.x > 0) {
         float3 red = float3(1,0.04,0.015);
         float peak = max(color.r,max(color.g,color.b));
         if (visibility.y == 1) {

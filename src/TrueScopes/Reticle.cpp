@@ -164,6 +164,9 @@ namespace TrueScopes::Reticle
 			float halfAngle;
 			float brightness;
 			bool assist;
+			bool emitter;
+			float glow, bloom, core, hot, mask;
+			float dotHalfAngle;  // a vanilla glow-spot dot's own size; rings and crosshairs take halfAngle
 		};
 
 		struct alignas(16) Constants
@@ -180,8 +183,10 @@ namespace TrueScopes::Reticle
 			XMFLOAT4 tint{ 1.0f, 1.0f, 1.0f, 1.0f };
 			XMFLOAT4 uvTransform{ 0.0f, 0.0f, 1.0f, 1.0f };
 			XMFLOAT4 visibility{};
+			XMFLOAT4 look{};
+			XMFLOAT4 look2{};
 		};
-		static_assert(sizeof(Constants) == 432);
+		static_assert(sizeof(Constants) == 464);
 
 		struct Xform
 		{
@@ -471,6 +476,7 @@ namespace TrueScopes::Reticle
 			ComPtr<ID3D11PixelShader> pixel;
 			ComPtr<ID3D11ComputeShader> visibility;
 			ComPtr<ID3D11BlendState> assistBlend;
+			ComPtr<ID3D11BlendState> emitterBlend;
 			ComPtr<ID3D11InputLayout> halfLayout;
 			ComPtr<ID3D11InputLayout> fullLayout;
 			ComPtr<ID3D11Buffer> constants;
@@ -1113,6 +1119,7 @@ namespace TrueScopes::Reticle
 				return false;
 			}
 			a_c.uvTransform = { uv[0], uv[1], uv[2], uv[3] };
+			a_c.look2.z = ReticleFit::detail::Contains(ReticleFit::detail::BaseName(NameAt(material + kMaterialTexturePath)), "glowspot") ? 1.0f : 0.0f;
 			tint.w *= std::clamp(propertyAlpha, 0.0f, 1.0f);
 			for (auto* c : { &tint.x, &tint.y, &tint.z }) {
 				if (!std::isfinite(*c) || *c < 0.0f || *c * emission > 64.0f) {
@@ -1203,7 +1210,7 @@ namespace TrueScopes::Reticle
 				ReticleFit::EyeAim aim{};
 				const bool visible = ReticleFit::BuildEyeAim(eye, lensCenter, forward, right, a_sample.target, aim);
 				a_c.eye[e] = { eye.x, eye.y, eye.z, visible ? 1.0f : 0.0f };
-				a_c.aimForward[e] = { aim.forward.x, aim.forward.y, aim.forward.z, a_sample.halfAngle };
+				a_c.aimForward[e] = { aim.forward.x, aim.forward.y, aim.forward.z, a_c.look2.z > 0.5f ? a_sample.dotHalfAngle : a_sample.halfAngle };
 				a_c.aimRight[e] = { aim.right.x, aim.right.y, aim.right.z, frame.aspect };
 				a_c.aimUp[e] = { aim.up.x, aim.up.y, aim.up.z, 0.0f };
 			}
@@ -1236,6 +1243,11 @@ namespace TrueScopes::Reticle
 			rt.DestBlendAlpha = D3D11_BLEND_ONE;
 			rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 			if (FAILED(a_device->CreateBlendState(&blend, gpu.assistBlend.GetAddressOf()))) {
+				return false;
+			}
+			// premultiplied: the emitter's light adds, its core alpha hides the scene
+			rt.SrcBlend = D3D11_BLEND_ONE;
+			if (FAILED(a_device->CreateBlendState(&blend, gpu.emitterBlend.GetAddressOf()))) {
 				return false;
 			}
 			D3D11_INPUT_ELEMENT_DESC position{ "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 };
@@ -1456,6 +1468,12 @@ namespace TrueScopes::Reticle
 			if (!texture && !a_sample.assist) {
 				return false;
 			}
+			if (a_sample.emitter) {
+				c.look = { 1.0f, a_sample.glow, a_sample.core, a_sample.hot };
+				c.look2.x = a_sample.mask;
+				c.look2.y = a_sample.bloom;
+				c.look2.w = a_sample.brightness;
+			}
 			if (!UploadConstants(ctx, c)) {
 				return false;
 			}
@@ -1493,8 +1511,10 @@ namespace TrueScopes::Reticle
 			ctx->VSSetConstantBuffers(0, 1, g_gpu.constants.GetAddressOf());
 			ctx->PSSetConstantBuffers(0, 1, g_gpu.constants.GetAddressOf());
 			ctx->PSSetSamplers(0, 1, g_gpu.sampler.GetAddressOf());
-			// the art keeps the engine's blend; the assisted forms need a defined one
-			if (c.visibility.y > 0.0f) {
+			// the art keeps the engine's blend; the emitter and the assisted forms need a defined one
+			if (a_sample.emitter && c.visibility.y < 1.5f) {
+				ctx->OMSetBlendState(g_gpu.emitterBlend.Get(), nullptr, saved.mask);
+			} else if (c.visibility.y > 0.0f) {
 				ctx->OMSetBlendState(g_gpu.assistBlend.Get(), nullptr, saved.mask);
 			}
 			ctx->OMSetDepthStencilState(g_gpu.depth.Get(), saved.stencil);
@@ -2119,12 +2139,17 @@ namespace TrueScopes::Reticle
 			return;
 		}
 		const float scale = std::clamp(static_cast<float>(*Settings::reflexReticleScale), 0.1f, 4.0f);
+		const float dotScale = std::clamp(static_cast<float>(*Settings::reflexReticleDotScale), 0.1f, 4.0f);
 		std::unique_lock lock(g_sampleLock, std::try_to_lock);
 		if (!lock.owns_lock()) {
 			return;  // the render thread has it; the last sample stands for one more frame
 		}
+		const auto knob = [](double a_v, float a_lo, float a_hi) { return std::clamp(static_cast<float>(a_v), a_lo, a_hi); };
 		g_sample = { { bore, false }, g_generation, g_epoch.load(std::memory_order_acquire), now, weapon, g_selected, bore, kHalfAngle * scale,
-			std::clamp(static_cast<float>(*Settings::reflexReticleBrightness), 0.25f, 16.0f), *Settings::reflexReticleAssist };
+			knob(*Settings::reflexReticleBrightness, 0.25f, 16.0f), *Settings::reflexReticleAssist, *Settings::reflexReticleLook == 1,
+			knob(*Settings::reflexReticleGlow, 0.0f, 2.0f), knob(*Settings::reflexReticleBloom, 0.0f, 1.0f),
+			knob(*Settings::reflexReticleCore, 0.1f, 0.9f), knob(*Settings::reflexReticleHot, 0.0f, 1.0f), knob(*Settings::reflexReticleMask, 0.0f, 1.0f),
+			kHalfAngle * dotScale };
 		for (std::size_t i = 0; i < kMaxReticles; ++i) {
 			g_witness[i].store(g_selected[i], std::memory_order_relaxed);
 		}

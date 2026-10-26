@@ -485,20 +485,34 @@ namespace Settings
 	// infinity for either eye, wherever the head is. Any sight whose reticle card
 	// sits behind glass or in an open frame, vanilla and modded. Read at load
 	// (it installs two draw hooks); turning it off later works live.
-	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleEnabled, false);
+	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleEnabled, true);
 	// Reflex reticle zero, in MOA (1/60 degree): + moves the reticle up / right.
 	// Live.
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroUpMoa, 0.0);
 	MAKE_SETTING(fSetting, "TrueScopesVR", reflexZeroRightMoa, 0.0);
 	// Reflex reticle size: at 1.0 the reticle art spans about 1.8 degrees top to
-	// bottom. 0.1 .. 4.0, live.
-	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 1.0);
+	// bottom. Rings, circles and crosshairs take reflexReticleScale; the vanilla
+	// glow-spot dots take reflexReticleDotScale. 0.1 .. 4.0, live.
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleScale, 0.5);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleDotScale, 0.2);
 	// Reflex reticle brightness, a multiplier on the art's own colour. 0.25 .. 16,
 	// live.
-	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleBrightness, 2.0);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleBrightness, 1.0);
 	// Keep faint or tiny reticle art visible: a weak reticle is lit up, and a
 	// centre dot too small to resolve is drawn at 2.5 pixels. Live.
 	MAKE_SETTING(bSetting, "TrueScopesVR", reflexReticleAssist, true);
+	// How the reticle is lit. 0 = the art as drawn; 1 = an emitter: a core that
+	// hides what is behind it, a glow that only adds light. Live.
+	MAKE_SETTING(iSetting, "TrueScopesVR", reflexReticleLook, std::int64_t(1));
+	// Emitter look, all live: the glow around the reticle (0 .. 2), a wider faint
+	// bloom (0 .. 1), how much of a glow-spot dot is its core (0.1 .. 0.9), how far
+	// that core's middle washes toward white (0 .. 1), and how much the core hides
+	// the scene behind it (0 .. 1).
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleGlow, 0.8);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleBloom, 0.12);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleCore, 0.3);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleHot, 0.18);
+	MAKE_SETTING(fSetting, "TrueScopesVR", reflexReticleMask, 0.95);
 	// Experimental, R1: See Through Scopes-format scopes (no HasScope; a fade disc
 	// at the eyepiece, the reticle a card in the tube) through our lens. While the
 	// pose gate on the fade disc is live the vanilla widget goes onto the eyepiece.
@@ -934,8 +948,15 @@ namespace Settings
 		LOAD(reflexZeroUpMoa);
 		LOAD(reflexZeroRightMoa);
 		LOAD(reflexReticleScale);
+		LOAD(reflexReticleDotScale);
 		LOAD(reflexReticleBrightness);
 		LOAD(reflexReticleAssist);
+		LOAD(reflexReticleLook);
+		LOAD(reflexReticleGlow);
+		LOAD(reflexReticleBloom);
+		LOAD(reflexReticleCore);
+		LOAD(reflexReticleHot);
+		LOAD(reflexReticleMask);
 		LOAD(stsLensEnabled);
 		LOAD(stsLensApertureScale);
 		LOAD(stsReticleMode);

@@ -486,17 +486,34 @@ widgetPlaceMaxEyeDist = 100.0
 # eye, wherever your head is, like a real red dot. Vanilla and modded sights;
 # magnified scopes are left alone. Read at load (it installs two draw hooks);
 # turning it off later works live.
-reflexReticleEnabled = false
+reflexReticleEnabled = true
 # Zero, in MOA (1/60 degree): + moves the reticle up / right.
 reflexZeroUpMoa = 0.0
 reflexZeroRightMoa = 0.0
 # Size: at 1.0 the reticle art spans about 1.8 degrees top to bottom. 0.1 .. 4.0.
-reflexReticleScale = 1.0
+# Rings, circles and crosshairs take the first; the plain dot sights the second.
+reflexReticleScale = 0.5
+reflexReticleDotScale = 0.2
 # Brightness, a multiplier on the art's own colour. 0.25 .. 16.
-reflexReticleBrightness = 2.0
+reflexReticleBrightness = 1.0
 # Keep faint or tiny reticles visible: weak art is lit up, and a centre dot too
 # small to resolve is drawn at 2.5 pixels.
 reflexReticleAssist = true
+# How the reticle is lit. 1 = like a real emitter: a bright core that hides what
+# is behind it, with a glow that only adds light, so it reads crisp in daylight
+# and blooms at night. 0 = the sight's art as the game draws it.
+reflexReticleLook = 1
+# The emitter look. Glow around the reticle (0 .. 2) and a wider, fainter bloom
+# (0 .. 1); more of both reads softer and more lit.
+reflexReticleGlow = 0.8
+reflexReticleBloom = 0.12
+# For dot sights: how much of the dot is its solid core (0.1 .. 0.9), and how far
+# the core's middle washes toward white (0 .. 1).
+reflexReticleCore = 0.3
+reflexReticleHot = 0.18
+# How much the core hides the scene behind it (0 .. 1). Lower lets the scene
+# show through the dot.
+reflexReticleMask = 0.95
 
 # ---------------------------------------------------------------------------
 # PER-SCOPE APERTURE OVERRIDES

@@ -314,7 +314,7 @@ namespace
 		}
 		D3D11_SHADER_BUFFER_DESC desc{};
 		reflect->GetConstantBufferByName("Optic")->GetDesc(&desc);
-		Require(desc.Size == 432, "the Optic constant buffer is 432 bytes, as the plugin's Constants");
+		Require(desc.Size == 464, "the Optic constant buffer is 464 bytes, as the plugin's Constants");
 	}
 }
 

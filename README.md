@@ -9,6 +9,9 @@ field-verified; four known stragglers below), the picture is fitted per-scope to
 real eyepiece, the glass has a tuned optical look (rim shadow, sheen, parallax,
 eye-box), scopes activate from your **pose** (raise the gun to your eye — pistol
 scopes finally work at arm's length), and bullet-hole decals render in the lens.
+Reflex and holo sights are collimated: the sight's own reticle sits on the barrel
+line at infinity for either eye, wherever your head is, and reads as a light — a
+crisp dot in daylight that glows at night.
 
 ## Requirements
 
@@ -34,6 +37,13 @@ scopes finally work at arm's length), and bullet-hole decals render in the lens.
   that redirect, so the crash it protects you from should not be reachable without
   it. The log names this at startup, and separately says so if it finds the hook
   overwritten by something it cannot name.
+- **ROCK_Emitters** (Bruno's weapon emitters for ROCK) draws its own corrected reflex
+  reticles through the same draw entries. With it installed it owns reflex sights and
+  True Scopes' reticle stands down; the log names it.
+- ⚠️ **RPS UI Framework 1.1** (and so RobCo PALM's panels) turns its rendering off when
+  True Scopes is loaded, on F4SEVR 0.6.21 or with LooksMenu VR's `f4ee.dll`: its log
+  says "byte guards failed; capture disabled". The RPS UI release after 1.1 recognises
+  True Scopes; update RPS UI when it is out.
 
 ## Install (MO2)
 
@@ -93,6 +103,10 @@ scope-raise** (no restart for most values). Reasonable knobs to touch:
 | `reticleAlpha/Scale/Offset` | reticle presentation |
 | `fillEveryNFrames` | render cadence (1 = every frame, the default) |
 | `fillEveryNFramesInMenu` | cadence while a blocking menu (Pip-Boy, terminal, container...) is open, never faster than `fillEveryNFrames`; 0 freezes the lens on its last picture (default 2) |
+| `reflexReticleEnabled` | collimated reflex and holo sights (on); read at load |
+| `reflexReticleDotScale` / `reflexReticleScale` | size of plain dot sights / of rings, circles and crosshairs |
+| `reflexReticleBrightness`, `reflexReticleGlow`, `reflexReticleBloom`, `reflexReticleCore` | how the reflex reticle is lit; `reflexReticleLook = 0` draws the sight's art as the game does |
+| `reflexZeroUpMoa` / `reflexZeroRightMoa` | reflex sight zero, in MOA |
 | `[Scopes]` table | per-scope aperture/offset overrides — **this is how mod-added scopes get fitted**; copy the hunting-rifle example row |
 
 Leave the rest alone unless asked — a misspelled or wrong-typed key is named in the
@@ -123,6 +137,12 @@ the game keeps running.
 4. Modded scopes not in the built-in table fall back to a default aperture — use the
    `[Scopes]` override to fit them (worked example in the TOML).
 5. Night scope image is serviceable but unpolished — a dedicated night pass is planned.
+6. A few tube-style reflex sights (the combat shotgun's) keep their vanilla reticle:
+   part of the reticle fails the sight check, and the whole sight is left alone rather
+   than collimating half of it.
+7. FRIK's hand damping makes a reflex sight feel sticky, because it smooths away the
+   small hand movement a real dot shows. `DampenHandsRotation = 0` in `FRIK.ini`
+   removes that; translation damping can stay.
 
 ## For other plugins
 
