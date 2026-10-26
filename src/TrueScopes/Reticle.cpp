@@ -1456,8 +1456,15 @@ namespace TrueScopes::Reticle
 			}
 			auto& cache = g_optics[a_index];
 			const auto glass = a_asm.shapes[cache.frame.lensMesh];
+			// aim with the sight as it is drawn this frame: the game thread's sample is
+			// a frame old, and repeats when the two threads miss each other (traced 10-26)
+			Sample live = a_sample;
+			if (Vec3 bore{}; BoreGuarded(a_reticle, bore)) {
+				live.target = { bore, false };
+				live.bore = bore;
+			}
 			Constants c;
-			if (!MaterialTint(a_reticle, c) || !FillConstants(a_asm, a_sample, a_index, c)) {
+			if (!MaterialTint(a_reticle, c) || !FillConstants(a_asm, live, a_index, c)) {
 				g_stage.store(Stage::kUnsupported, std::memory_order_relaxed);
 				if (g_rejectedMaterialGen[a_index] != a_sample.generation) {
 					g_rejectedMaterialGen[a_index] = a_sample.generation;
@@ -1473,7 +1480,7 @@ namespace TrueScopes::Reticle
 			c.tint.z *= vt[2];
 			c.tint.w *= vt[3];
 			if (g_tracing.load(std::memory_order_relaxed)) {
-				TraceDraw(a_reticle, a_sample, c);
+				TraceDraw(a_reticle, live, c);
 			}
 
 			// commit the staged state with a zero-count bind: the reticle first so
