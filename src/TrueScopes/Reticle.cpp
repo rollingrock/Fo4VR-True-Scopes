@@ -1362,6 +1362,16 @@ namespace TrueScopes::Reticle
 			if (!device || !CreateResources(device.Get()) || !QualifyOptic(device.Get(), ctx, a_asm, a_sample, a_index)) {
 				return false;
 			}
+			// one sight, one treatment: a corrected dot beside a native circle splits
+			// the reticle in two (the combat shotgun's tube sight, 10-26)
+			for (std::size_t j = 0; j < kMaxReticles; ++j) {
+				if (j != a_index && a_sample.candidates[j] && g_optics[j].generation == a_sample.generation &&
+					g_optics[j].status == ReticleFit::CacheState::kRejected) {
+					g_stage.store(Stage::kUnsupported, std::memory_order_relaxed);
+					SetLastReject("another-card-native");
+					return false;
+				}
+			}
 			auto& cache = g_optics[a_index];
 			const auto glass = a_asm.shapes[cache.frame.lensMesh];
 			Constants c;
