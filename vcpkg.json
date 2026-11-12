@@ -5,6 +5,7 @@
   "homepage": "https://github.com/rollingrock/Fo4VR-True-Scopes",
   "license": "GPL-3.0",
   "dependencies": [
+    "nlohmann-json",
     "boost-stl-interfaces",
     "xbyak",
     "robin-hood-hashing",

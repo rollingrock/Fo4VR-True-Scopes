@@ -1,4 +1,7 @@
 #include "TrueScopes/ScopeRender.h"
+#include "TrueScopes/Calibration.h"
+#include "TrueScopes/CalibrationMath.h"
+#include "TrueScopes/FallbackAnchorStore.h"
 #include "TrueScopes/FrikBridge.h"
 #include "TrueScopes/Hooks.h"
 #include "TrueScopes/PoseGate.h"
@@ -756,6 +759,7 @@ namespace TrueScopes::ScopeRender
 			float lastRot[9] = {};      // last written true local rotation
 			float wroteRotRaw[12] = {}; // exact local rotate block after our last write
 			bool  wroteRotation = false;
+			bool  fallbackAnchorRotation = false;
 			WidgetRotation::Calibration rotation;
 		};
 		WidgetState g_widget;
@@ -918,12 +922,13 @@ namespace TrueScopes::ScopeRender
 			if (!*Settings::widgetTrackRotation) {
 				// Live toggle off: put the engine-authored rotation back once, or a
 				// later re-enable would capture our own last write as the baseline.
-				if (g_widget.rotation.Captured()) {
+				if (g_widget.rotation.Captured() || g_widget.fallbackAnchorRotation) {
 					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
 						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 					alignas(16) std::uint8_t upd[0x30]{};
 					Fn<NiAVObjectUpdate_t>(kNiAVObjectUpdate)(a_sp, upd);
 					g_widget.rotation.Reset();
+					g_widget.fallbackAnchorRotation = false;
 					ResetRotationSettle();
 					g_rotCache.valid = false;
 					g_widget.wroteRotation = false;
@@ -1883,7 +1888,7 @@ namespace TrueScopes::ScopeRender
 
 			bool restored = false;
 			if (WidgetNodeContainsLastWrite(a_sp) && g_widget.captured) {
-				if (g_widget.rotation.Captured()) {
+				if (g_widget.rotation.Captured() || g_widget.fallbackAnchorRotation) {
 					std::memcpy(reinterpret_cast<void*>(a_sp + 0x30),
 						g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 				}
@@ -1906,6 +1911,48 @@ namespace TrueScopes::ScopeRender
 			g_placeHold = PlacementHold{};
 			logger::info(FMT_STRING("WIDGET LIFECYCLE: adopted generation {} (node=0x{:X}, old baseline {})"),
 				epoch, a_sp, restored ? "restored"sv : "engine/rebuilt"sv);
+			return true;
+		}
+
+		// A fallback has no census face. Retain the WHOLE unadjusted baseline in
+		// weapon space, rather than freezing its UI-parent offset and adding only
+		// a weapon-relative delta. The actual widget stays in the engine's UI tree.
+		bool ApplyFallbackAnchor(std::uintptr_t sp, bool presenceOnly, const std::string& key,
+			const Calibration::Values& values, float& ox, float& oy, float& oz, float& scale, float (&rotation)[9])
+		{
+			if (key.empty() || !*Settings::widgetTrackRotation) return false;
+			auto anchor=FallbackAnchor::get(key);
+			if (!anchor && presenceOnly) return false;
+			std::uintptr_t wn=0,wp=0;
+			const auto parent=*reinterpret_cast<std::uintptr_t*>(sp+kParentInNiAVObject);
+			if(!parent || !ScopeIdent::WeaponParent(wn,wp))return false;
+			auto readPose=[](std::uintptr_t node){
+				FallbackAnchor::Pose p;
+				const auto*m=reinterpret_cast<const float*>(node+kWorldTransform);
+				const auto*t=reinterpret_cast<const float*>(node+kWorldTranslate);
+				for(int r=0;r<3;++r){p.position[r]=t[r];for(int c=0;c<3;++c)p.rotation[r*3+c]=m[c*kMatrixRowStride+r];}
+				p.scale=*reinterpret_cast<const float*>(node+kWorldScale);return p;
+			};
+			const auto weaponPose=readPose(wn),parentPose=readPose(parent);
+			if(!FallbackAnchor::valid(weaponPose)||!FallbackAnchor::valid(parentPose))return false;
+			if(!anchor){
+				FallbackAnchor::Pose baseline;
+				baseline.position={g_widget.baseTx+ox,g_widget.baseTy+oy,g_widget.baseTz+oz};baseline.scale=scale;
+				const auto*raw=g_widget.fallbackAnchorRotation?g_widget.baseRotRaw:reinterpret_cast<const float*>(sp+0x30);
+				for(int r=0;r<3;++r)for(int c=0;c<3;++c)baseline.rotation[r*3+c]=raw[c*kMatrixRowStride+r];
+				FallbackAnchor::Anchor seed;
+				if(!FallbackAnchor::capture(weaponPose,parentPose,baseline,seed))return false;
+				if(!FallbackAnchor::insert(key,seed))return false;
+				anchor=seed;
+			}
+			FallbackAnchor::Pose fitted;
+			if(!FallbackAnchor::fit(*anchor,weaponPose,parentPose,values,fitted))return false;
+			if(!g_widget.fallbackAnchorRotation){
+				std::memcpy(g_widget.baseRotRaw,reinterpret_cast<const void*>(sp+0x30),sizeof(g_widget.baseRotRaw));
+				g_widget.fallbackAnchorRotation=true;
+			}
+			ox=fitted.position[0]-g_widget.baseTx;oy=fitted.position[1]-g_widget.baseTy;oz=fitted.position[2]-g_widget.baseTz;
+			scale=fitted.scale;std::memcpy(rotation,fitted.rotation.data(),sizeof(rotation));
 			return true;
 		}
 
@@ -1952,6 +1999,7 @@ namespace TrueScopes::ScopeRender
 				g_widget.captured = true;
 				g_widget.applied = false;
 				g_widget.rotation.Reset();
+				g_widget.fallbackAnchorRotation = false;
 				ResetRotationSettle();  // engine rewrite = pristine rotation too
 				g_widget.wroteRotation = false;
 				g_widgetLifecycle.Withhold();
@@ -1975,11 +2023,12 @@ namespace TrueScopes::ScopeRender
 				// Turned off after being applied: restore the engine's own values once, so
 				// toggling it live is a clean A/B rather than a one-way door.
 				if (stillOurs && g_widget.captured) {
-					if (g_widget.rotation.Captured()) {
+					if (g_widget.rotation.Captured() || g_widget.fallbackAnchorRotation) {
 						std::memcpy(reinterpret_cast<void*>(sp + 0x30),
 							g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
 						g_widget.rotation.Reset();
-				ResetRotationSettle();
+					g_widget.fallbackAnchorRotation = false;
+					ResetRotationSettle();
 						g_widget.wroteRotation = false;
 					}
 					WriteScopeParent(sp, g_widget.baseTx, g_widget.baseTy, g_widget.baseTz, g_widget.baseScale);
@@ -1997,7 +2046,7 @@ namespace TrueScopes::ScopeRender
 			// hole so the seam is never a bright picture pixel. Applies after the
 			// per-scope table, so every entry keeps its relative fit.
 			const float apScale = std::clamp(static_cast<float>(*Settings::widgetApertureScale), 0.8f, 2.0f);
-			const float scale = (aperture * apScale) / kVanillaRenderCircleRadius;
+			float scale = (aperture * apScale) / kVanillaRenderCircleRadius;
 			// A zero/absurd scale makes the lens vanish or swallow the view, and the user
 			// cannot tell that apart from a broken render — refuse instead of guessing.
 			if (!(scale > 0.001f && scale < 8.0f)) {
@@ -2137,12 +2186,64 @@ namespace TrueScopes::ScopeRender
 				ObserveAutoPlacement(sp);  // measures only; never feeds back
 			}
 
+			// Apply a live adjustment after the automatic placement.
+			Calibration::Values calibration{};
+			std::string fallbackKey;
+			const bool hasAdjustment = Calibration::ForRender(calibration, fallbackKey);
+			float calibrationWr[9]{}, calibrationPr[9]{};
+			bool calibrationFrame = false;
+			float fallbackRotation[9]{};
+			const bool fallbackAnchored = hasAdjustment && ApplyFallbackAnchor(sp, a_censusPlacementOnly,
+				fallbackKey, calibration, ox, oy, oz, scale, fallbackRotation);
+			if (hasAdjustment && !fallbackAnchored) {
+				std::uintptr_t wn = 0, wp = 0;
+				const auto parent = *reinterpret_cast<std::uintptr_t*>(sp + kParentInNiAVObject);
+				if (parent && ScopeIdent::WeaponParent(wn, wp)) {
+					const auto* wm = reinterpret_cast<const float*>(wn + kWorldTransform);
+					const auto* pm = reinterpret_cast<const float*>(parent + kWorldTransform);
+					float wr[9], pr[9], delta[3];
+					for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) {
+						wr[r * 3 + c] = wm[c * kMatrixRowStride + r];
+						pr[r * 3 + c] = pm[c * kMatrixRowStride + r];
+					}
+					const float calibratedScale = scale * calibration.size;
+					if (calibratedScale > 0.001f && calibratedScale < 8.0f &&
+						Calibration::Delta(calibration, wr, *reinterpret_cast<const float*>(wn + kWorldScale),
+							pr, *reinterpret_cast<const float*>(parent + kWorldScale), delta)) {
+						ox += delta[0]; oy += delta[1]; oz += delta[2];
+						scale = calibratedScale;
+						std::memcpy(calibrationWr, wr, sizeof(wr));
+						std::memcpy(calibrationPr, pr, sizeof(pr));
+						calibrationFrame = true;
+					}
+				}
+			}
+
 			// The disc's facing, slaved to the weapon (no-op for heuristic-only
 			// scopes or with tracking off - see ComputeTrackedRotation).
 			float      trackRot[9];
-			const bool haveRot = ComputeTrackedRotation(sp, trackRot);
-			const bool rotChanged = haveRot &&
-			                        std::memcmp(trackRot, g_widget.lastRot, sizeof(trackRot)) != 0;
+			bool haveRot = fallbackAnchored;
+			bool restoredFallbackRotation = false;
+			if (fallbackAnchored) {
+				std::memcpy(trackRot, fallbackRotation, sizeof(trackRot));
+			} else {
+				if (g_widget.fallbackAnchorRotation) {
+					std::memcpy(reinterpret_cast<void*>(sp + 0x30), g_widget.baseRotRaw, sizeof(g_widget.baseRotRaw));
+					g_widget.fallbackAnchorRotation = false;
+					g_widget.wroteRotation = false;
+					g_widget.rotation.Reset();
+					ResetRotationSettle();
+					restoredFallbackRotation = true;
+				}
+				haveRot = ComputeTrackedRotation(sp, trackRot);
+			}
+			// Compose onto the freshly computed, unmodified tracking result, never
+			// the previous frame's adjusted node. ScopeParent origin IS disc centre.
+			// Wait for the stock tracking settle/capture rather than teaching it tilt.
+			if (haveRot && calibrationFrame)
+				Calibration::Tilt(calibration, calibrationWr, calibrationPr, trackRot, trackRot);
+			const bool rotChanged = restoredFallbackRotation ||
+				(haveRot && std::memcmp(trackRot, g_widget.lastRot, sizeof(trackRot)) != 0);
 
 			LogWidgetFacing(sp, "fit", true);
 			// Only touch the node when something actually changed — NiAVObject::Update walks

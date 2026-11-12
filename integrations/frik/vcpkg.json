@@ -1,0 +1,26 @@
+{
+  "name": "fo4vr-scope-calibration",
+  "version": "0.7.0",
+  "dependencies": [
+    "args",
+    "cpptrace",
+    "nlohmann-json",
+    "rapidcsv",
+    "rsm-mmio",
+    "simpleini",
+    "spdlog",
+    "thomasmonkman-filewatch",
+    "xbyak",
+    {
+      "name": "imgui",
+      "features": ["dx11-binding"]
+    }
+  ],
+  "builtin-baseline": "b4a3d89125e45bc8f80fb94bef9761d4f4e14fb9",
+  "overrides": [
+    {
+      "name": "cpptrace",
+      "version": "1.0.0"
+    }
+  ]
+}
