@@ -22,4 +22,11 @@ set(headers ${headers}
 	src/TrueScopes/OpticClass.h
 	src/TrueScopes/StsLens.h
 	src/external/FRIKApiV2.h
+	src/TrueScopes/Calibration.h
+	src/TrueScopes/CalibrationAPI.h
+	src/TrueScopes/CalibrationMath.h
+	src/TrueScopes/CalibrationSession.h
+	src/TrueScopes/FallbackAnchorCodec.h
+	src/TrueScopes/FallbackAnchorMath.h
+	src/TrueScopes/FallbackAnchorStore.h
 )

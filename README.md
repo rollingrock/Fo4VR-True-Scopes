@@ -82,6 +82,10 @@ body stays visible while scoped and FRIK's hand/recoil damping, Pip-Boy use and
 two-hand grip release follow this plugin's pose gate instead of the ScopeMenu. Older
 FRIK versions work as before. `frikProvider = false` opts out.
 
+When the package includes the calibration companion, select **True Scopes** in
+FRIK's configuration menu to adjust the scope lens in VR. See the
+[calibration build and packaging instructions](integrations/frik/README.md).
+
 **FRIK 0.79.1 or later** (API v2.4) is needed for the lens while another mod carries the
 weapon in your off hand — ROCK's left-firing carry, for one. FRIK then keeps the scope
 widget on the wand of the hand actually holding the weapon; under the weapon node itself

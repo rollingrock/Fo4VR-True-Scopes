@@ -13,4 +13,6 @@ set(sources ${sources}
 	src/TrueScopes/Reticle.cpp
 	src/TrueScopes/Optic.cpp
 	src/TrueScopes/StsLens.cpp
+	src/TrueScopes/Calibration.cpp
+	src/TrueScopes/FallbackAnchorStore.cpp
 )
